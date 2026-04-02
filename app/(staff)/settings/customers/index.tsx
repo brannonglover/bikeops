@@ -1,0 +1,297 @@
+import { useState } from "react";
+import {
+  View,
+  Text,
+  FlatList,
+  TouchableOpacity,
+  RefreshControl,
+  StyleSheet,
+  TextInput,
+  Alert,
+  Modal,
+} from "react-native";
+import { useRouter } from "expo-router";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Ionicons } from "@expo/vector-icons";
+import { api } from "@/lib/api";
+import { type Customer } from "@/lib/types";
+import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
+import { LoadingScreen } from "@/components/ui/LoadingScreen";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { Input } from "@/components/ui/Input";
+import { Button } from "@/components/ui/Button";
+import { customerName } from "@/lib/format";
+
+export default function CustomersScreen() {
+  const router = useRouter();
+  const queryClient = useQueryClient();
+  const [search, setSearch] = useState("");
+  const [showNewModal, setShowNewModal] = useState(false);
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+
+  const {
+    data: customers = [],
+    isLoading,
+    refetch,
+    isRefetching,
+  } = useQuery({
+    queryKey: ["customers", search],
+    queryFn: async () => {
+      const q = search ? `?q=${encodeURIComponent(search)}` : "";
+      const { data } = await api.get<Customer[]>(`/api/customers${q}`);
+      return data;
+    },
+  });
+
+  const createCustomer = useMutation({
+    mutationFn: async () => {
+      const { data } = await api.post<Customer>("/api/customers", {
+        firstName: firstName.trim(),
+        lastName: lastName.trim() || null,
+        email: email.trim() || null,
+        phone: phone.trim() || null,
+      });
+      return data;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["customers"] });
+      setShowNewModal(false);
+      resetForm();
+      router.push(`/(staff)/settings/customers/${data.id}`);
+    },
+    onError: (e) =>
+      Alert.alert("Error", e instanceof Error ? e.message : "Failed to create"),
+  });
+
+  const resetForm = () => {
+    setFirstName("");
+    setLastName("");
+    setEmail("");
+    setPhone("");
+  };
+
+  if (isLoading) return <LoadingScreen message="Loading customers..." />;
+
+  return (
+    <View style={styles.container}>
+      <View style={styles.toolbar}>
+        <View style={styles.searchRow}>
+          <Ionicons name="search" size={18} color={colors.slate[400]} />
+          <TextInput
+            value={search}
+            onChangeText={setSearch}
+            placeholder="Search customers..."
+            style={styles.searchInput}
+            placeholderTextColor={colors.slate[400]}
+          />
+        </View>
+        <TouchableOpacity
+          onPress={() => setShowNewModal(true)}
+          style={styles.addButton}
+        >
+          <Ionicons name="add" size={20} color={colors.white} />
+        </TouchableOpacity>
+      </View>
+
+      {customers.length === 0 ? (
+        <EmptyState
+          icon="people-outline"
+          title="No customers"
+          message={search ? "No matches found." : "Add your first customer."}
+        />
+      ) : (
+        <FlatList
+          data={customers}
+          keyExtractor={(item) => item.id}
+          refreshControl={
+            <RefreshControl refreshing={isRefetching} onRefresh={refetch} />
+          }
+          renderItem={({ item }) => (
+            <TouchableOpacity
+              onPress={() =>
+                router.push(`/(staff)/settings/customers/${item.id}`)
+              }
+              style={styles.customerRow}
+            >
+              <View style={styles.customerAvatar}>
+                <Text style={styles.customerInitial}>
+                  {item.firstName[0]?.toUpperCase()}
+                </Text>
+              </View>
+              <View style={styles.customerInfo}>
+                <Text style={styles.customerRowName}>
+                  {customerName(item)}
+                </Text>
+                {item.email ? (
+                  <Text style={styles.customerMeta}>{item.email}</Text>
+                ) : null}
+                {item.phone ? (
+                  <Text style={styles.customerMeta}>{item.phone}</Text>
+                ) : null}
+              </View>
+              <Ionicons
+                name="chevron-forward"
+                size={16}
+                color={colors.slate[400]}
+              />
+            </TouchableOpacity>
+          )}
+          contentContainerStyle={styles.listContent}
+        />
+      )}
+
+      <Modal
+        visible={showNewModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowNewModal(false)}
+      >
+        <View style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>New Customer</Text>
+            <TouchableOpacity onPress={() => setShowNewModal(false)}>
+              <Ionicons name="close" size={24} color={colors.slate[500]} />
+            </TouchableOpacity>
+          </View>
+          <View style={styles.modalContent}>
+            <Input
+              label="First Name"
+              value={firstName}
+              onChangeText={setFirstName}
+              containerStyle={styles.inputGap}
+            />
+            <Input
+              label="Last Name"
+              value={lastName}
+              onChangeText={setLastName}
+              containerStyle={styles.inputGap}
+            />
+            <Input
+              label="Email"
+              value={email}
+              onChangeText={setEmail}
+              keyboardType="email-address"
+              autoCapitalize="none"
+              containerStyle={styles.inputGap}
+            />
+            <Input
+              label="Phone"
+              value={phone}
+              onChangeText={setPhone}
+              keyboardType="phone-pad"
+              containerStyle={styles.inputGap}
+            />
+            <Button
+              title="Create Customer"
+              onPress={() => createCustomer.mutate()}
+              loading={createCustomer.isPending}
+              disabled={!firstName.trim()}
+            />
+          </View>
+        </View>
+      </Modal>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: colors.slate[50],
+  },
+  toolbar: {
+    flexDirection: "row",
+    gap: spacing[2],
+    padding: spacing[3],
+    backgroundColor: colors.white,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.slate[200],
+  },
+  searchRow: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing[2],
+    backgroundColor: colors.slate[100],
+    borderRadius: borderRadius.lg,
+    paddingHorizontal: spacing[3],
+  },
+  searchInput: {
+    flex: 1,
+    ...fontSize.sm,
+    color: colors.slate[900],
+    paddingVertical: spacing[2],
+  },
+  addButton: {
+    width: 40,
+    height: 40,
+    borderRadius: borderRadius.lg,
+    backgroundColor: colors.amber[500],
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  listContent: {
+    paddingBottom: spacing[12],
+  },
+  customerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing[3],
+    padding: spacing[3],
+    backgroundColor: colors.white,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.slate[100],
+  },
+  customerAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.amber[100],
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  customerInitial: {
+    ...fontSize.base,
+    fontWeight: "600",
+    color: colors.amber[700],
+  },
+  customerInfo: {
+    flex: 1,
+    gap: 1,
+  },
+  customerRowName: {
+    ...fontSize.sm,
+    fontWeight: "600",
+    color: colors.slate[900],
+  },
+  customerMeta: {
+    ...fontSize.xs,
+    color: colors.slate[500],
+  },
+  modalContainer: {
+    flex: 1,
+    backgroundColor: colors.white,
+  },
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: spacing[4],
+    borderBottomWidth: 1,
+    borderBottomColor: colors.slate[200],
+  },
+  modalTitle: {
+    ...fontSize.lg,
+    fontWeight: "600",
+    color: colors.slate[900],
+  },
+  modalContent: {
+    padding: spacing[4],
+  },
+  inputGap: {
+    marginBottom: spacing[3],
+  },
+});

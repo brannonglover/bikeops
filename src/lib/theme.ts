@@ -1,0 +1,108 @@
+export const colors = {
+  slate: {
+    50: "#f8fafc",
+    100: "#f1f5f9",
+    200: "#e2e8f0",
+    300: "#cbd5e1",
+    400: "#94a3b8",
+    500: "#64748b",
+    600: "#475569",
+    700: "#334155",
+    800: "#1e293b",
+    900: "#0f172a",
+  },
+  amber: {
+    50: "#fffbeb",
+    100: "#fef3c7",
+    400: "#fbbf24",
+    500: "#f59e0b",
+    600: "#d97706",
+    700: "#b45309",
+  },
+  emerald: {
+    50: "#ecfdf5",
+    100: "#d1fae5",
+    200: "#a7f3d0",
+    500: "#10b981",
+    600: "#059669",
+    700: "#047857",
+    800: "#065f46",
+  },
+  red: {
+    50: "#fef2f2",
+    100: "#fee2e2",
+    500: "#ef4444",
+    600: "#dc2626",
+    700: "#b91c1c",
+    800: "#991b1b",
+  },
+  blue: {
+    50: "#eff6ff",
+    100: "#dbeafe",
+    500: "#3b82f6",
+    600: "#2563eb",
+  },
+  purple: {
+    50: "#faf5ff",
+    100: "#f3e8ff",
+    500: "#8b5cf6",
+    600: "#7c3aed",
+  },
+  orange: {
+    50: "#fff7ed",
+    100: "#ffedd5",
+    500: "#f97316",
+    600: "#ea580c",
+  },
+  white: "#ffffff",
+  black: "#000000",
+  transparent: "transparent",
+} as const;
+
+export const spacing = {
+  0: 0,
+  0.5: 2,
+  1: 4,
+  1.5: 6,
+  2: 8,
+  2.5: 10,
+  3: 12,
+  3.5: 14,
+  4: 16,
+  5: 20,
+  6: 24,
+  7: 28,
+  8: 32,
+  9: 36,
+  10: 40,
+  12: 48,
+  16: 64,
+  20: 80,
+  24: 96,
+} as const;
+
+export const fontSize = {
+  xs: { fontSize: 12, lineHeight: 16 },
+  sm: { fontSize: 14, lineHeight: 20 },
+  base: { fontSize: 16, lineHeight: 24 },
+  lg: { fontSize: 18, lineHeight: 28 },
+  xl: { fontSize: 20, lineHeight: 28 },
+  "2xl": { fontSize: 24, lineHeight: 32 },
+  "3xl": { fontSize: 30, lineHeight: 36 },
+} as const;
+
+export const fontWeight = {
+  normal: "400" as const,
+  medium: "500" as const,
+  semibold: "600" as const,
+  bold: "700" as const,
+};
+
+export const borderRadius = {
+  sm: 4,
+  md: 6,
+  lg: 8,
+  xl: 12,
+  "2xl": 16,
+  full: 9999,
+};
