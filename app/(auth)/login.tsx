@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   View,
   Text,
+  Image,
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
@@ -91,10 +92,11 @@ export default function LoginScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.card}>
-        <Text style={styles.logo}>BikeOps</Text>
-        <Text style={styles.subtitle}>
-          {process.env.EXPO_PUBLIC_SHOP_NAME ?? "Bike Shop Management"}
-        </Text>
+        <Image
+          source={require("../../assets/splash-icon.png")}
+          style={styles.logo}
+          resizeMode="contain"
+        />
         <View style={styles.buttonGroup}>
           <Button
             title="Staff Login"
@@ -139,17 +141,10 @@ const styles = StyleSheet.create({
     elevation: 5,
   },
   logo: {
-    ...fontSize["3xl"],
-    fontWeight: "700",
-    color: colors.slate[900],
-    textAlign: "center",
+    width: 300,
+    height: 140,
+    alignSelf: "center",
     marginBottom: spacing[1],
-  },
-  subtitle: {
-    ...fontSize.sm,
-    color: colors.slate[500],
-    textAlign: "center",
-    marginBottom: spacing[8],
   },
   title: {
     ...fontSize.xl,

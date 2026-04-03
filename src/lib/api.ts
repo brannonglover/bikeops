@@ -170,55 +170,30 @@ export async function staffLogin(
   password: string
 ): Promise<{ ok: boolean; error?: string }> {
   try {
-    const csrfRes = await fetch(`${API_URL}/api/auth/csrf`, {
-      credentials: "omit",
-    });
-    const { csrfToken } = (await csrfRes.json()) as { csrfToken: string };
-
-    const body = new URLSearchParams({
-      csrfToken,
-      email,
-      password,
-      json: "true",
-    });
-
-    const res = await fetch(`${API_URL}/api/auth/callback/credentials`, {
+    const res = await fetch(`${API_URL}/api/auth/mobile-login`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: body.toString(),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
       credentials: "omit",
-      redirect: "manual",
     });
 
-    const setCookie = res.headers.get("set-cookie");
-    if (setCookie) {
-      const staffToken = extractCookieValue(
-        setCookie,
-        "next-auth.session-token"
-      );
-      const secureStaffToken = extractCookieValue(
-        setCookie,
-        "__Secure-next-auth.session-token"
-      );
-      if (staffToken || secureStaffToken) {
-        const tokenVal = staffToken || secureStaffToken;
-        const cookieName = secureStaffToken
-          ? "__Secure-next-auth.session-token"
-          : "next-auth.session-token";
-        await storeCookie(STAFF_COOKIE_KEY, `${cookieName}=${tokenVal}`);
-        return { ok: true };
-      }
+    const contentType = res.headers.get("content-type") ?? "";
+    if (!contentType.includes("application/json")) {
+      return { ok: false, error: "Server error — please try again later." };
     }
 
-    if (res.status >= 300 && res.status < 400) {
-      const location = res.headers.get("location") ?? "";
-      if (location.includes("error")) {
-        return { ok: false, error: "Invalid email or password." };
-      }
-      return { ok: true };
+    const data = await res.json();
+
+    if (!res.ok) {
+      return { ok: false, error: data.error ?? "Login failed" };
     }
 
-    return { ok: false, error: "Invalid email or password." };
+    const { token } = data as { token: string };
+    await storeCookie(
+      STAFF_COOKIE_KEY,
+      `next-auth.session-token=${token}`
+    );
+    return { ok: true };
   } catch (e) {
     return {
       ok: false,
