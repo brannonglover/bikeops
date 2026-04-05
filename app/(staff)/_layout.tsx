@@ -1,20 +1,25 @@
 import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { colors } from "@/lib/theme";
+import { useTheme } from "@/lib/ThemeContext";
+import { HamburgerMenu } from "@/components/ui/HamburgerMenu";
+import { ShopLogo } from "@/components/ui/ShopLogo";
 
 export default function StaffLayout() {
+  const { theme } = useTheme();
+
   return (
     <Tabs
       screenOptions={{
         tabBarActiveTintColor: colors.amber[600],
-        tabBarInactiveTintColor: colors.slate[400],
+        tabBarInactiveTintColor: theme.textMuted,
         tabBarStyle: {
-          borderTopColor: colors.slate[200],
-          backgroundColor: colors.white,
+          borderTopColor: theme.tabBarBorder,
+          backgroundColor: theme.tabBarBg,
         },
         headerStyle: {
-          backgroundColor: colors.white,
-          shadowColor: colors.slate[200],
+          backgroundColor: theme.headerBg,
+          shadowColor: theme.surfaceBorder,
           shadowOpacity: 1,
           shadowOffset: { width: 0, height: 1 },
           shadowRadius: 0,
@@ -22,8 +27,10 @@ export default function StaffLayout() {
         },
         headerTitleStyle: {
           fontWeight: "700",
-          color: colors.slate[900],
+          color: theme.text,
         },
+        headerLeft: () => <ShopLogo />,
+        headerRight: () => <HamburgerMenu />,
       }}
     >
       <Tabs.Screen
@@ -33,15 +40,6 @@ export default function StaffLayout() {
           headerShown: false,
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="construct" size={size} color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="archive"
-        options={{
-          title: "Archive",
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="archive" size={size} color={color} />
           ),
         }}
       />
@@ -56,22 +54,41 @@ export default function StaffLayout() {
         }}
       />
       <Tabs.Screen
+        name="customers"
+        options={{
+          title: "Customers",
+          headerShown: false,
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="people" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="services"
+        options={{
+          title: "Services",
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="build" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="stats"
         options={{
-          title: "Stats",
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="bar-chart" size={size} color={color} />
-          ),
+          href: null,
+        }}
+      />
+      <Tabs.Screen
+        name="archive"
+        options={{
+          href: null,
         }}
       />
       <Tabs.Screen
         name="settings"
         options={{
-          title: "Settings",
+          href: null,
           headerShown: false,
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="settings" size={size} color={color} />
-          ),
         }}
       />
     </Tabs>

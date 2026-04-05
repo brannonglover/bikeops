@@ -14,16 +14,18 @@ import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/lib/api";
 import { type Job, type Stage, DISPLAY_STAGES, STAGE_LABELS, STAGE_COLORS } from "@/lib/types";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
+import { useTheme } from "@/lib/ThemeContext";
 import { JobCard } from "@/components/jobs/JobCard";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { EmptyState } from "@/components/ui/EmptyState";
 
 export default function JobBoardScreen() {
+  const { theme } = useTheme();
   const router = useRouter();
   const queryClient = useQueryClient();
   const [cancelledExpanded, setCancelledExpanded] = useState(false);
 
-  const { data: jobs = [], isLoading, refetch, isRefetching } = useQuery({
+  const { data: jobs = [], isLoading, refetch } = useQuery({
     queryKey: ["jobs"],
     queryFn: async () => {
       const { data } = await api.get<Job[]>("/api/jobs");
@@ -31,6 +33,16 @@ export default function JobBoardScreen() {
     },
     refetchInterval: 15_000,
   });
+
+  const [isManualRefresh, setIsManualRefresh] = useState(false);
+  const handleRefresh = useCallback(async () => {
+    setIsManualRefresh(true);
+    try {
+      await refetch();
+    } finally {
+      setIsManualRefresh(false);
+    }
+  }, [refetch]);
 
   const patchStage = useMutation({
     mutationFn: async ({ jobId, stage }: { jobId: string; stage: Stage }) => {
@@ -110,20 +122,32 @@ export default function JobBoardScreen() {
   if (isLoading) return <LoadingScreen message="Loading jobs..." />;
 
   return (
-    <View style={styles.container}>
-      <View style={styles.toolbar}>
+    <View style={[styles.container, { backgroundColor: theme.background }]}>
+      <View
+        style={[
+          styles.toolbar,
+          {
+            backgroundColor: theme.surface,
+            borderBottomColor: theme.surfaceBorder,
+          },
+        ]}
+      >
         <TouchableOpacity
           onPress={() => archiveMutation.mutate()}
           disabled={archiveMutation.isPending || completedCount === 0}
           style={[
             styles.archiveButton,
+            {
+              borderColor: theme.inputBorder,
+              backgroundColor: theme.surface,
+            },
             (archiveMutation.isPending || completedCount === 0) && styles.disabledButton,
           ]}
         >
           <Text
             style={[
               styles.archiveText,
-              completedCount === 0 && styles.disabledText,
+              { color: completedCount === 0 ? theme.textMuted : theme.textTertiary },
             ]}
           >
             {completedCount > 0 ? `Archive (${completedCount})` : "Archive"}
@@ -167,31 +191,44 @@ export default function JobBoardScreen() {
             </View>
           )}
           renderSectionHeader={({ section }) => (
-            <View style={styles.sectionHeader}>
+            <View
+              style={[
+                styles.sectionHeader,
+                {
+                  backgroundColor: theme.background,
+                  borderBottomColor: theme.surfaceBorder,
+                },
+              ]}
+            >
               <View
                 style={[
                   styles.stageDot,
                   { backgroundColor: STAGE_COLORS[section.title as Stage] },
                 ]}
               />
-              <Text style={styles.sectionTitle}>
+              <Text style={[styles.sectionTitle, { color: theme.textTertiary }]}>
                 {STAGE_LABELS[section.title as Stage]}
               </Text>
-              <View style={styles.countBadge}>
-                <Text style={styles.countText}>{section.data.length}</Text>
+              <View style={[styles.countBadge, { backgroundColor: theme.subtleBg }]}>
+                <Text style={[styles.countText, { color: theme.textTertiary }]}>
+                  {section.data.length}
+                </Text>
               </View>
             </View>
           )}
           stickySectionHeadersEnabled
           refreshControl={
-            <RefreshControl refreshing={isRefetching} onRefresh={refetch} />
+            <RefreshControl refreshing={isManualRefresh} onRefresh={handleRefresh} />
           }
           contentContainerStyle={styles.listContent}
           ListFooterComponent={
             cancelledJobs.length > 0 ? (
               <TouchableOpacity
                 onPress={() => setCancelledExpanded((e) => !e)}
-                style={styles.cancelledToggle}
+                style={[
+                  styles.cancelledToggle,
+                  { borderTopColor: theme.surfaceBorder },
+                ]}
               >
                 <Text style={styles.cancelledLabel}>
                   Cancelled ({cancelledJobs.length})
@@ -213,7 +250,6 @@ export default function JobBoardScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.slate[50],
   },
   toolbar: {
     flexDirection: "row",
@@ -222,28 +258,20 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing[4],
     paddingVertical: spacing[3],
     gap: spacing[2],
-    backgroundColor: colors.white,
     borderBottomWidth: 1,
-    borderBottomColor: colors.slate[200],
   },
   archiveButton: {
     paddingHorizontal: spacing[3],
     paddingVertical: spacing[2],
     borderRadius: borderRadius.xl,
     borderWidth: 1,
-    borderColor: colors.slate[300],
-    backgroundColor: colors.white,
   },
   archiveText: {
     ...fontSize.sm,
     fontWeight: "600",
-    color: colors.slate[700],
   },
   disabledButton: {
     opacity: 0.5,
-  },
-  disabledText: {
-    color: colors.slate[400],
   },
   newJobButton: {
     flexDirection: "row",
@@ -268,9 +296,7 @@ const styles = StyleSheet.create({
     gap: spacing[2],
     paddingHorizontal: spacing[4],
     paddingVertical: spacing[2.5],
-    backgroundColor: colors.slate[50],
     borderBottomWidth: 1,
-    borderBottomColor: colors.slate[200],
   },
   stageDot: {
     width: 8,
@@ -280,10 +306,8 @@ const styles = StyleSheet.create({
   sectionTitle: {
     ...fontSize.sm,
     fontWeight: "600",
-    color: colors.slate[700],
   },
   countBadge: {
-    backgroundColor: colors.slate[200],
     borderRadius: borderRadius.full,
     paddingHorizontal: spacing[2],
     paddingVertical: 1,
@@ -291,7 +315,6 @@ const styles = StyleSheet.create({
   countText: {
     ...fontSize.xs,
     fontWeight: "600",
-    color: colors.slate[600],
   },
   cardWrapper: {
     paddingHorizontal: spacing[4],
@@ -305,7 +328,6 @@ const styles = StyleSheet.create({
     paddingVertical: spacing[3],
     marginTop: spacing[2],
     borderTopWidth: 1,
-    borderTopColor: colors.slate[200],
   },
   cancelledLabel: {
     ...fontSize.sm,

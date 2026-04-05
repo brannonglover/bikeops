@@ -20,19 +20,50 @@ import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { customerName, formatDateTime } from "@/lib/format";
 
+function paramToString(v: string | string[] | undefined): string | undefined {
+  if (v === undefined) return undefined;
+  const s = Array.isArray(v) ? v[0] : v;
+  return s && s.length > 0 ? s : undefined;
+}
+
+/** Prefer job thread from a job deep link, then general (no job), then any for this customer. */
+function pickConversationForCustomer(
+  list: Conversation[],
+  customerId: string,
+  jobId?: string
+): Conversation | undefined {
+  if (jobId) {
+    const forJob = list.find(
+      (c) => c.customerId === customerId && c.jobId === jobId
+    );
+    if (forJob) return forJob;
+  }
+  const general = list.find(
+    (c) => c.customerId === customerId && !c.jobId
+  );
+  if (general) return general;
+  return list.find((c) => c.customerId === customerId);
+}
+
 export default function ChatListScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ customer?: string }>();
+  const params = useLocalSearchParams<{
+    customer?: string | string[];
+    jobId?: string | string[];
+  }>();
+  const customerId = paramToString(params.customer);
+  const jobId = paramToString(params.jobId);
   const queryClient = useQueryClient();
   const [showNewModal, setShowNewModal] = useState(false);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [search, setSearch] = useState("");
 
+  const [isManualRefresh, setIsManualRefresh] = useState(false);
+
   const {
     data: conversations = [],
     isLoading,
     refetch,
-    isRefetching,
   } = useQuery({
     queryKey: ["conversations"],
     queryFn: async () => {
@@ -42,16 +73,26 @@ export default function ChatListScreen() {
     refetchInterval: 5_000,
   });
 
-  useEffect(() => {
-    if (params.customer && conversations.length > 0) {
-      const existing = conversations.find(
-        (c) => c.customerId === params.customer && !c.jobId
-      );
-      if (existing) {
-        router.replace(`/(staff)/chat/${existing.id}`);
-      }
+  const handleRefresh = useCallback(async () => {
+    setIsManualRefresh(true);
+    try {
+      await refetch();
+    } finally {
+      setIsManualRefresh(false);
     }
-  }, [params.customer, conversations, router]);
+  }, [refetch]);
+
+  useEffect(() => {
+    if (!customerId || isLoading) return;
+    const existing = pickConversationForCustomer(
+      conversations,
+      customerId,
+      jobId
+    );
+    if (existing) {
+      router.replace(`/(staff)/chat/${existing.id}`);
+    }
+  }, [customerId, jobId, conversations, isLoading, router]);
 
   const openNewModal = async () => {
     setShowNewModal(true);
@@ -65,9 +106,7 @@ export default function ChatListScreen() {
   };
 
   const selectCustomer = async (customerId: string) => {
-    const existing = conversations.find(
-      (c) => c.customerId === customerId && !c.jobId
-    );
+    const existing = pickConversationForCustomer(conversations, customerId);
     if (existing) {
       setShowNewModal(false);
       router.push(`/(staff)/chat/${existing.id}`);
@@ -139,7 +178,7 @@ export default function ChatListScreen() {
           data={conversations}
           keyExtractor={(item) => item.id}
           refreshControl={
-            <RefreshControl refreshing={isRefetching} onRefresh={refetch} />
+            <RefreshControl refreshing={isManualRefresh} onRefresh={handleRefresh} />
           }
           renderItem={({ item }) => {
             const lastMsg = getLastMessage(item);

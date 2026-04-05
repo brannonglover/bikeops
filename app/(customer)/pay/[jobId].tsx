@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useMemo } from "react";
 import {
   View,
   Text,
@@ -12,7 +12,8 @@ import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/lib/api";
 import { type Job } from "@/lib/types";
-import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
+import { colors, spacing, fontSize } from "@/lib/theme";
+import { useTheme } from "@/lib/ThemeContext";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
@@ -21,6 +22,7 @@ import { formatCurrency, jobTotal, jobBikeLabel } from "@/lib/format";
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? "";
 
 export default function PayScreen() {
+  const { theme } = useTheme();
   const { jobId } = useLocalSearchParams<{ jobId: string }>();
   const router = useRouter();
   const [paying, setPaying] = useState(false);
@@ -35,6 +37,89 @@ export default function PayScreen() {
     },
     enabled: !!jobId,
   });
+
+  const styles = useMemo(
+    () =>
+      StyleSheet.create({
+        container: {
+          flex: 1,
+          backgroundColor: theme.background,
+        },
+        content: {
+          padding: spacing[4],
+          gap: spacing[4],
+          paddingBottom: spacing[12],
+        },
+        section: {
+          gap: spacing[3],
+        },
+        bikeLabel: {
+          ...fontSize.base,
+          fontWeight: "600",
+          color: theme.text,
+        },
+        lineItem: {
+          flexDirection: "row",
+          justifyContent: "space-between",
+          paddingVertical: spacing[1],
+        },
+        lineItemName: {
+          ...fontSize.sm,
+          color: theme.textTertiary,
+          flex: 1,
+        },
+        lineItemPrice: {
+          ...fontSize.sm,
+          fontWeight: "600",
+          color: theme.text,
+          fontVariant: ["tabular-nums"],
+        },
+        totalRow: {
+          flexDirection: "row",
+          justifyContent: "space-between",
+          borderTopWidth: 1,
+          borderTopColor: theme.surfaceBorder,
+          paddingTop: spacing[3],
+          marginTop: spacing[2],
+        },
+        totalLabel: {
+          ...fontSize.lg,
+          fontWeight: "700",
+          color: theme.text,
+        },
+        totalAmount: {
+          ...fontSize["2xl"],
+          fontWeight: "700",
+          color: theme.text,
+          fontVariant: ["tabular-nums"],
+        },
+        info: {
+          ...fontSize.sm,
+          color: theme.textSecondary,
+          textAlign: "center",
+          lineHeight: 20,
+        },
+        paidContainer: {
+          flex: 1,
+          justifyContent: "center",
+          alignItems: "center",
+          padding: spacing[8],
+          gap: spacing[4],
+          backgroundColor: theme.surface,
+        },
+        paidTitle: {
+          ...fontSize.xl,
+          fontWeight: "700",
+          color: theme.text,
+        },
+        paidMessage: {
+          ...fontSize.sm,
+          color: theme.textTertiary,
+          textAlign: "center",
+        },
+      }),
+    [theme]
+  );
 
   if (isLoading || !job) return <LoadingScreen message="Loading payment..." />;
 
@@ -127,82 +212,3 @@ export default function PayScreen() {
     </>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.slate[50],
-  },
-  content: {
-    padding: spacing[4],
-    gap: spacing[4],
-    paddingBottom: spacing[12],
-  },
-  section: {
-    gap: spacing[3],
-  },
-  bikeLabel: {
-    ...fontSize.base,
-    fontWeight: "600",
-    color: colors.slate[900],
-  },
-  lineItem: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    paddingVertical: spacing[1],
-  },
-  lineItemName: {
-    ...fontSize.sm,
-    color: colors.slate[700],
-    flex: 1,
-  },
-  lineItemPrice: {
-    ...fontSize.sm,
-    fontWeight: "600",
-    color: colors.slate[900],
-    fontVariant: ["tabular-nums"],
-  },
-  totalRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    borderTopWidth: 1,
-    borderTopColor: colors.slate[200],
-    paddingTop: spacing[3],
-    marginTop: spacing[2],
-  },
-  totalLabel: {
-    ...fontSize.lg,
-    fontWeight: "700",
-    color: colors.slate[900],
-  },
-  totalAmount: {
-    ...fontSize["2xl"],
-    fontWeight: "700",
-    color: colors.slate[900],
-    fontVariant: ["tabular-nums"],
-  },
-  info: {
-    ...fontSize.sm,
-    color: colors.slate[500],
-    textAlign: "center",
-    lineHeight: 20,
-  },
-  paidContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    padding: spacing[8],
-    gap: spacing[4],
-    backgroundColor: colors.white,
-  },
-  paidTitle: {
-    ...fontSize.xl,
-    fontWeight: "700",
-    color: colors.slate[900],
-  },
-  paidMessage: {
-    ...fontSize.sm,
-    color: colors.slate[600],
-    textAlign: "center",
-  },
-});

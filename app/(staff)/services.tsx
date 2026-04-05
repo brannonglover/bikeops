@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import {
   View,
   Text,
@@ -14,6 +14,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/lib/api";
 import { type Service } from "@/lib/types";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
+import { useTheme } from "@/lib/ThemeContext";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
@@ -21,6 +22,7 @@ import { Button } from "@/components/ui/Button";
 import { formatCurrency } from "@/lib/format";
 
 export default function ServicesScreen() {
+  const { theme } = useTheme();
   const queryClient = useQueryClient();
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -32,7 +34,6 @@ export default function ServicesScreen() {
     data: services = [],
     isLoading,
     refetch,
-    isRefetching,
   } = useQuery({
     queryKey: ["services"],
     queryFn: async () => {
@@ -40,6 +41,16 @@ export default function ServicesScreen() {
       return data;
     },
   });
+
+  const [isManualRefresh, setIsManualRefresh] = useState(false);
+  const handleRefresh = useCallback(async () => {
+    setIsManualRefresh(true);
+    try {
+      await refetch();
+    } finally {
+      setIsManualRefresh(false);
+    }
+  }, [refetch]);
 
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -105,8 +116,16 @@ export default function ServicesScreen() {
   if (isLoading) return <LoadingScreen message="Loading services..." />;
 
   return (
-    <View style={styles.container}>
-      <View style={styles.toolbar}>
+    <View style={[styles.container, { backgroundColor: theme.background }]}>
+      <View
+        style={[
+          styles.toolbar,
+          {
+            backgroundColor: theme.surface,
+            borderBottomColor: theme.surfaceBorder,
+          },
+        ]}
+      >
         <TouchableOpacity onPress={openNew} style={styles.addButton}>
           <Ionicons name="add" size={18} color={colors.white} />
           <Text style={styles.addText}>Add Service</Text>
@@ -120,23 +139,32 @@ export default function ServicesScreen() {
           data={services}
           keyExtractor={(item) => item.id}
           refreshControl={
-            <RefreshControl refreshing={isRefetching} onRefresh={refetch} />
+            <RefreshControl refreshing={isManualRefresh} onRefresh={handleRefresh} />
           }
           renderItem={({ item }) => (
             <TouchableOpacity
               onPress={() => openEdit(item)}
               onLongPress={() => handleDelete(item)}
-              style={styles.row}
+              style={[
+                styles.row,
+                {
+                  backgroundColor: theme.surface,
+                  borderBottomColor: theme.surfaceBorderSubtle,
+                },
+              ]}
             >
               <View style={styles.rowInfo}>
-                <Text style={styles.rowName}>{item.name}</Text>
+                <Text style={[styles.rowName, { color: theme.text }]}>{item.name}</Text>
                 {item.description ? (
-                  <Text style={styles.rowDesc} numberOfLines={1}>
+                  <Text
+                    style={[styles.rowDesc, { color: theme.textSecondary }]}
+                    numberOfLines={1}
+                  >
                     {item.description}
                   </Text>
                 ) : null}
               </View>
-              <Text style={styles.rowPrice}>
+              <Text style={[styles.rowPrice, { color: theme.textTertiary }]}>
                 {formatCurrency(item.price)}
               </Text>
             </TouchableOpacity>
@@ -151,13 +179,18 @@ export default function ServicesScreen() {
         presentationStyle="pageSheet"
         onRequestClose={closeModal}
       >
-        <View style={styles.modalContainer}>
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>
+        <View style={[styles.modalContainer, { backgroundColor: theme.surface }]}>
+          <View
+            style={[
+              styles.modalHeader,
+              { borderBottomColor: theme.surfaceBorder },
+            ]}
+          >
+            <Text style={[styles.modalTitle, { color: theme.text }]}>
               {editingId ? "Edit Service" : "New Service"}
             </Text>
             <TouchableOpacity onPress={closeModal}>
-              <Ionicons name="close" size={24} color={colors.slate[500]} />
+              <Ionicons name="close" size={24} color={theme.icon} />
             </TouchableOpacity>
           </View>
           <View style={styles.modalContent}>
@@ -196,13 +229,10 @@ export default function ServicesScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.slate[50],
   },
   toolbar: {
     padding: spacing[3],
-    backgroundColor: colors.white,
     borderBottomWidth: 1,
-    borderBottomColor: colors.slate[200],
   },
   addButton: {
     flexDirection: "row",
@@ -225,9 +255,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     padding: spacing[4],
-    backgroundColor: colors.white,
     borderBottomWidth: 1,
-    borderBottomColor: colors.slate[100],
   },
   rowInfo: {
     flex: 1,
@@ -236,21 +264,17 @@ const styles = StyleSheet.create({
   rowName: {
     ...fontSize.sm,
     fontWeight: "600",
-    color: colors.slate[900],
   },
   rowDesc: {
     ...fontSize.xs,
-    color: colors.slate[500],
   },
   rowPrice: {
     ...fontSize.sm,
     fontWeight: "600",
-    color: colors.slate[700],
     fontVariant: ["tabular-nums"],
   },
   modalContainer: {
     flex: 1,
-    backgroundColor: colors.white,
   },
   modalHeader: {
     flexDirection: "row",
@@ -258,12 +282,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     padding: spacing[4],
     borderBottomWidth: 1,
-    borderBottomColor: colors.slate[200],
   },
   modalTitle: {
     ...fontSize.lg,
     fontWeight: "600",
-    color: colors.slate[900],
   },
   modalContent: {
     padding: spacing[4],

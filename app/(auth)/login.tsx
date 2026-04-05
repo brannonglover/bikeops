@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import {
   View,
   Text,
@@ -13,8 +13,10 @@ import { useAuth } from "@/lib/auth";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
+import { useTheme } from "@/lib/ThemeContext";
 
 export default function LoginScreen() {
+  const { theme } = useTheme();
   const router = useRouter();
   const { staffLogin, customerLogin } = useAuth();
   const [mode, setMode] = useState<"pick" | "staff" | "customer">("pick");
@@ -22,6 +24,74 @@ export default function LoginScreen() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  const styles = useMemo(
+    () =>
+      StyleSheet.create({
+        container: {
+          flex: 1,
+          justifyContent: "center",
+          alignItems: "center",
+          backgroundColor: theme.background,
+          padding: spacing[4],
+        },
+        card: {
+          width: "100%",
+          maxWidth: 400,
+          backgroundColor: theme.surface,
+          borderRadius: borderRadius["2xl"],
+          padding: spacing[8],
+          borderWidth: 1,
+          borderColor: theme.surfaceBorder,
+          shadowColor: colors.black,
+          shadowOffset: { width: 0, height: 4 },
+          shadowOpacity: 0.1,
+          shadowRadius: 12,
+          elevation: 5,
+        },
+        logo: {
+          width: 300,
+          height: 140,
+          alignSelf: "center",
+          marginBottom: spacing[1],
+        },
+        title: {
+          ...fontSize.xl,
+          fontWeight: "600",
+          color: theme.text,
+          textAlign: "center",
+          marginBottom: spacing[6],
+        },
+        inputContainer: {
+          marginBottom: spacing[4],
+        },
+        error: {
+          ...fontSize.sm,
+          color: colors.red[600],
+          marginBottom: spacing[3],
+        },
+        button: {
+          marginTop: spacing[2],
+        },
+        buttonGroup: {
+          gap: spacing[3],
+        },
+        roleButton: {
+          width: "100%",
+        },
+        backLink: {
+          alignItems: "center",
+          marginTop: spacing[4],
+          padding: spacing[2],
+        },
+        backText: {
+          ...fontSize.sm,
+          color: theme.textSecondary,
+          fontWeight: "500",
+        },
+      }),
+    [theme]
+  );
 
   const handleStaffLogin = async () => {
     if (!email.trim() || !password) return;
@@ -41,8 +111,8 @@ export default function LoginScreen() {
     }
   };
 
-  const handleCustomerContinue = () => {
-    customerLogin();
+  const handleCustomerContinue = async () => {
+    await customerLogin();
     router.replace("/(customer)/book");
   };
 
@@ -117,67 +187,3 @@ export default function LoginScreen() {
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: colors.slate[50],
-    padding: spacing[4],
-  },
-  card: {
-    width: "100%",
-    maxWidth: 400,
-    backgroundColor: colors.white,
-    borderRadius: borderRadius["2xl"],
-    padding: spacing[8],
-    borderWidth: 1,
-    borderColor: colors.slate[200],
-    shadowColor: colors.black,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 12,
-    elevation: 5,
-  },
-  logo: {
-    width: 300,
-    height: 140,
-    alignSelf: "center",
-    marginBottom: spacing[1],
-  },
-  title: {
-    ...fontSize.xl,
-    fontWeight: "600",
-    color: colors.slate[900],
-    textAlign: "center",
-    marginBottom: spacing[6],
-  },
-  inputContainer: {
-    marginBottom: spacing[4],
-  },
-  error: {
-    ...fontSize.sm,
-    color: colors.red[600],
-    marginBottom: spacing[3],
-  },
-  button: {
-    marginTop: spacing[2],
-  },
-  buttonGroup: {
-    gap: spacing[3],
-  },
-  roleButton: {
-    width: "100%",
-  },
-  backLink: {
-    alignItems: "center",
-    marginTop: spacing[4],
-    padding: spacing[2],
-  },
-  backText: {
-    ...fontSize.sm,
-    color: colors.slate[500],
-    fontWeight: "500",
-  },
-});

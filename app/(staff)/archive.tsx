@@ -1,21 +1,23 @@
+import { useState, useCallback } from "react";
 import { View, FlatList, RefreshControl, StyleSheet } from "react-native";
 import { useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { type Job } from "@/lib/types";
-import { colors, spacing } from "@/lib/theme";
+import { spacing } from "@/lib/theme";
+import { useTheme } from "@/lib/ThemeContext";
 import { JobCard } from "@/components/jobs/JobCard";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { EmptyState } from "@/components/ui/EmptyState";
 
 export default function ArchiveScreen() {
+  const { theme } = useTheme();
   const router = useRouter();
 
   const {
     data: jobs = [],
     isLoading,
     refetch,
-    isRefetching,
   } = useQuery({
     queryKey: ["jobs", "archived"],
     queryFn: async () => {
@@ -24,10 +26,20 @@ export default function ArchiveScreen() {
     },
   });
 
+  const [isManualRefresh, setIsManualRefresh] = useState(false);
+  const handleRefresh = useCallback(async () => {
+    setIsManualRefresh(true);
+    try {
+      await refetch();
+    } finally {
+      setIsManualRefresh(false);
+    }
+  }, [refetch]);
+
   if (isLoading) return <LoadingScreen message="Loading archive..." />;
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: theme.background }]}>
       {jobs.length === 0 ? (
         <EmptyState
           icon="archive-outline"
@@ -47,7 +59,7 @@ export default function ArchiveScreen() {
             </View>
           )}
           refreshControl={
-            <RefreshControl refreshing={isRefetching} onRefresh={refetch} />
+            <RefreshControl refreshing={isManualRefresh} onRefresh={handleRefresh} />
           }
           contentContainerStyle={styles.listContent}
         />
@@ -59,7 +71,6 @@ export default function ArchiveScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.slate[50],
   },
   listContent: {
     padding: spacing[4],

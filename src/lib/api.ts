@@ -3,7 +3,9 @@ import * as SecureStore from "expo-secure-store";
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:3000";
 
 const STAFF_COOKIE_KEY = "staff_session_cookie";
+const STAFF_SESSION_CACHE_KEY = "staff_session_cache";
 const CUSTOMER_COOKIE_KEY = "customer_session_cookie";
+const CUSTOMER_ROLE_KEY = "customer_role_persisted";
 
 async function getStoredCookie(key: string): Promise<string | null> {
   try {
@@ -35,6 +37,11 @@ function extractCookieValue(
     }
   }
   return null;
+}
+
+export function resolveUrl(url: string): string {
+  if (!url || url.startsWith("http")) return url;
+  return `${API_URL}${url.startsWith("/") ? "" : "/"}${url}`;
 }
 
 export type AuthRole = "staff" | "customer" | null;
@@ -165,10 +172,29 @@ export const api = {
     }),
 };
 
+export async function persistCustomerRole(): Promise<void> {
+  await storeCookie(CUSTOMER_ROLE_KEY, "true");
+}
+
+export async function clearCustomerRole(): Promise<void> {
+  await clearCookie(CUSTOMER_ROLE_KEY);
+}
+
+export async function hasPersistedCustomerRole(): Promise<boolean> {
+  const val = await getStoredCookie(CUSTOMER_ROLE_KEY);
+  return val === "true";
+}
+
+interface StaffLoginResult {
+  ok: boolean;
+  error?: string;
+  user?: { id: string; email: string; name?: string };
+}
+
 export async function staffLogin(
   email: string,
   password: string
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<StaffLoginResult> {
   try {
     const res = await fetch(`${API_URL}/api/auth/mobile-login`, {
       method: "POST",
@@ -188,12 +214,15 @@ export async function staffLogin(
       return { ok: false, error: data.error ?? "Login failed" };
     }
 
-    const { token } = data as { token: string };
+    const { token, user } = data as {
+      token: string;
+      user?: { id: string; email: string; name?: string };
+    };
     await storeCookie(
       STAFF_COOKIE_KEY,
       `next-auth.session-token=${token}`
     );
-    return { ok: true };
+    return { ok: true, user };
   } catch (e) {
     return {
       ok: false,
@@ -204,6 +233,7 @@ export async function staffLogin(
 
 export async function staffLogout(): Promise<void> {
   await clearCookie(STAFF_COOKIE_KEY);
+  await clearCachedStaffSession();
 }
 
 export async function customerLogout(): Promise<void> {
@@ -219,13 +249,11 @@ export async function isStaffAuthenticated(): Promise<boolean> {
   const cookie = await getStoredCookie(STAFF_COOKIE_KEY);
   if (!cookie) return false;
   try {
-    const res = await fetch(`${API_URL}/api/auth/session`, {
-      headers: { Cookie: cookie },
-      credentials: "omit",
-    });
-    if (!res.ok) return false;
-    const session = await res.json();
-    return !!session?.user?.email;
+    const { data } = await api.get<{ user?: { email?: string } }>(
+      "/api/auth/session",
+      { role: "staff" }
+    );
+    return !!data?.user?.email;
   } catch {
     return false;
   }
@@ -244,19 +272,41 @@ export async function isCustomerAuthenticated(): Promise<boolean> {
   }
 }
 
-export async function getStaffSession(): Promise<{
-  user: { id: string; email: string; name?: string };
-} | null> {
+type StaffSession = { user: { id: string; email: string; name?: string } };
+
+export async function cacheStaffSession(
+  session: StaffSession
+): Promise<void> {
+  await storeCookie(STAFF_SESSION_CACHE_KEY, JSON.stringify(session));
+}
+
+export async function getCachedStaffSession(): Promise<StaffSession | null> {
+  try {
+    const raw = await getStoredCookie(STAFF_SESSION_CACHE_KEY);
+    if (!raw) return null;
+    const session = JSON.parse(raw) as StaffSession;
+    return session?.user?.email ? session : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearCachedStaffSession(): Promise<void> {
+  await clearCookie(STAFF_SESSION_CACHE_KEY);
+}
+
+export async function getStaffSession(): Promise<StaffSession | null> {
   const cookie = await getStoredCookie(STAFF_COOKIE_KEY);
   if (!cookie) return null;
   try {
-    const res = await fetch(`${API_URL}/api/auth/session`, {
-      headers: { Cookie: cookie },
-      credentials: "omit",
+    const { data } = await api.get<StaffSession>("/api/auth/session", {
+      role: "staff",
     });
-    if (!res.ok) return null;
-    const session = await res.json();
-    return session?.user?.email ? session : null;
+    if (data?.user?.email) {
+      await cacheStaffSession(data);
+      return data;
+    }
+    return null;
   } catch {
     return null;
   }

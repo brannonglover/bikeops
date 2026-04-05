@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import {
   View,
   Text,
@@ -8,24 +8,29 @@ import {
   RefreshControl,
   StyleSheet,
   Image,
+  Linking,
 } from "react-native";
 import { useLocalSearchParams, useRouter, Stack } from "expo-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/lib/api";
 import { type Customer } from "@/lib/types";
-import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
+import { spacing, fontSize, borderRadius, colors } from "@/lib/theme";
+import { useTheme } from "@/lib/ThemeContext";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
-import { customerName } from "@/lib/format";
+import { ImageViewer } from "@/components/ui/ImageViewer";
+import { customerName, formatPhoneNumber, unformatPhoneNumber } from "@/lib/format";
 
 export default function CustomerDetailScreen() {
+  const { theme } = useTheme();
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
+  const [viewingImageUrl, setViewingImageUrl] = useState<string | null>(null);
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
@@ -37,7 +42,6 @@ export default function CustomerDetailScreen() {
     data: customer,
     isLoading,
     refetch,
-    isRefetching,
   } = useQuery({
     queryKey: ["customer", id],
     queryFn: async () => {
@@ -52,6 +56,16 @@ export default function CustomerDetailScreen() {
     },
     enabled: !!id,
   });
+
+  const [isManualRefresh, setIsManualRefresh] = useState(false);
+  const handleRefresh = useCallback(async () => {
+    setIsManualRefresh(true);
+    try {
+      await refetch();
+    } finally {
+      setIsManualRefresh(false);
+    }
+  }, [refetch]);
 
   const updateCustomer = useMutation({
     mutationFn: async () => {
@@ -91,22 +105,24 @@ export default function CustomerDetailScreen() {
               <Ionicons
                 name={editing ? "close" : "create-outline"}
                 size={20}
-                color={colors.slate[600]}
+                color={theme.icon}
               />
             </TouchableOpacity>
           ),
         }}
       />
       <ScrollView
-        style={styles.container}
+        style={[styles.container, { backgroundColor: theme.background }]}
         contentContainerStyle={styles.content}
         refreshControl={
-          <RefreshControl refreshing={isRefetching} onRefresh={refetch} />
+          <RefreshControl refreshing={isManualRefresh} onRefresh={handleRefresh} />
         }
       >
         {editing ? (
           <Card style={styles.section}>
-            <Text style={styles.sectionTitle}>Edit Customer</Text>
+            <Text style={[styles.sectionTitle, { color: theme.textHeading }]}>
+              Edit Customer
+            </Text>
             <Input
               label="First Name"
               value={firstName}
@@ -129,8 +145,8 @@ export default function CustomerDetailScreen() {
             />
             <Input
               label="Phone"
-              value={phone}
-              onChangeText={setPhone}
+              value={formatPhoneNumber(phone)}
+              onChangeText={(text) => setPhone(unformatPhoneNumber(text))}
               keyboardType="phone-pad"
               containerStyle={styles.inputGap}
             />
@@ -159,56 +175,95 @@ export default function CustomerDetailScreen() {
         ) : (
           <>
             <Card style={styles.section}>
-              <Text style={styles.sectionTitle}>Contact</Text>
+              <Text style={[styles.sectionTitle, { color: theme.textHeading }]}>
+                Contact
+              </Text>
               {customer.email ? (
-                <View style={styles.infoRow}>
-                  <Ionicons name="mail-outline" size={16} color={colors.slate[400]} />
-                  <Text style={styles.infoText}>{customer.email}</Text>
-                </View>
+                <TouchableOpacity
+                  style={styles.infoRow}
+                  onPress={() => Linking.openURL(`mailto:${customer.email}`)}
+                  activeOpacity={0.6}
+                >
+                  <Ionicons name="mail-outline" size={16} color={theme.dark ? colors.blue[100] : colors.blue[500]} />
+                  <Text style={[styles.infoText, { color: theme.dark ? colors.blue[100] : colors.blue[500] }]}>
+                    {customer.email}
+                  </Text>
+                </TouchableOpacity>
               ) : null}
               {customer.phone ? (
-                <View style={styles.infoRow}>
-                  <Ionicons name="call-outline" size={16} color={colors.slate[400]} />
-                  <Text style={styles.infoText}>{customer.phone}</Text>
-                </View>
+                <TouchableOpacity
+                  style={styles.infoRow}
+                  onPress={() => Linking.openURL(`tel:${customer.phone}`)}
+                  activeOpacity={0.6}
+                >
+                  <Ionicons name="call-outline" size={16} color={theme.dark ? colors.blue[100] : colors.blue[500]} />
+                  <Text style={[styles.infoText, { color: theme.dark ? colors.blue[100] : colors.blue[500] }]}>
+                    {customer.phone}
+                  </Text>
+                </TouchableOpacity>
               ) : null}
               {customer.address ? (
                 <View style={styles.infoRow}>
-                  <Ionicons name="location-outline" size={16} color={colors.slate[400]} />
-                  <Text style={styles.infoText}>{customer.address}</Text>
+                  <Ionicons name="location-outline" size={16} color={theme.icon} />
+                  <Text style={[styles.infoText, { color: theme.text }]}>
+                    {customer.address}
+                  </Text>
                 </View>
               ) : null}
               {customer.notes ? (
                 <View style={styles.infoRow}>
-                  <Ionicons name="document-text-outline" size={16} color={colors.slate[400]} />
-                  <Text style={styles.infoText}>{customer.notes}</Text>
+                  <Ionicons
+                    name="document-text-outline"
+                    size={16}
+                    color={theme.icon}
+                  />
+                  <Text style={[styles.infoText, { color: theme.text }]}>
+                    {customer.notes}
+                  </Text>
                 </View>
               ) : null}
             </Card>
 
             {customer.bikes && customer.bikes.length > 0 ? (
               <Card style={styles.section}>
-                <Text style={styles.sectionTitle}>
+                <Text style={[styles.sectionTitle, { color: theme.textHeading }]}>
                   Bikes ({customer.bikes.length})
                 </Text>
                 {customer.bikes.map((bike) => (
                   <View key={bike.id} style={styles.bikeRow}>
                     {bike.imageUrl ? (
-                      <Image
-                        source={{ uri: bike.imageUrl }}
-                        style={styles.bikeImage}
-                      />
+                      <TouchableOpacity
+                        activeOpacity={0.8}
+                        onPress={() => setViewingImageUrl(bike.imageUrl!)}
+                      >
+                        <Image
+                          source={{ uri: bike.imageUrl }}
+                          style={[
+                            styles.bikeImage,
+                            { backgroundColor: theme.subtleBg },
+                          ]}
+                        />
+                      </TouchableOpacity>
                     ) : (
-                      <View style={styles.bikePlaceholder}>
-                        <Ionicons name="bicycle" size={20} color={colors.slate[300]} />
+                      <View
+                        style={[
+                          styles.bikePlaceholder,
+                          { backgroundColor: theme.subtleBg },
+                        ]}
+                      >
+                        <Ionicons name="bicycle" size={20} color={theme.iconMuted} />
                       </View>
                     )}
                     <View>
-                      <Text style={styles.bikeName}>
+                      <Text style={[styles.bikeName, { color: theme.text }]}>
                         {bike.make} {bike.model}
                       </Text>
                       {bike.nickname ? (
-                        <Text style={styles.bikeNickname}>{bike.nickname}</Text>
+                        <Text
+                          style={[styles.bikeNickname, { color: theme.textSecondary }]}
+                        >
+                          {bike.nickname}
+                        </Text>
                       ) : null}
                     </View>
                   </View>
@@ -226,6 +281,7 @@ export default function CustomerDetailScreen() {
           </>
         )}
       </ScrollView>
+      <ImageViewer uri={viewingImageUrl} onClose={() => setViewingImageUrl(null)} />
     </>
   );
 }
@@ -233,7 +289,6 @@ export default function CustomerDetailScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.slate[50],
   },
   content: {
     padding: spacing[4],
@@ -246,7 +301,6 @@ const styles = StyleSheet.create({
   sectionTitle: {
     ...fontSize.sm,
     fontWeight: "700",
-    color: colors.slate[800],
     textTransform: "uppercase",
     letterSpacing: 0.5,
   },
@@ -260,7 +314,6 @@ const styles = StyleSheet.create({
   },
   infoText: {
     ...fontSize.sm,
-    color: colors.slate[700],
     flex: 1,
     lineHeight: 20,
   },
@@ -273,23 +326,19 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: borderRadius.lg,
-    backgroundColor: colors.slate[100],
   },
   bikePlaceholder: {
     width: 48,
     height: 48,
     borderRadius: borderRadius.lg,
-    backgroundColor: colors.slate[100],
     justifyContent: "center",
     alignItems: "center",
   },
   bikeName: {
     ...fontSize.sm,
     fontWeight: "600",
-    color: colors.slate[900],
   },
   bikeNickname: {
     ...fontSize.xs,
-    color: colors.slate[500],
   },
 });

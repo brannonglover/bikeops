@@ -7,6 +7,7 @@ import {
   type TextStyle,
 } from "react-native";
 import { colors, borderRadius, fontSize, spacing } from "@/lib/theme";
+import { useTheme } from "@/lib/ThemeContext";
 
 type Variant = "primary" | "secondary" | "danger" | "ghost";
 
@@ -21,33 +22,6 @@ interface ButtonProps {
   size?: "sm" | "md" | "lg";
 }
 
-const variantStyles: Record<
-  Variant,
-  { bg: string; bgDisabled: string; text: string; border?: string }
-> = {
-  primary: {
-    bg: colors.amber[500],
-    bgDisabled: colors.amber[500] + "80",
-    text: colors.white,
-  },
-  secondary: {
-    bg: colors.white,
-    bgDisabled: colors.slate[100],
-    text: colors.slate[700],
-    border: colors.slate[300],
-  },
-  danger: {
-    bg: colors.red[600],
-    bgDisabled: colors.red[600] + "80",
-    text: colors.white,
-  },
-  ghost: {
-    bg: colors.transparent,
-    bgDisabled: colors.transparent,
-    text: colors.slate[700],
-  },
-};
-
 export function Button({
   title,
   onPress,
@@ -58,6 +32,35 @@ export function Button({
   textStyle,
   size = "md",
 }: ButtonProps) {
+  const { theme } = useTheme();
+
+  const variantStyles: Record<
+    Variant,
+    { bg: string; bgDisabled: string; text: string; border?: string }
+  > = {
+    primary: {
+      bg: colors.amber[500],
+      bgDisabled: colors.amber[500] + "80",
+      text: colors.white,
+    },
+    secondary: {
+      bg: theme.surface,
+      bgDisabled: theme.subtleBg,
+      text: theme.textTertiary,
+      border: theme.inputBorder,
+    },
+    danger: {
+      bg: colors.red[600],
+      bgDisabled: colors.red[600] + "80",
+      text: colors.white,
+    },
+    ghost: {
+      bg: colors.transparent,
+      bgDisabled: colors.transparent,
+      text: theme.textTertiary,
+    },
+  };
+
   const v = variantStyles[variant];
   const isDisabled = disabled || loading;
 

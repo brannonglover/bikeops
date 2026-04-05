@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback, useMemo } from "react";
 import {
   View,
   Text,
@@ -15,6 +15,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/lib/api";
 import { type Product } from "@/lib/types";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
+import { useTheme } from "@/lib/ThemeContext";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
@@ -22,6 +23,7 @@ import { Button } from "@/components/ui/Button";
 import { formatCurrency } from "@/lib/format";
 
 export default function ProductsScreen() {
+  const { theme } = useTheme();
   const queryClient = useQueryClient();
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -30,11 +32,80 @@ export default function ProductsScreen() {
   const [price, setPrice] = useState("");
   const [stockQuantity, setStockQuantity] = useState("");
 
+  const styles = useMemo(
+    () =>
+      StyleSheet.create({
+        container: { flex: 1, backgroundColor: theme.background },
+        toolbar: {
+          padding: spacing[3],
+          backgroundColor: theme.surface,
+          borderBottomWidth: 1,
+          borderBottomColor: theme.surfaceBorder,
+        },
+        addButton: {
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: spacing[1],
+          paddingVertical: spacing[2],
+          backgroundColor: colors.amber[500],
+          borderRadius: borderRadius.lg,
+        },
+        addText: { ...fontSize.sm, fontWeight: "600", color: colors.white },
+        listContent: { paddingBottom: spacing[12] },
+        row: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: spacing[3],
+          padding: spacing[4],
+          backgroundColor: theme.surface,
+          borderBottomWidth: 1,
+          borderBottomColor: theme.surfaceBorderSubtle,
+        },
+        productImage: {
+          width: 48,
+          height: 48,
+          borderRadius: borderRadius.lg,
+          backgroundColor: theme.placeholderBg,
+        },
+        productPlaceholder: {
+          width: 48,
+          height: 48,
+          borderRadius: borderRadius.lg,
+          backgroundColor: theme.placeholderBg,
+          justifyContent: "center",
+          alignItems: "center",
+        },
+        rowInfo: { flex: 1, gap: 2 },
+        rowName: { ...fontSize.sm, fontWeight: "600", color: theme.text },
+        rowDesc: { ...fontSize.xs, color: theme.textSecondary },
+        stockText: { ...fontSize.xs, color: theme.textMuted },
+        rowPrice: {
+          ...fontSize.sm,
+          fontWeight: "600",
+          color: theme.textTertiary,
+          fontVariant: ["tabular-nums"],
+        },
+        modalContainer: { flex: 1, backgroundColor: theme.surface },
+        modalHeader: {
+          flexDirection: "row",
+          justifyContent: "space-between",
+          alignItems: "center",
+          padding: spacing[4],
+          borderBottomWidth: 1,
+          borderBottomColor: theme.surfaceBorder,
+        },
+        modalTitle: { ...fontSize.lg, fontWeight: "600", color: theme.text },
+        modalContent: { padding: spacing[4] },
+        inputGap: { marginBottom: spacing[3] },
+      }),
+    [theme]
+  );
+
   const {
     data: products = [],
     isLoading,
     refetch,
-    isRefetching,
   } = useQuery({
     queryKey: ["products"],
     queryFn: async () => {
@@ -42,6 +113,16 @@ export default function ProductsScreen() {
       return data;
     },
   });
+
+  const [isManualRefresh, setIsManualRefresh] = useState(false);
+  const handleRefresh = useCallback(async () => {
+    setIsManualRefresh(true);
+    try {
+      await refetch();
+    } finally {
+      setIsManualRefresh(false);
+    }
+  }, [refetch]);
 
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -114,7 +195,7 @@ export default function ProductsScreen() {
           data={products}
           keyExtractor={(item) => item.id}
           refreshControl={
-            <RefreshControl refreshing={isRefetching} onRefresh={refetch} />
+            <RefreshControl refreshing={isManualRefresh} onRefresh={handleRefresh} />
           }
           renderItem={({ item }) => (
             <TouchableOpacity
@@ -135,7 +216,7 @@ export default function ProductsScreen() {
                 <Image source={{ uri: item.imageUrl }} style={styles.productImage} />
               ) : (
                 <View style={styles.productPlaceholder}>
-                  <Ionicons name="cube-outline" size={20} color={colors.slate[300]} />
+                  <Ionicons name="cube-outline" size={20} color={theme.iconMuted} />
                 </View>
               )}
               <View style={styles.rowInfo}>
@@ -170,7 +251,7 @@ export default function ProductsScreen() {
               {editingId ? "Edit Product" : "New Product"}
             </Text>
             <TouchableOpacity onPress={closeModal}>
-              <Ionicons name="close" size={24} color={colors.slate[500]} />
+              <Ionicons name="close" size={24} color={theme.icon} />
             </TouchableOpacity>
           </View>
           <View style={styles.modalContent}>
@@ -190,69 +271,3 @@ export default function ProductsScreen() {
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.slate[50] },
-  toolbar: {
-    padding: spacing[3],
-    backgroundColor: colors.white,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.slate[200],
-  },
-  addButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: spacing[1],
-    paddingVertical: spacing[2],
-    backgroundColor: colors.amber[500],
-    borderRadius: borderRadius.lg,
-  },
-  addText: { ...fontSize.sm, fontWeight: "600", color: colors.white },
-  listContent: { paddingBottom: spacing[12] },
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing[3],
-    padding: spacing[4],
-    backgroundColor: colors.white,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.slate[100],
-  },
-  productImage: {
-    width: 48,
-    height: 48,
-    borderRadius: borderRadius.lg,
-    backgroundColor: colors.slate[100],
-  },
-  productPlaceholder: {
-    width: 48,
-    height: 48,
-    borderRadius: borderRadius.lg,
-    backgroundColor: colors.slate[100],
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  rowInfo: { flex: 1, gap: 2 },
-  rowName: { ...fontSize.sm, fontWeight: "600", color: colors.slate[900] },
-  rowDesc: { ...fontSize.xs, color: colors.slate[500] },
-  stockText: { ...fontSize.xs, color: colors.slate[400] },
-  rowPrice: {
-    ...fontSize.sm,
-    fontWeight: "600",
-    color: colors.slate[700],
-    fontVariant: ["tabular-nums"],
-  },
-  modalContainer: { flex: 1, backgroundColor: colors.white },
-  modalHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    padding: spacing[4],
-    borderBottomWidth: 1,
-    borderBottomColor: colors.slate[200],
-  },
-  modalTitle: { ...fontSize.lg, fontWeight: "600", color: colors.slate[900] },
-  modalContent: { padding: spacing[4] },
-  inputGap: { marginBottom: spacing[3] },
-});

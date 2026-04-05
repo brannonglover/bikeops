@@ -1,5 +1,6 @@
-import { TextInput, View, Text, StyleSheet, type TextInputProps, type ViewStyle } from "react-native";
+import { TextInput, View, Text, type TextInputProps, type ViewStyle } from "react-native";
 import { colors, borderRadius, fontSize, spacing } from "@/lib/theme";
+import { useTheme } from "@/lib/ThemeContext";
 
 interface InputProps extends TextInputProps {
   label?: string;
@@ -8,42 +9,37 @@ interface InputProps extends TextInputProps {
 }
 
 export function Input({ label, error, containerStyle, style, ...props }: InputProps) {
+  const { theme } = useTheme();
+
   return (
     <View style={containerStyle}>
-      {label ? <Text style={styles.label}>{label}</Text> : null}
+      {label ? (
+        <Text style={{ ...fontSize.sm, fontWeight: "500", color: theme.textTertiary, marginBottom: spacing[1] }}>
+          {label}
+        </Text>
+      ) : null}
       <TextInput
-        style={[styles.input, error ? styles.inputError : null, style]}
-        placeholderTextColor={colors.slate[400]}
+        style={[
+          {
+            borderWidth: 1,
+            borderColor: error ? colors.red[500] : theme.inputBorder,
+            borderRadius: borderRadius.lg,
+            paddingHorizontal: spacing[3],
+            paddingVertical: spacing[2.5],
+            fontSize: fontSize.base.fontSize,
+            color: theme.inputText,
+            backgroundColor: theme.inputBg,
+          },
+          style,
+        ]}
+        placeholderTextColor={theme.textMuted}
         {...props}
       />
-      {error ? <Text style={styles.error}>{error}</Text> : null}
+      {error ? (
+        <Text style={{ ...fontSize.xs, color: colors.red[600], marginTop: spacing[1] }}>
+          {error}
+        </Text>
+      ) : null}
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  label: {
-    ...fontSize.sm,
-    fontWeight: "500",
-    color: colors.slate[700],
-    marginBottom: spacing[1],
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: colors.slate[300],
-    borderRadius: borderRadius.lg,
-    paddingHorizontal: spacing[3],
-    paddingVertical: spacing[2.5],
-    ...fontSize.base,
-    color: colors.slate[900],
-    backgroundColor: colors.white,
-  },
-  inputError: {
-    borderColor: colors.red[500],
-  },
-  error: {
-    ...fontSize.xs,
-    color: colors.red[600],
-    marginTop: spacing[1],
-  },
-});

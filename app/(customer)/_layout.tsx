@@ -1,12 +1,16 @@
 import { Stack } from "expo-router";
-import { colors } from "@/lib/theme";
+import { useTheme } from "@/lib/ThemeContext";
+import { ShopLogo } from "@/components/ui/ShopLogo";
 
 export default function CustomerLayout() {
+  const { theme } = useTheme();
+
   return (
     <Stack
       screenOptions={{
-        headerStyle: { backgroundColor: colors.white },
-        headerTitleStyle: { fontWeight: "700", color: colors.slate[900] },
+        headerStyle: { backgroundColor: theme.headerBg },
+        headerLeft: () => <ShopLogo />,
+        headerTitleStyle: { fontWeight: "700", color: theme.text },
       }}
     >
       <Stack.Screen name="book" options={{ title: "Book a Repair" }} />

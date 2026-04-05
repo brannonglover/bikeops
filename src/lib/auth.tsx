@@ -9,11 +9,15 @@ import {
   staffLogin as apiStaffLogin,
   staffLogout as apiStaffLogout,
   customerLogout as apiCustomerLogout,
-  isStaffAuthenticated,
   isCustomerAuthenticated,
-  getStaffSession,
+  getCachedStaffSession,
+  cacheStaffSession,
+  persistCustomerRole,
+  clearCustomerRole,
+  hasPersistedCustomerRole,
   type AuthRole,
 } from "./api";
+import { unregisterPushToken } from "./notifications";
 
 interface StaffUser {
   id: string;
@@ -27,9 +31,9 @@ interface AuthState {
   loading: boolean;
   staffLogin: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
   staffLogout: () => Promise<void>;
-  customerLogin: () => void;
+  customerLogin: () => Promise<void>;
   customerLogout: () => Promise<void>;
-  setCustomerAuthenticated: () => void;
+  setCustomerAuthenticated: () => Promise<void>;
   refresh: () => Promise<void>;
 }
 
@@ -42,18 +46,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const refresh = useCallback(async () => {
     try {
-      const session = await getStaffSession();
-      if (session?.user) {
+      const cachedSession = await getCachedStaffSession();
+      if (cachedSession?.user) {
         setRole("staff");
-        setStaffUser(session.user);
+        setStaffUser(cachedSession.user);
+        clearCustomerRole().catch(() => {});
         return;
       }
+
+      const customerPersisted = await hasPersistedCustomerRole();
+      if (customerPersisted) {
+        setRole("customer");
+        setStaffUser(null);
+        return;
+      }
+
       const customerAuth = await isCustomerAuthenticated();
       if (customerAuth) {
         setRole("customer");
         setStaffUser(null);
         return;
       }
+
       setRole(null);
       setStaffUser(null);
     } catch {
@@ -70,11 +84,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     async (email: string, password: string) => {
       const result = await apiStaffLogin(email, password);
       if (result.ok) {
-        const session = await getStaffSession();
-        if (session?.user) {
-          setRole("staff");
-          setStaffUser(session.user);
-        }
+        const user = result.user ?? { id: "", email, name: "" };
+        const session = { user };
+        await cacheStaffSession(session);
+        setRole("staff");
+        setStaffUser(user);
+        clearCustomerRole().catch(() => {});
       }
       return result;
     },
@@ -82,21 +97,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const staffLogout = useCallback(async () => {
+    await unregisterPushToken("staff");
     await apiStaffLogout();
     setRole(null);
     setStaffUser(null);
   }, []);
 
-  const customerLogin = useCallback(() => {
+  const customerLogin = useCallback(async () => {
+    await persistCustomerRole();
     setRole("customer");
   }, []);
 
-  const setCustomerAuthenticated = useCallback(() => {
+  const setCustomerAuthenticated = useCallback(async () => {
+    await persistCustomerRole();
     setRole("customer");
   }, []);
 
   const customerLogout = useCallback(async () => {
+    await unregisterPushToken("customer");
     await apiCustomerLogout();
+    await clearCustomerRole();
     setRole(null);
   }, []);
 

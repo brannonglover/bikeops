@@ -1,19 +1,21 @@
+import { useState, useCallback } from "react";
 import { View, Text, FlatList, RefreshControl, StyleSheet } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { type EmailTemplate } from "@/lib/types";
-import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
+import { colors, spacing, fontSize } from "@/lib/theme";
+import { useTheme } from "@/lib/ThemeContext";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Card } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 
 export default function EmailTemplatesScreen() {
+  const { theme } = useTheme();
   const {
     data: templates = [],
     isLoading,
     refetch,
-    isRefetching,
   } = useQuery({
     queryKey: ["email-templates"],
     queryFn: async () => {
@@ -22,43 +24,56 @@ export default function EmailTemplatesScreen() {
     },
   });
 
+  const [isManualRefresh, setIsManualRefresh] = useState(false);
+  const handleRefresh = useCallback(async () => {
+    setIsManualRefresh(true);
+    try {
+      await refetch();
+    } finally {
+      setIsManualRefresh(false);
+    }
+  }, [refetch]);
+
   if (isLoading) return <LoadingScreen message="Loading templates..." />;
 
   if (templates.length === 0) {
     return (
-      <EmptyState
-        icon="mail-outline"
-        title="No email templates"
-        message="Templates are created via the web app."
-      />
+      <View style={[styles.container, { backgroundColor: theme.background }]}>
+        <EmptyState
+          icon="mail-outline"
+          title="No email templates"
+          message="Templates are created via the web app."
+        />
+      </View>
     );
   }
+
+  const badgeBg = theme.dark ? colors.blue[600] + "33" : colors.blue[50];
+  const badgeColor = theme.dark ? colors.blue[100] : colors.blue[600];
 
   return (
     <FlatList
       data={templates}
       keyExtractor={(item) => item.id}
-      style={styles.container}
+      style={[styles.container, { backgroundColor: theme.background }]}
       contentContainerStyle={styles.listContent}
       refreshControl={
-        <RefreshControl refreshing={isRefetching} onRefresh={refetch} />
+        <RefreshControl refreshing={isManualRefresh} onRefresh={handleRefresh} />
       }
       renderItem={({ item }) => (
         <Card style={styles.card}>
           <View style={styles.header}>
-            <Text style={styles.name}>{item.name}</Text>
-            <Badge
-              label={item.triggerType}
-              color={colors.blue[600]}
-              backgroundColor={colors.blue[50]}
-            />
+            <Text style={[styles.name, { color: theme.text }]}>{item.name}</Text>
+            <Badge label={item.triggerType} color={badgeColor} backgroundColor={badgeBg} />
           </View>
-          <Text style={styles.subject}>Subject: {item.subject}</Text>
+          <Text style={[styles.subject, { color: theme.textTertiary }]}>
+            Subject: {item.subject}
+          </Text>
           {item.stage ? (
-            <Text style={styles.meta}>Stage: {item.stage}</Text>
+            <Text style={[styles.meta, { color: theme.textMuted }]}>Stage: {item.stage}</Text>
           ) : null}
           {item.delayDays != null ? (
-            <Text style={styles.meta}>
+            <Text style={[styles.meta, { color: theme.textMuted }]}>
               Delay: {item.delayDays} day{item.delayDays === 1 ? "" : "s"}
             </Text>
           ) : null}
@@ -71,7 +86,6 @@ export default function EmailTemplatesScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.slate[50],
   },
   listContent: {
     padding: spacing[4],
@@ -90,15 +104,12 @@ const styles = StyleSheet.create({
   name: {
     ...fontSize.sm,
     fontWeight: "600",
-    color: colors.slate[900],
     flex: 1,
   },
   subject: {
     ...fontSize.xs,
-    color: colors.slate[600],
   },
   meta: {
     ...fontSize.xs,
-    color: colors.slate[400],
   },
 });

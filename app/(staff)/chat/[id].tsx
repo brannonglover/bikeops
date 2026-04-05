@@ -1,37 +1,324 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import {
   View,
   Text,
   FlatList,
   TextInput,
   TouchableOpacity,
+  Pressable,
   KeyboardAvoidingView,
   Platform,
   Image,
+  Modal,
   StyleSheet,
   Alert,
+  Keyboard,
 } from "react-native";
 import { useLocalSearchParams, Stack } from "expo-router";
+import { useHeaderHeight } from "@react-navigation/elements";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
-import { api } from "@/lib/api";
+import { api, resolveUrl } from "@/lib/api";
 import { type ChatMessage, type Conversation } from "@/lib/types";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
+import { useTheme } from "@/lib/ThemeContext";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { Button } from "@/components/ui/Button";
+import { ImageViewer } from "@/components/ui/ImageViewer";
 import { customerName, formatTime } from "@/lib/format";
 
+function paramToString(v: string | string[] | undefined): string | undefined {
+  if (v === undefined) return undefined;
+  const s = Array.isArray(v) ? v[0] : v;
+  return s && s.length > 0 ? s : undefined;
+}
+
 const POLL_MS = 3000;
+const REACTION_EMOJIS = ["\u{1F44D}", "\u{2764}\u{FE0F}", "\u{1F602}", "\u{1F62E}", "\u{1F622}", "\u{1F64F}"];
 
 export default function ConversationScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { theme } = useTheme();
+  const params = useLocalSearchParams<{ id?: string | string[] }>();
+  const id = paramToString(params.id);
   const queryClient = useQueryClient();
-  const flatListRef = useRef<FlatList>(null);
+  const headerHeight = useHeaderHeight();
+  const flatListRef = useRef<FlatList<ChatMessage>>(null);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [pendingImages, setPendingImages] = useState<
     { id: string; url: string; filename: string }[]
   >([]);
+  const [editingMessage, setEditingMessage] = useState<ChatMessage | null>(null);
+  const [activeMessage, setActiveMessage] = useState<ChatMessage | null>(null);
+  const [viewingImageUrl, setViewingImageUrl] = useState<string | null>(null);
+
+  const styles = useMemo(
+    () =>
+      StyleSheet.create({
+        container: {
+          flex: 1,
+          backgroundColor: theme.surface,
+        },
+        messageList: {
+          padding: spacing[4],
+          paddingBottom: spacing[2],
+          gap: spacing[2],
+        },
+        messageWrapper: {
+          maxWidth: "80%",
+        },
+        messageWrapperOwn: {
+          alignSelf: "flex-end",
+        },
+        messageWrapperOther: {
+          alignSelf: "flex-start",
+        },
+        messageWrapperWithReaction: {
+          marginBottom: 14,
+        },
+        bubble: {
+          padding: spacing[3],
+          borderRadius: borderRadius["2xl"],
+          gap: spacing[1],
+        },
+        bubbleOwn: {
+          backgroundColor: colors.emerald[600],
+          borderBottomRightRadius: borderRadius.md,
+        },
+        bubbleOther: {
+          backgroundColor: theme.subtleBg,
+          borderBottomLeftRadius: borderRadius.md,
+        },
+        bubbleText: {
+          ...fontSize.sm,
+          lineHeight: 20,
+        },
+        bubbleTextOwn: {
+          color: colors.white,
+        },
+        bubbleTextOther: {
+          color: theme.text,
+        },
+        bubbleMeta: {
+          ...fontSize.xs,
+          alignSelf: "flex-end",
+        },
+        bubbleMetaOwn: {
+          color: colors.emerald[200],
+        },
+        bubbleMetaOther: {
+          color: theme.textMuted,
+        },
+        imageMessage: {
+          gap: spacing[1],
+        },
+        standaloneImage: {
+          width: 220,
+          height: 220,
+          borderRadius: borderRadius.xl,
+        },
+        inlineImage: {
+          width: 200,
+          height: 200,
+          borderRadius: borderRadius.lg,
+        },
+        imageMetaText: {
+          ...fontSize.xs,
+          color: theme.textMuted,
+          alignSelf: "flex-end",
+        },
+        typing: {
+          ...fontSize.sm,
+          color: theme.textSecondary,
+          fontStyle: "italic",
+          paddingVertical: spacing[2],
+        },
+        pendingRow: {
+          flexDirection: "row",
+          gap: spacing[2],
+          paddingHorizontal: spacing[4],
+          paddingVertical: spacing[2],
+          backgroundColor: theme.background,
+        },
+        pendingImageWrapper: {
+          position: "relative",
+        },
+        pendingImage: {
+          width: 60,
+          height: 60,
+          borderRadius: borderRadius.lg,
+          backgroundColor: theme.surfaceBorder,
+        },
+        pendingRemove: {
+          position: "absolute",
+          top: -4,
+          right: -4,
+          width: 20,
+          height: 20,
+          borderRadius: 10,
+          backgroundColor: colors.red[500],
+          justifyContent: "center",
+          alignItems: "center",
+        },
+        editBanner: {
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          paddingHorizontal: spacing[4],
+          paddingVertical: spacing[2],
+          backgroundColor: colors.emerald[50],
+          borderTopWidth: 1,
+          borderTopColor: colors.emerald[200],
+        },
+        editBannerContent: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: spacing[1.5],
+        },
+        editBannerText: {
+          ...fontSize.sm,
+          color: colors.emerald[700],
+          fontWeight: "500",
+        },
+        composer: {
+          flexDirection: "row",
+          alignItems: "flex-end",
+          gap: spacing[2],
+          padding: spacing[3],
+          borderTopWidth: 1,
+          borderTopColor: theme.surfaceBorder,
+          backgroundColor: theme.background,
+        },
+        imageButton: {
+          padding: spacing[2],
+        },
+        input: {
+          flex: 1,
+          borderWidth: 1,
+          borderColor: theme.inputBorder,
+          borderRadius: borderRadius.xl,
+          paddingHorizontal: spacing[3],
+          paddingVertical: spacing[2],
+          ...fontSize.sm,
+          color: theme.inputText,
+          backgroundColor: theme.inputBg,
+          maxHeight: 100,
+        },
+        sendButton: {
+          width: 40,
+          height: 40,
+          borderRadius: 20,
+          backgroundColor: colors.emerald[600],
+          justifyContent: "center",
+          alignItems: "center",
+        },
+        sendButtonDisabled: {
+          opacity: 0.5,
+        },
+        reactionRow: {
+          position: "absolute",
+          bottom: -12,
+          flexDirection: "row",
+          gap: spacing[0.5],
+        },
+        reactionRowOwn: {
+          left: spacing[2],
+        },
+        reactionRowOther: {
+          right: spacing[2],
+        },
+        reactionPill: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 2,
+          backgroundColor: theme.surface,
+          borderRadius: borderRadius.full,
+          paddingHorizontal: spacing[1],
+          paddingVertical: 2,
+          shadowColor: colors.black,
+          shadowOffset: { width: 0, height: 1 },
+          shadowOpacity: 0.15,
+          shadowRadius: 3,
+          elevation: 3,
+        },
+        reactionPillMine: {
+          backgroundColor: colors.emerald[50],
+        },
+        reactionPillEmoji: {
+          fontSize: 14,
+        },
+        reactionPillCount: {
+          ...fontSize.xs,
+          color: theme.textTertiary,
+        },
+        popupBackdrop: {
+          flex: 1,
+          backgroundColor: "rgba(0,0,0,0.3)",
+          justifyContent: "center",
+          alignItems: "center",
+        },
+        popupCard: {
+          backgroundColor: theme.surface,
+          borderRadius: borderRadius["2xl"],
+          paddingVertical: spacing[3],
+          paddingHorizontal: spacing[2],
+          width: 280,
+          shadowColor: colors.black,
+          shadowOffset: { width: 0, height: 4 },
+          shadowOpacity: 0.15,
+          shadowRadius: 12,
+          elevation: 8,
+        },
+        emojiRow: {
+          flexDirection: "row",
+          justifyContent: "space-around",
+          paddingHorizontal: spacing[1],
+          paddingBottom: spacing[2],
+        },
+        emojiButton: {
+          width: 40,
+          height: 40,
+          borderRadius: 20,
+          justifyContent: "center",
+          alignItems: "center",
+        },
+        emojiButtonSelected: {
+          backgroundColor: colors.emerald[100],
+        },
+        emojiText: {
+          fontSize: 24,
+        },
+        popupDivider: {
+          height: 1,
+          backgroundColor: theme.surfaceBorder,
+          marginBottom: spacing[1],
+        },
+        popupAction: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: spacing[2],
+          paddingVertical: spacing[2.5],
+          paddingHorizontal: spacing[3],
+          borderRadius: borderRadius.lg,
+        },
+        popupActionDestructive: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: spacing[2],
+          paddingVertical: spacing[2.5],
+          paddingHorizontal: spacing[3],
+          borderRadius: borderRadius.lg,
+        },
+        popupActionText: {
+          ...fontSize.sm,
+          fontWeight: "500",
+          color: theme.textTertiary,
+        },
+      }),
+    [theme]
+  );
 
   const { data: conversation } = useQuery({
     queryKey: ["conversation", id],
@@ -45,6 +332,8 @@ export default function ConversationScreen() {
   const {
     data: messagesData,
     isLoading,
+    isError,
+    refetch: refetchMessages,
   } = useQuery({
     queryKey: ["messages", id],
     queryFn: async () => {
@@ -79,6 +368,13 @@ export default function ConversationScreen() {
       setTimeout(() => flatListRef.current?.scrollToEnd({ animated: false }), 100);
     }
   }, [messages.length]);
+
+  useEffect(() => {
+    const sub = Keyboard.addListener("keyboardDidShow", () => {
+      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 50);
+    });
+    return () => sub.remove();
+  }, []);
 
   const handleSend = useCallback(async () => {
     if (!text.trim() && pendingImages.length === 0) return;
@@ -143,7 +439,103 @@ export default function ConversationScreen() {
     ]);
   };
 
+  const startEditing = useCallback((message: ChatMessage) => {
+    setEditingMessage(message);
+    setText(message.body || "");
+    setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
+  }, []);
+
+  const cancelEditing = useCallback(() => {
+    setEditingMessage(null);
+    setText("");
+    Keyboard.dismiss();
+  }, []);
+
+  const handleEdit = useCallback(async () => {
+    if (!editingMessage || !text.trim()) return;
+    setSending(true);
+    try {
+      await api.patch(
+        `/api/conversations/${id}/messages/${editingMessage.id}`,
+        { body: text.trim() }
+      );
+      setEditingMessage(null);
+      setText("");
+      queryClient.invalidateQueries({ queryKey: ["messages", id] });
+    } catch {
+      Alert.alert("Error", "Failed to edit message");
+    } finally {
+      setSending(false);
+    }
+  }, [editingMessage, text, id, queryClient]);
+
+  const toggleReaction = useCallback(
+    async (messageId: string, emoji: string) => {
+      const msg = messages.find((m) => m.id === messageId);
+      const myReaction = (msg?.reactions ?? []).find(
+        (r) => r.reactorType === "STAFF"
+      );
+      try {
+        if (myReaction?.emoji === emoji) {
+          await api.delete(
+            `/api/conversations/${id}/messages/${messageId}/reactions`
+          );
+        } else {
+          await api.post(
+            `/api/conversations/${id}/messages/${messageId}/reactions`,
+            { emoji }
+          );
+        }
+        queryClient.invalidateQueries({ queryKey: ["messages", id] });
+      } catch {
+        // silently fail
+      }
+    },
+    [id, messages, queryClient]
+  );
+
+  if (!id) {
+    return (
+      <>
+        <Stack.Screen options={{ title: "Chat" }} />
+        <EmptyState
+          icon="chatbubbles-outline"
+          title="Chat unavailable"
+          message="This conversation link is invalid. Go back and try again."
+        />
+      </>
+    );
+  }
+
   if (isLoading) return <LoadingScreen message="Loading messages..." />;
+
+  if (isError) {
+    return (
+      <>
+        <Stack.Screen options={{ title: "Conversation" }} />
+        <View
+          style={{
+            flex: 1,
+            justifyContent: "center",
+            padding: spacing[6],
+            gap: spacing[3],
+            backgroundColor: theme.surface,
+          }}
+        >
+          <Text
+            style={{
+              ...fontSize.sm,
+              color: theme.textSecondary,
+              textAlign: "center",
+            }}
+          >
+            Could not load messages. Check your connection and try again.
+          </Text>
+          <Button title="Retry" onPress={() => refetchMessages()} variant="secondary" />
+        </View>
+      </>
+    );
+  }
 
   return (
     <>
@@ -156,8 +548,8 @@ export default function ConversationScreen() {
       />
       <KeyboardAvoidingView
         style={styles.container}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-        keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={headerHeight}
       >
         <FlatList
           ref={flatListRef}
@@ -166,42 +558,115 @@ export default function ConversationScreen() {
           contentContainerStyle={styles.messageList}
           renderItem={({ item }) => {
             const isOwn = item.sender === "STAFF";
+            const imageOnly =
+              (item.attachments?.length ?? 0) > 0 && !item.body;
+            const hasReactions = (item.reactions?.length ?? 0) > 0;
             return (
-              <TouchableOpacity
-                onLongPress={isOwn ? () => handleDeleteMessage(item.id) : undefined}
-                activeOpacity={0.8}
+              <View
                 style={[
-                  styles.bubble,
-                  isOwn ? styles.bubbleOwn : styles.bubbleOther,
+                  styles.messageWrapper,
+                  isOwn
+                    ? styles.messageWrapperOwn
+                    : styles.messageWrapperOther,
+                  hasReactions && styles.messageWrapperWithReaction,
                 ]}
               >
-                {item.attachments?.map((att: { id: string; url: string }) => (
-                  <Image
-                    key={att.id}
-                    source={{ uri: att.url }}
-                    style={styles.attachmentImage}
-                  />
-                ))}
-                {item.body ? (
+                <TouchableOpacity
+                  onLongPress={() => setActiveMessage(item)}
+                  activeOpacity={0.7}
+                  style={
+                    imageOnly
+                      ? styles.imageMessage
+                      : [
+                          styles.bubble,
+                          isOwn ? styles.bubbleOwn : styles.bubbleOther,
+                        ]
+                  }
+                >
+                  {item.attachments?.map((att: { id: string; url: string }) => (
+                    <TouchableOpacity
+                      key={att.id}
+                      activeOpacity={0.8}
+                      onPress={() => setViewingImageUrl(resolveUrl(att.url))}
+                      onLongPress={() => setActiveMessage(item)}
+                    >
+                      <Image
+                        source={{ uri: resolveUrl(att.url) }}
+                        style={
+                          imageOnly
+                            ? styles.standaloneImage
+                            : styles.inlineImage
+                        }
+                        resizeMode="cover"
+                      />
+                    </TouchableOpacity>
+                  ))}
+                  {item.body ? (
+                    <Text
+                      style={[
+                        styles.bubbleText,
+                        isOwn ? styles.bubbleTextOwn : styles.bubbleTextOther,
+                      ]}
+                    >
+                      {item.body}
+                    </Text>
+                  ) : null}
                   <Text
                     style={[
-                      styles.bubbleText,
-                      isOwn ? styles.bubbleTextOwn : styles.bubbleTextOther,
+                      styles.bubbleMeta,
+                      imageOnly
+                        ? styles.imageMetaText
+                        : isOwn
+                          ? styles.bubbleMetaOwn
+                          : styles.bubbleMetaOther,
                     ]}
                   >
-                    {item.body}
+                    {formatTime(item.createdAt)}
+                    {item.editedAt ? " (edited)" : ""}
                   </Text>
+                </TouchableOpacity>
+                {hasReactions ? (
+                  <View
+                    style={[
+                      styles.reactionRow,
+                      isOwn
+                        ? styles.reactionRowOwn
+                        : styles.reactionRowOther,
+                    ]}
+                  >
+                    {Object.entries(
+                      (item.reactions ?? []).reduce<Record<string, number>>(
+                        (acc, r) => {
+                          acc[r.emoji] = (acc[r.emoji] || 0) + 1;
+                          return acc;
+                        },
+                        {}
+                      )
+                    ).map(([emoji, count]) => {
+                      const isMine = (item.reactions ?? []).some(
+                        (r) => r.emoji === emoji && r.reactorType === "STAFF"
+                      );
+                      return (
+                        <TouchableOpacity
+                          key={emoji}
+                          onPress={() => toggleReaction(item.id, emoji)}
+                          style={[
+                            styles.reactionPill,
+                            isMine && styles.reactionPillMine,
+                          ]}
+                        >
+                          <Text style={styles.reactionPillEmoji}>{emoji}</Text>
+                          {count > 1 ? (
+                            <Text style={styles.reactionPillCount}>
+                              {count}
+                            </Text>
+                          ) : null}
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
                 ) : null}
-                <Text
-                  style={[
-                    styles.bubbleMeta,
-                    isOwn ? styles.bubbleMetaOwn : styles.bubbleMetaOther,
-                  ]}
-                >
-                  {formatTime(item.createdAt)}
-                  {item.editedAt ? " (edited)" : ""}
-                </Text>
-              </TouchableOpacity>
+              </View>
             );
           }}
           ListFooterComponent={
@@ -234,155 +699,121 @@ export default function ConversationScreen() {
           </View>
         ) : null}
 
+        {editingMessage ? (
+          <View style={styles.editBanner}>
+            <View style={styles.editBannerContent}>
+              <Ionicons name="pencil" size={14} color={colors.emerald[600]} />
+              <Text style={styles.editBannerText}>Editing message</Text>
+            </View>
+            <TouchableOpacity onPress={cancelEditing}>
+              <Ionicons name="close" size={18} color={theme.icon} />
+            </TouchableOpacity>
+          </View>
+        ) : null}
+
         <View style={styles.composer}>
-          <TouchableOpacity onPress={handlePickImage} style={styles.imageButton}>
-            <Ionicons name="image-outline" size={24} color={colors.slate[500]} />
-          </TouchableOpacity>
+          {!editingMessage ? (
+            <TouchableOpacity onPress={handlePickImage} style={styles.imageButton}>
+              <Ionicons name="image-outline" size={24} color={theme.icon} />
+            </TouchableOpacity>
+          ) : null}
           <TextInput
             value={text}
             onChangeText={setText}
-            placeholder="Type a message..."
+            placeholder={editingMessage ? "Edit message..." : "Type a message..."}
             style={styles.input}
-            placeholderTextColor={colors.slate[400]}
+            placeholderTextColor={theme.textMuted}
             multiline
             maxLength={5000}
-            onSubmitEditing={handleSend}
+            onSubmitEditing={editingMessage ? handleEdit : handleSend}
           />
           <TouchableOpacity
-            onPress={handleSend}
-            disabled={sending || (!text.trim() && pendingImages.length === 0)}
+            onPress={editingMessage ? handleEdit : handleSend}
+            disabled={sending || (!text.trim() && !editingMessage && pendingImages.length === 0)}
             style={[
               styles.sendButton,
-              (sending || (!text.trim() && pendingImages.length === 0)) &&
+              (sending || (!text.trim() && !editingMessage && pendingImages.length === 0)) &&
                 styles.sendButtonDisabled,
             ]}
           >
-            <Ionicons name="send" size={18} color={colors.white} />
+            <Ionicons
+              name={editingMessage ? "checkmark" : "send"}
+              size={18}
+              color={colors.white}
+            />
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
+
+      <ImageViewer uri={viewingImageUrl} onClose={() => setViewingImageUrl(null)} />
+
+      <Modal
+        visible={!!activeMessage}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setActiveMessage(null)}
+      >
+        <Pressable
+          style={styles.popupBackdrop}
+          onPress={() => setActiveMessage(null)}
+        >
+          <View
+            style={styles.popupCard}
+            onStartShouldSetResponder={() => true}
+          >
+            <View style={styles.emojiRow}>
+              {REACTION_EMOJIS.map((emoji) => {
+                const myReaction = (activeMessage?.reactions ?? []).find(
+                  (r) => r.reactorType === "STAFF"
+                );
+                return (
+                  <TouchableOpacity
+                    key={emoji}
+                    onPress={() => {
+                      const msgId = activeMessage!.id;
+                      setActiveMessage(null);
+                      toggleReaction(msgId, emoji);
+                    }}
+                    style={[
+                      styles.emojiButton,
+                      myReaction?.emoji === emoji && styles.emojiButtonSelected,
+                    ]}
+                  >
+                    <Text style={styles.emojiText}>{emoji}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+            <View style={styles.popupDivider} />
+            {activeMessage?.sender === "STAFF" && activeMessage?.body ? (
+              <TouchableOpacity
+                style={styles.popupAction}
+                onPress={() => {
+                  const msg = activeMessage;
+                  setActiveMessage(null);
+                  startEditing(msg);
+                }}
+              >
+                <Ionicons name="pencil" size={16} color={theme.textTertiary} />
+                <Text style={styles.popupActionText}>Edit</Text>
+              </TouchableOpacity>
+            ) : null}
+            <TouchableOpacity
+              style={styles.popupActionDestructive}
+              onPress={() => {
+                const msgId = activeMessage!.id;
+                setActiveMessage(null);
+                handleDeleteMessage(msgId);
+              }}
+            >
+              <Ionicons name="trash-outline" size={16} color={colors.red[600]} />
+              <Text style={[styles.popupActionText, { color: colors.red[600] }]}>
+                Delete
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </Pressable>
+      </Modal>
     </>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.white,
-  },
-  messageList: {
-    padding: spacing[4],
-    paddingBottom: spacing[2],
-    gap: spacing[2],
-  },
-  bubble: {
-    maxWidth: "80%",
-    padding: spacing[3],
-    borderRadius: borderRadius["2xl"],
-    gap: spacing[1],
-  },
-  bubbleOwn: {
-    alignSelf: "flex-end",
-    backgroundColor: colors.emerald[600],
-    borderBottomRightRadius: borderRadius.md,
-  },
-  bubbleOther: {
-    alignSelf: "flex-start",
-    backgroundColor: colors.slate[100],
-    borderBottomLeftRadius: borderRadius.md,
-  },
-  bubbleText: {
-    ...fontSize.sm,
-    lineHeight: 20,
-  },
-  bubbleTextOwn: {
-    color: colors.white,
-  },
-  bubbleTextOther: {
-    color: colors.slate[900],
-  },
-  bubbleMeta: {
-    ...fontSize.xs,
-    alignSelf: "flex-end",
-  },
-  bubbleMetaOwn: {
-    color: colors.emerald[200],
-  },
-  bubbleMetaOther: {
-    color: colors.slate[400],
-  },
-  attachmentImage: {
-    width: 200,
-    height: 200,
-    borderRadius: borderRadius.lg,
-    backgroundColor: colors.slate[200],
-  },
-  typing: {
-    ...fontSize.sm,
-    color: colors.slate[500],
-    fontStyle: "italic",
-    paddingVertical: spacing[2],
-  },
-  pendingRow: {
-    flexDirection: "row",
-    gap: spacing[2],
-    paddingHorizontal: spacing[4],
-    paddingVertical: spacing[2],
-    backgroundColor: colors.slate[50],
-  },
-  pendingImageWrapper: {
-    position: "relative",
-  },
-  pendingImage: {
-    width: 60,
-    height: 60,
-    borderRadius: borderRadius.lg,
-    backgroundColor: colors.slate[200],
-  },
-  pendingRemove: {
-    position: "absolute",
-    top: -4,
-    right: -4,
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: colors.red[500],
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  composer: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-    gap: spacing[2],
-    padding: spacing[3],
-    borderTopWidth: 1,
-    borderTopColor: colors.slate[200],
-    backgroundColor: colors.slate[50],
-  },
-  imageButton: {
-    padding: spacing[2],
-  },
-  input: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: colors.slate[300],
-    borderRadius: borderRadius.xl,
-    paddingHorizontal: spacing[3],
-    paddingVertical: spacing[2],
-    ...fontSize.sm,
-    color: colors.slate[900],
-    backgroundColor: colors.white,
-    maxHeight: 100,
-  },
-  sendButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: colors.emerald[600],
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  sendButtonDisabled: {
-    opacity: 0.5,
-  },
-});

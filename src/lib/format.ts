@@ -48,6 +48,17 @@ export function jobBikeLabel(job: { bikeMake: string; bikeModel: string }): stri
   return `${job.bikeMake} ${job.bikeModel}`;
 }
 
+export function formatPhoneNumber(raw: string): string {
+  const digits = raw.replace(/\D/g, "").slice(0, 10);
+  if (digits.length <= 3) return digits;
+  if (digits.length <= 6) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`;
+  return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+}
+
+export function unformatPhoneNumber(formatted: string): string {
+  return formatted.replace(/\D/g, "");
+}
+
 export function jobTotal(
   services: { quantity: number; unitPrice: string }[],
   products: { quantity: number; unitPrice: string }[]

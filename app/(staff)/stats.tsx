@@ -1,8 +1,10 @@
+import { useState, useCallback } from "react";
 import { View, Text, ScrollView, RefreshControl, StyleSheet } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { type Stats } from "@/lib/types";
-import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
+import { spacing, fontSize } from "@/lib/theme";
+import { useTheme } from "@/lib/ThemeContext";
 import { Card } from "@/components/ui/Card";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { formatCurrency } from "@/lib/format";
@@ -23,24 +25,25 @@ function RevenueBreakdown({
   cash: number;
   imported: number;
 }) {
+  const { theme } = useTheme();
   const parts: { label: string; amount: number }[] = [];
   if (stripe > 0) parts.push({ label: "Stripe", amount: stripe });
   if (cash > 0) parts.push({ label: "Cash", amount: cash });
   if (imported > 0) parts.push({ label: "Imported", amount: imported });
   if (parts.length === 0) return null;
   return (
-    <Text style={styles.breakdown}>
+    <Text style={[styles.breakdown, { color: theme.textSecondary }]}>
       {parts.map((p, i) => `${i > 0 ? " · " : ""}${p.label} ${formatCurrency(p.amount)}`).join("")}
     </Text>
   );
 }
 
 export default function StatsScreen() {
+  const { theme } = useTheme();
   const {
     data: stats,
     isLoading,
     refetch,
-    isRefetching,
   } = useQuery({
     queryKey: ["stats"],
     queryFn: async () => {
@@ -49,29 +52,39 @@ export default function StatsScreen() {
     },
   });
 
+  const [isManualRefresh, setIsManualRefresh] = useState(false);
+  const handleRefresh = useCallback(async () => {
+    setIsManualRefresh(true);
+    try {
+      await refetch();
+    } finally {
+      setIsManualRefresh(false);
+    }
+  }, [refetch]);
+
   if (isLoading || !stats) return <LoadingScreen message="Loading stats..." />;
 
   return (
     <ScrollView
-      style={styles.container}
+      style={[styles.container, { backgroundColor: theme.background }]}
       contentContainerStyle={styles.content}
       refreshControl={
-        <RefreshControl refreshing={isRefetching} onRefresh={refetch} />
+        <RefreshControl refreshing={isManualRefresh} onRefresh={handleRefresh} />
       }
     >
-      <Text style={styles.description}>
+      <Text style={[styles.description, { color: theme.textSecondary }]}>
         Completed bikes by when the job finished. Revenue uses recorded payments.
       </Text>
 
       {stats.lastYear ? (
         <Card style={styles.lastYear}>
-          <Text style={styles.periodLabel}>
+          <Text style={[styles.periodLabel, { color: theme.textSecondary }]}>
             {stats.lastYear.calendarYear} (full year)
           </Text>
-          <Text style={styles.bigNumber}>
+          <Text style={[styles.bigNumber, { color: theme.text }]}>
             {formatCurrency(stats.lastYear.revenue)}
           </Text>
-          <Text style={styles.subLabel}>revenue</Text>
+          <Text style={[styles.subLabel, { color: theme.textTertiary }]}>revenue</Text>
           <RevenueBreakdown
             stripe={stats.lastYear.stripeRevenue}
             cash={stats.lastYear.cashRevenue}
@@ -82,17 +95,19 @@ export default function StatsScreen() {
 
       {PERIODS.map(({ key, label }) => (
         <Card key={key} style={styles.periodCard}>
-          <Text style={styles.periodLabel}>{label}</Text>
+          <Text style={[styles.periodLabel, { color: theme.textSecondary }]}>{label}</Text>
           <View style={styles.periodStats}>
             <View style={styles.stat}>
-              <Text style={styles.statNumber}>{stats.bikes[key]}</Text>
-              <Text style={styles.subLabel}>bikes completed</Text>
+              <Text style={[styles.statNumber, { color: theme.text }]}>{stats.bikes[key]}</Text>
+              <Text style={[styles.subLabel, { color: theme.textTertiary }]}>
+                bikes completed
+              </Text>
             </View>
             <View style={styles.stat}>
-              <Text style={styles.statNumber}>
+              <Text style={[styles.statNumber, { color: theme.text }]}>
                 {formatCurrency(stats.revenue[key])}
               </Text>
-              <Text style={styles.subLabel}>revenue</Text>
+              <Text style={[styles.subLabel, { color: theme.textTertiary }]}>revenue</Text>
               <RevenueBreakdown
                 stripe={stats.stripeRevenue?.[key] ?? 0}
                 cash={stats.cashRevenue?.[key] ?? 0}
@@ -105,15 +120,23 @@ export default function StatsScreen() {
 
       {stats.topServices.length > 0 ? (
         <Card style={styles.servicesCard}>
-          <Text style={styles.servicesTitle}>Top 5 Services</Text>
+          <Text style={[styles.servicesTitle, { color: theme.text }]}>Top 5 Services</Text>
           {stats.topServices.map((svc, i) => (
-            <View key={svc.name} style={styles.serviceRow}>
-              <Text style={styles.serviceRank}>{i + 1}</Text>
-              <Text style={styles.serviceName} numberOfLines={1}>
+            <View
+              key={svc.name}
+              style={[styles.serviceRow, { borderBottomColor: theme.surfaceBorderSubtle }]}
+            >
+              <Text style={[styles.serviceRank, { color: theme.textMuted }]}>{i + 1}</Text>
+              <Text
+                style={[styles.serviceName, { color: theme.text }]}
+                numberOfLines={1}
+              >
                 {svc.name}
               </Text>
-              <Text style={styles.serviceCount}>{svc.count}</Text>
-              <Text style={styles.serviceRevenue}>
+              <Text style={[styles.serviceCount, { color: theme.textTertiary }]}>
+                {svc.count}
+              </Text>
+              <Text style={[styles.serviceRevenue, { color: theme.text }]}>
                 {formatCurrency(svc.revenue)}
               </Text>
             </View>
@@ -127,7 +150,6 @@ export default function StatsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.slate[50],
   },
   content: {
     padding: spacing[4],
@@ -136,7 +158,6 @@ const styles = StyleSheet.create({
   },
   description: {
     ...fontSize.sm,
-    color: colors.slate[500],
     lineHeight: 20,
   },
   lastYear: {
@@ -145,23 +166,19 @@ const styles = StyleSheet.create({
   periodLabel: {
     ...fontSize.xs,
     fontWeight: "600",
-    color: colors.slate[500],
     textTransform: "uppercase",
     letterSpacing: 1,
   },
   bigNumber: {
     ...fontSize["2xl"],
     fontWeight: "700",
-    color: colors.slate[900],
     fontVariant: ["tabular-nums"],
   },
   subLabel: {
     ...fontSize.sm,
-    color: colors.slate[600],
   },
   breakdown: {
     ...fontSize.xs,
-    color: colors.slate[500],
     marginTop: spacing[1],
   },
   periodCard: {
@@ -176,7 +193,6 @@ const styles = StyleSheet.create({
   statNumber: {
     ...fontSize.xl,
     fontWeight: "700",
-    color: colors.slate[900],
     fontVariant: ["tabular-nums"],
   },
   servicesCard: {
@@ -185,7 +201,6 @@ const styles = StyleSheet.create({
   servicesTitle: {
     ...fontSize.base,
     fontWeight: "600",
-    color: colors.slate[900],
   },
   serviceRow: {
     flexDirection: "row",
@@ -193,29 +208,24 @@ const styles = StyleSheet.create({
     gap: spacing[3],
     paddingVertical: spacing[2],
     borderBottomWidth: 1,
-    borderBottomColor: colors.slate[100],
   },
   serviceRank: {
     ...fontSize.sm,
-    color: colors.slate[400],
     width: 20,
     fontVariant: ["tabular-nums"],
   },
   serviceName: {
     ...fontSize.sm,
     fontWeight: "500",
-    color: colors.slate[900],
     flex: 1,
   },
   serviceCount: {
     ...fontSize.sm,
-    color: colors.slate[600],
     fontVariant: ["tabular-nums"],
   },
   serviceRevenue: {
     ...fontSize.sm,
     fontWeight: "600",
-    color: colors.slate[900],
     fontVariant: ["tabular-nums"],
     minWidth: 70,
     textAlign: "right",

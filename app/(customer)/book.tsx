@@ -7,11 +7,14 @@ import {
   Alert,
   StyleSheet,
   Switch,
+  KeyboardAvoidingView,
+  Platform,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/lib/api";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
+import { useTheme } from "@/lib/ThemeContext";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
@@ -28,6 +31,7 @@ interface BookableService {
 const SHOP_NAME = process.env.EXPO_PUBLIC_SHOP_NAME ?? "Bike Shop";
 
 export default function BookScreen() {
+  const { theme } = useTheme();
   const router = useRouter();
   const [services, setServices] = useState<BookableService[]>([]);
   const [loading, setLoading] = useState(true);
@@ -45,6 +49,7 @@ export default function BookScreen() {
   const [collectionAddress, setCollectionAddress] = useState("");
   const [selectedServiceIds, setSelectedServiceIds] = useState<string[]>([]);
   const [smsConsent, setSmsConsent] = useState(false);
+  const [servicesExpanded, setServicesExpanded] = useState(Platform.OS === "web");
 
   useEffect(() => {
     api
@@ -53,6 +58,144 @@ export default function BookScreen() {
       .catch(() => setServices([]))
       .finally(() => setLoading(false));
   }, []);
+
+  const styles = useMemo(
+    () =>
+      StyleSheet.create({
+        flex: {
+          flex: 1,
+        },
+        container: {
+          flex: 1,
+          backgroundColor: theme.background,
+        },
+        content: {
+          padding: spacing[4],
+          gap: spacing[3],
+          paddingBottom: spacing[12],
+        },
+        section: {
+          gap: spacing[3],
+        },
+        sectionTitle: {
+          ...fontSize.sm,
+          fontWeight: "700",
+          color: theme.textHeading,
+          textTransform: "uppercase",
+          letterSpacing: 0.5,
+        },
+        row: {
+          flexDirection: "row",
+          gap: spacing[3],
+        },
+        inputGap: {
+          marginBottom: spacing[2],
+        },
+        consentRow: {
+          flexDirection: "row",
+          gap: spacing[3],
+          alignItems: "flex-start",
+        },
+        consentText: {
+          ...fontSize.sm,
+          color: theme.textTertiary,
+          flex: 1,
+          lineHeight: 20,
+        },
+        sectionToggle: {
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+        },
+        sectionToggleLeft: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: spacing[2],
+          flex: 1,
+        },
+        selectedBadge: {
+          backgroundColor: colors.amber[100],
+          borderRadius: borderRadius.full,
+          paddingHorizontal: spacing[2],
+          paddingVertical: spacing[0.5],
+        },
+        selectedBadgeText: {
+          ...fontSize.xs,
+          fontWeight: "600",
+          color: colors.amber[700],
+        },
+        serviceOption: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: spacing[3],
+          paddingVertical: spacing[2],
+          paddingHorizontal: spacing[2],
+          borderRadius: borderRadius.lg,
+        },
+        serviceOptionSelected: {
+          backgroundColor: colors.amber[50],
+        },
+        serviceInfo: {
+          flex: 1,
+        },
+        serviceName: {
+          ...fontSize.sm,
+          fontWeight: "500",
+          color: theme.text,
+        },
+        serviceDesc: {
+          ...fontSize.xs,
+          color: theme.textSecondary,
+        },
+        servicePrice: {
+          ...fontSize.sm,
+          fontWeight: "600",
+          color: theme.textTertiary,
+          fontVariant: ["tabular-nums"],
+        },
+        deliveryOptions: {
+          gap: spacing[2],
+        },
+        deliveryOption: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: spacing[3],
+          paddingHorizontal: spacing[3],
+          minHeight: 44,
+          borderRadius: borderRadius.lg,
+        },
+        deliveryOptionActive: {
+          backgroundColor: colors.amber[50],
+        },
+        deliveryLabel: {
+          ...fontSize.sm,
+          color: theme.text,
+        },
+        submitButton: {
+          marginTop: spacing[2],
+        },
+        successContainer: {
+          flex: 1,
+          justifyContent: "center",
+          alignItems: "center",
+          padding: spacing[8],
+          gap: spacing[4],
+          backgroundColor: theme.surface,
+        },
+        successTitle: {
+          ...fontSize.xl,
+          fontWeight: "700",
+          color: theme.text,
+        },
+        successMessage: {
+          ...fontSize.sm,
+          color: theme.textTertiary,
+          textAlign: "center",
+          maxWidth: 300,
+        },
+      }),
+    [theme]
+  );
 
   const toggleService = (id: string) => {
     setSelectedServiceIds((prev) =>
@@ -129,301 +272,221 @@ export default function BookScreen() {
   }
 
   return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={styles.content}
-      keyboardShouldPersistTaps="handled"
+    <KeyboardAvoidingView
+      style={styles.flex}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+      keyboardVerticalOffset={Platform.OS === "ios" ? 64 : 0}
     >
-      {/* Contact Info */}
-      <Card style={styles.section}>
-        <Text style={styles.sectionTitle}>Your Info</Text>
-        <View style={styles.row}>
-          <Input
-            label="First Name *"
-            value={firstName}
-            onChangeText={setFirstName}
-            containerStyle={{ flex: 1 }}
-          />
-          <Input
-            label="Last Name *"
-            value={lastName}
-            onChangeText={setLastName}
-            containerStyle={{ flex: 1 }}
-          />
-        </View>
-        <Input
-          label="Email *"
-          value={email}
-          onChangeText={setEmail}
-          keyboardType="email-address"
-          autoCapitalize="none"
-          containerStyle={styles.inputGap}
-        />
-        <Input
-          label="Phone *"
-          value={phone}
-          onChangeText={setPhone}
-          keyboardType="phone-pad"
-        />
-      </Card>
-
-      {/* SMS Consent */}
-      <Card style={styles.section}>
-        <View style={styles.consentRow}>
-          <Switch
-            value={smsConsent}
-            onValueChange={setSmsConsent}
-            trackColor={{ true: colors.amber[500], false: colors.slate[300] }}
-          />
-          <Text style={styles.consentText}>
-            I agree to receive SMS from {SHOP_NAME} about my repair. No
-            marketing. Reply STOP to opt out.
-          </Text>
-        </View>
-      </Card>
-
-      {/* Bike */}
-      <Card style={styles.section}>
-        <Text style={styles.sectionTitle}>Bike</Text>
-        <Input
-          label="Make *"
-          placeholder="Trek, Specialized..."
-          value={bikeMake}
-          onChangeText={setBikeMake}
-          containerStyle={styles.inputGap}
-        />
-        <Input
-          label="Model *"
-          placeholder="Domane SL 6"
-          value={bikeModel}
-          onChangeText={setBikeModel}
-        />
-      </Card>
-
-      {/* Services */}
-      {services.length > 0 ? (
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+      >
+        {/* Contact Info */}
         <Card style={styles.section}>
-          <Text style={styles.sectionTitle}>Services (optional)</Text>
-          {services.map((svc) => {
-            const selected = selectedServiceIds.includes(svc.id);
-            return (
-              <TouchableOpacity
-                key={svc.id}
-                onPress={() => toggleService(svc.id)}
-                style={[
-                  styles.serviceOption,
-                  selected && styles.serviceOptionSelected,
-                ]}
-              >
-                <Ionicons
-                  name={selected ? "checkbox" : "square-outline"}
-                  size={20}
-                  color={selected ? colors.amber[500] : colors.slate[400]}
-                />
-                <View style={styles.serviceInfo}>
-                  <Text style={styles.serviceName}>{svc.name}</Text>
-                  {svc.description ? (
-                    <Text style={styles.serviceDesc} numberOfLines={1}>
-                      {svc.description}
-                    </Text>
-                  ) : null}
-                </View>
-                <Text style={styles.servicePrice}>
-                  {formatCurrency(svc.price)}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </Card>
-      ) : null}
-
-      {/* Delivery */}
-      <Card style={styles.section}>
-        <Text style={styles.sectionTitle}>Delivery</Text>
-        <View style={styles.deliveryOptions}>
-          <TouchableOpacity
-            onPress={() => setDeliveryType("DROP_OFF_AT_SHOP")}
-            style={[
-              styles.deliveryOption,
-              deliveryType === "DROP_OFF_AT_SHOP" && styles.deliveryOptionActive,
-            ]}
-          >
-            <Ionicons
-              name={
-                deliveryType === "DROP_OFF_AT_SHOP"
-                  ? "radio-button-on"
-                  : "radio-button-off"
-              }
-              size={20}
-              color={
-                deliveryType === "DROP_OFF_AT_SHOP"
-                  ? colors.amber[500]
-                  : colors.slate[400]
-              }
+          <Text style={styles.sectionTitle}>Your Info</Text>
+          <View style={styles.row}>
+            <Input
+              label="First Name *"
+              value={firstName}
+              onChangeText={setFirstName}
+              containerStyle={{ flex: 1 }}
             />
-            <Text style={styles.deliveryLabel}>Drop-off at shop</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            onPress={() => setDeliveryType("COLLECTION_SERVICE")}
-            style={[
-              styles.deliveryOption,
-              deliveryType === "COLLECTION_SERVICE" && styles.deliveryOptionActive,
-            ]}
-          >
-            <Ionicons
-              name={
-                deliveryType === "COLLECTION_SERVICE"
-                  ? "radio-button-on"
-                  : "radio-button-off"
-              }
-              size={20}
-              color={
-                deliveryType === "COLLECTION_SERVICE"
-                  ? colors.amber[500]
-                  : colors.slate[400]
-              }
+            <Input
+              label="Last Name *"
+              value={lastName}
+              onChangeText={setLastName}
+              containerStyle={{ flex: 1 }}
             />
-            <Text style={styles.deliveryLabel}>Collection service</Text>
-          </TouchableOpacity>
-        </View>
-        {deliveryType === "COLLECTION_SERVICE" ? (
+          </View>
           <Input
-            label="Collection Address"
-            placeholder="Street, city, postal code"
-            value={collectionAddress}
-            onChangeText={setCollectionAddress}
+            label="Email *"
+            value={email}
+            onChangeText={setEmail}
+            keyboardType="email-address"
+            autoCapitalize="none"
+            containerStyle={styles.inputGap}
           />
+          <Input
+            label="Phone *"
+            value={phone}
+            onChangeText={setPhone}
+            keyboardType="phone-pad"
+          />
+        </Card>
+
+        {/* SMS Consent */}
+        <Card style={styles.section}>
+          <View style={styles.consentRow}>
+            <Switch
+              value={smsConsent}
+              onValueChange={setSmsConsent}
+              trackColor={{ true: colors.amber[500], false: theme.iconMuted }}
+            />
+            <Text style={styles.consentText}>
+              I agree to receive SMS from {SHOP_NAME} about my repair. No
+              marketing. Reply STOP to opt out.
+            </Text>
+          </View>
+        </Card>
+
+        {/* Bike */}
+        <Card style={styles.section}>
+          <Text style={styles.sectionTitle}>Bike</Text>
+          <Input
+            label="Make *"
+            placeholder="Trek, Specialized..."
+            value={bikeMake}
+            onChangeText={setBikeMake}
+            containerStyle={styles.inputGap}
+          />
+          <Input
+            label="Model *"
+            placeholder="Domane SL 6"
+            value={bikeModel}
+            onChangeText={setBikeModel}
+          />
+        </Card>
+
+        {/* Services */}
+        {services.length > 0 ? (
+          <Card style={styles.section}>
+            <TouchableOpacity
+              onPress={() => setServicesExpanded((v) => !v)}
+              style={styles.sectionToggle}
+              activeOpacity={0.7}
+            >
+              <View style={styles.sectionToggleLeft}>
+                <Text style={styles.sectionTitle}>Services (optional)</Text>
+                {!servicesExpanded && selectedServiceIds.length > 0 ? (
+                  <View style={styles.selectedBadge}>
+                    <Text style={styles.selectedBadgeText}>
+                      {selectedServiceIds.length} selected
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+              <Ionicons
+                name={servicesExpanded ? "chevron-up" : "chevron-down"}
+                size={20}
+                color={theme.textSecondary}
+              />
+            </TouchableOpacity>
+            {servicesExpanded
+              ? services.map((svc) => {
+                  const selected = selectedServiceIds.includes(svc.id);
+                  return (
+                    <TouchableOpacity
+                      key={svc.id}
+                      onPress={() => toggleService(svc.id)}
+                      style={[
+                        styles.serviceOption,
+                        selected && styles.serviceOptionSelected,
+                      ]}
+                    >
+                      <Ionicons
+                        name={selected ? "checkbox" : "square-outline"}
+                        size={20}
+                        color={selected ? colors.amber[500] : theme.textMuted}
+                      />
+                      <View style={styles.serviceInfo}>
+                        <Text style={styles.serviceName}>{svc.name}</Text>
+                        {svc.description ? (
+                          <Text style={styles.serviceDesc} numberOfLines={1}>
+                            {svc.description}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <Text style={styles.servicePrice}>
+                        {formatCurrency(svc.price)}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })
+              : null}
+          </Card>
         ) : null}
-      </Card>
 
-      {/* Notes */}
-      <Card style={styles.section}>
-        <Input
-          label="Additional Info"
-          placeholder="Anything else we should know?"
-          value={customerNotes}
-          onChangeText={setCustomerNotes}
-          multiline
-          numberOfLines={3}
-          style={{ minHeight: 80, textAlignVertical: "top" }}
+        {/* Delivery */}
+        <Card style={styles.section}>
+          <Text style={styles.sectionTitle}>Delivery</Text>
+          <View style={styles.deliveryOptions}>
+            <TouchableOpacity
+              onPress={() => setDeliveryType("DROP_OFF_AT_SHOP")}
+              style={[
+                styles.deliveryOption,
+                deliveryType === "DROP_OFF_AT_SHOP" && styles.deliveryOptionActive,
+              ]}
+            >
+              <Ionicons
+                name={
+                  deliveryType === "DROP_OFF_AT_SHOP"
+                    ? "radio-button-on"
+                    : "radio-button-off"
+                }
+                size={20}
+                color={
+                  deliveryType === "DROP_OFF_AT_SHOP"
+                    ? colors.amber[500]
+                    : theme.textMuted
+                }
+              />
+              <Text style={styles.deliveryLabel}>Drop-off at shop</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => setDeliveryType("COLLECTION_SERVICE")}
+              style={[
+                styles.deliveryOption,
+                deliveryType === "COLLECTION_SERVICE" && styles.deliveryOptionActive,
+              ]}
+            >
+              <Ionicons
+                name={
+                  deliveryType === "COLLECTION_SERVICE"
+                    ? "radio-button-on"
+                    : "radio-button-off"
+                }
+                size={20}
+                color={
+                  deliveryType === "COLLECTION_SERVICE"
+                    ? colors.amber[500]
+                    : theme.textMuted
+                }
+              />
+              <Text style={styles.deliveryLabel}>Collection service</Text>
+            </TouchableOpacity>
+          </View>
+          {deliveryType === "COLLECTION_SERVICE" ? (
+            <Input
+              label="Collection Address"
+              placeholder="Street, city, postal code"
+              value={collectionAddress}
+              onChangeText={setCollectionAddress}
+            />
+          ) : null}
+        </Card>
+
+        {/* Notes */}
+        <Card style={styles.section}>
+          <Input
+            label="Additional Info"
+            placeholder="Anything else we should know?"
+            value={customerNotes}
+            onChangeText={setCustomerNotes}
+            multiline
+            numberOfLines={3}
+            style={{ minHeight: 80, textAlignVertical: "top" }}
+          />
+        </Card>
+
+        <Button
+          title={submitting ? "Booking..." : "Book Repair"}
+          onPress={handleSubmit}
+          loading={submitting}
+          size="lg"
+          style={styles.submitButton}
         />
-      </Card>
-
-      <Button
-        title={submitting ? "Booking..." : "Book Repair"}
-        onPress={handleSubmit}
-        loading={submitting}
-        size="lg"
-        style={styles.submitButton}
-      />
-    </ScrollView>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.slate[50],
-  },
-  content: {
-    padding: spacing[4],
-    gap: spacing[3],
-    paddingBottom: spacing[12],
-  },
-  section: {
-    gap: spacing[3],
-  },
-  sectionTitle: {
-    ...fontSize.sm,
-    fontWeight: "700",
-    color: colors.slate[800],
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  row: {
-    flexDirection: "row",
-    gap: spacing[3],
-  },
-  inputGap: {
-    marginBottom: spacing[2],
-  },
-  consentRow: {
-    flexDirection: "row",
-    gap: spacing[3],
-    alignItems: "flex-start",
-  },
-  consentText: {
-    ...fontSize.sm,
-    color: colors.slate[700],
-    flex: 1,
-    lineHeight: 20,
-  },
-  serviceOption: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing[3],
-    paddingVertical: spacing[2],
-    paddingHorizontal: spacing[2],
-    borderRadius: borderRadius.lg,
-  },
-  serviceOptionSelected: {
-    backgroundColor: colors.amber[50],
-  },
-  serviceInfo: {
-    flex: 1,
-  },
-  serviceName: {
-    ...fontSize.sm,
-    fontWeight: "500",
-    color: colors.slate[900],
-  },
-  serviceDesc: {
-    ...fontSize.xs,
-    color: colors.slate[500],
-  },
-  servicePrice: {
-    ...fontSize.sm,
-    fontWeight: "600",
-    color: colors.slate[700],
-    fontVariant: ["tabular-nums"],
-  },
-  deliveryOptions: {
-    gap: spacing[2],
-  },
-  deliveryOption: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing[2],
-    padding: spacing[2],
-    borderRadius: borderRadius.lg,
-  },
-  deliveryOptionActive: {
-    backgroundColor: colors.amber[50],
-  },
-  deliveryLabel: {
-    ...fontSize.sm,
-    color: colors.slate[900],
-  },
-  submitButton: {
-    marginTop: spacing[2],
-  },
-  successContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    padding: spacing[8],
-    gap: spacing[4],
-    backgroundColor: colors.white,
-  },
-  successTitle: {
-    ...fontSize.xl,
-    fontWeight: "700",
-    color: colors.slate[900],
-  },
-  successMessage: {
-    ...fontSize.sm,
-    color: colors.slate[600],
-    textAlign: "center",
-    maxWidth: 300,
-  },
-});
