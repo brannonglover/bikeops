@@ -39,13 +39,19 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     backgroundColor: "#1e1e1e",
   },
   ios: {
-    supportsTablet: true,
+    supportsTablet: false,
     bundleIdentifier: IS_DEV ? "com.brannonglover.bikeops.app.dev" : "com.brannonglover.bikeops.app",
     buildNumber,
     userInterfaceStyle: "automatic",
     infoPlist: {
-      UIBackgroundModes: ["remote-notification"],
+      UIBackgroundModes: ["remote-notification", "fetch", "processing"],
       ITSAppUsesNonExemptEncryption: false,
+      LSApplicationCategoryType: "public.app-category.utilities",
+      BGTaskSchedulerPermittedIdentifiers: [
+        IS_DEV
+          ? "com.brannonglover.bikeops.app.dev.notifications"
+          : "com.brannonglover.bikeops.app.notifications",
+      ],
     },
   },
   android: {

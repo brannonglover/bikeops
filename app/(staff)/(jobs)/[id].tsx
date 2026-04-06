@@ -1354,7 +1354,7 @@ export default function JobDetailScreen() {
                         <AppleMaps.View
                           style={styles.appleMap}
                           cameraPosition={{
-                            target: {
+                            coordinates: {
                               latitude: addressCoords.lat,
                               longitude: addressCoords.lng,
                             },

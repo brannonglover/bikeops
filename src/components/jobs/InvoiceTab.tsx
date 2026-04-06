@@ -57,6 +57,19 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
 
   const [editingPriceId, setEditingPriceId] = useState<string | null>(null);
   const [editingPriceValue, setEditingPriceValue] = useState("");
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }, []);
 
   const [recordingCash, setRecordingCash] = useState(false);
   const [showCashConfirm, setShowCashConfirm] = useState(false);
@@ -382,6 +395,9 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
           flex: 1,
           minWidth: 0,
         },
+        chevron: {
+          flexShrink: 0,
+        },
         typeBadge: {
           paddingHorizontal: spacing[1.5],
           paddingVertical: 2,
@@ -475,6 +491,12 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
         expandedValue: {
           ...fontSize.xs,
           color: theme.text,
+        },
+        expandedDescription: {
+          ...fontSize.xs,
+          color: theme.textSecondary,
+          lineHeight: 16,
+          marginBottom: spacing[0.5],
         },
         priceInput: {
           ...fontSize.sm,
@@ -798,14 +820,24 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
             const qtyBusy = updatingQty === js.id;
             const isEditingPrice = editingPriceId === js.id;
 
+            const isExpanded = expandedIds.has(js.id);
+
             return (
               <View key={js.id} style={styles.lineItem}>
-                <View style={styles.lineItemHeader}>
+                <TouchableOpacity
+                  style={styles.lineItemHeader}
+                  onPress={() => toggleExpanded(js.id)}
+                  activeOpacity={0.7}
+                >
                   <View style={styles.lineItemLeft}>
+                    <Ionicons
+                      name={isExpanded ? "chevron-down" : "chevron-forward"}
+                      size={14}
+                      color={theme.textMuted}
+                      style={styles.chevron}
+                    />
                     <View style={[styles.typeBadge, styles.typeBadgeService]}>
-                      <Text
-                        style={[styles.typeBadgeText, styles.typeBadgeServiceText]}
-                      >
+                      <Text style={[styles.typeBadgeText, styles.typeBadgeServiceText]}>
                         Service
                       </Text>
                     </View>
@@ -815,38 +847,11 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
                     </Text>
                   </View>
                   <View style={styles.lineItemRight}>
-                    <Text style={styles.lineItemPrice}>
-                      {formatCurrency(lineTotal)}
-                    </Text>
-                    <TouchableOpacity
-                      onPress={() =>
-                        Alert.alert("Remove Service", `Remove "${js.service?.name}"?`, [
-                          { text: "Cancel", style: "cancel" },
-                          {
-                            text: "Remove",
-                            style: "destructive",
-                            onPress: () => handleRemoveService(js.id),
-                          },
-                        ])
-                      }
-                      disabled={removing === js.id}
-                      style={styles.removeButton}
-                    >
-                      <Ionicons
-                        name="close-circle"
-                        size={18}
-                        color={
-                          removing === js.id ? theme.textMuted : colors.red[500]
-                        }
-                      />
-                    </TouchableOpacity>
-                  </View>
-                </View>
-                <View style={styles.expandedArea}>
-                  {!isSystem && (
-                    <View style={styles.expandedRow}>
-                      <Text style={styles.expandedLabel}>Qty</Text>
-                      <View style={styles.qtyControl}>
+                    {!isSystem && (
+                      <View
+                        style={styles.qtyControl}
+                        onStartShouldSetResponder={() => true}
+                      >
                         <TouchableOpacity
                           onPress={() => adjustServiceQuantity(js.id, qty - 1)}
                           disabled={qty <= 1 || qtyBusy}
@@ -871,55 +876,84 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
                           <Text style={styles.qtyButtonText}>+</Text>
                         </TouchableOpacity>
                       </View>
-                    </View>
-                  )}
-                  <View style={styles.expandedRow}>
-                    <Text style={styles.expandedLabel}>Unit price</Text>
-                    {isSystem || updatingPrice === js.id ? (
-                      <Text style={styles.expandedValue}>
-                        {updatingPrice === js.id
-                          ? "Saving…"
-                          : formatCurrency(price)}
-                      </Text>
-                    ) : isEditingPrice ? (
-                      <TextInput
-                        style={styles.priceInput}
-                        value={editingPriceValue}
-                        onChangeText={setEditingPriceValue}
-                        onBlur={() => handlePriceBlur(js.id, price)}
-                        keyboardType="decimal-pad"
-                        autoFocus
-                        selectTextOnFocus
-                      />
-                    ) : (
-                      <TouchableOpacity
-                        onPress={() => {
-                          setEditingPriceId(js.id);
-                          setEditingPriceValue(
-                            Number.isFinite(price) ? String(price) : "0"
-                          );
-                        }}
-                      >
-                        <Text
-                          style={[
-                            styles.expandedValue,
-                            { textDecorationLine: "underline" },
-                          ]}
-                        >
-                          {formatCurrency(price)}
-                        </Text>
-                      </TouchableOpacity>
                     )}
+                    <Text style={styles.lineItemPrice}>
+                      {formatCurrency(lineTotal)}
+                    </Text>
+                    <TouchableOpacity
+                      onPress={() =>
+                        Alert.alert("Remove Service", `Remove "${js.service?.name}"?`, [
+                          { text: "Cancel", style: "cancel" },
+                          {
+                            text: "Remove",
+                            style: "destructive",
+                            onPress: () => handleRemoveService(js.id),
+                          },
+                        ])
+                      }
+                      disabled={removing === js.id}
+                      style={styles.removeButton}
+                    >
+                      <Ionicons
+                        name="close-circle"
+                        size={18}
+                        color={removing === js.id ? theme.textMuted : colors.red[500]}
+                      />
+                    </TouchableOpacity>
                   </View>
-                  {js.notes ? (
-                    <View>
-                      <Text style={styles.expandedLabel}>Notes</Text>
-                      <Text style={[styles.expandedValue, { marginTop: 2 }]}>
-                        {js.notes}
+                </TouchableOpacity>
+                {isExpanded && (
+                  <View style={styles.expandedArea}>
+                    {js.service?.description ? (
+                      <Text style={styles.expandedDescription}>
+                        {js.service.description}
                       </Text>
+                    ) : null}
+                    <View style={styles.expandedRow}>
+                      <Text style={styles.expandedLabel}>Unit price</Text>
+                      {isSystem || updatingPrice === js.id ? (
+                        <Text style={styles.expandedValue}>
+                          {updatingPrice === js.id ? "Saving…" : formatCurrency(price)}
+                        </Text>
+                      ) : isEditingPrice ? (
+                        <TextInput
+                          style={styles.priceInput}
+                          value={editingPriceValue}
+                          onChangeText={setEditingPriceValue}
+                          onBlur={() => handlePriceBlur(js.id, price)}
+                          keyboardType="decimal-pad"
+                          autoFocus
+                          selectTextOnFocus
+                        />
+                      ) : (
+                        <TouchableOpacity
+                          onPress={() => {
+                            setEditingPriceId(js.id);
+                            setEditingPriceValue(
+                              Number.isFinite(price) ? String(price) : "0"
+                            );
+                          }}
+                        >
+                          <Text style={[styles.expandedValue, { textDecorationLine: "underline" }]}>
+                            {formatCurrency(price)}
+                          </Text>
+                        </TouchableOpacity>
+                      )}
                     </View>
-                  ) : null}
-                </View>
+                    <View style={styles.expandedRow}>
+                      <Text style={styles.expandedLabel}>Quantity</Text>
+                      <Text style={styles.expandedValue}>{qty}</Text>
+                    </View>
+                    {js.notes ? (
+                      <View style={styles.expandedRow}>
+                        <Text style={styles.expandedLabel}>Notes</Text>
+                        <Text style={[styles.expandedValue, { flex: 1, textAlign: "right" }]}>
+                          {js.notes}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+                )}
               </View>
             );
           })}
@@ -932,14 +966,24 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
             const qty = jp.quantity || 1;
             const lineTotal = price * qty;
 
+            const isExpanded = expandedIds.has(jp.id);
+
             return (
               <View key={jp.id} style={styles.lineItem}>
-                <View style={styles.lineItemHeader}>
+                <TouchableOpacity
+                  style={styles.lineItemHeader}
+                  onPress={() => toggleExpanded(jp.id)}
+                  activeOpacity={0.7}
+                >
                   <View style={styles.lineItemLeft}>
+                    <Ionicons
+                      name={isExpanded ? "chevron-down" : "chevron-forward"}
+                      size={14}
+                      color={theme.textMuted}
+                      style={styles.chevron}
+                    />
                     <View style={[styles.typeBadge, styles.typeBadgeProduct]}>
-                      <Text
-                        style={[styles.typeBadgeText, styles.typeBadgeProductText]}
-                      >
+                      <Text style={[styles.typeBadgeText, styles.typeBadgeProductText]}>
                         Product
                       </Text>
                     </View>
@@ -974,34 +1018,37 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
                         name="close-circle"
                         size={18}
                         color={
-                          removingProduct === jp.id
-                            ? theme.textMuted
-                            : colors.red[500]
+                          removingProduct === jp.id ? theme.textMuted : colors.red[500]
                         }
                       />
                     </TouchableOpacity>
                   </View>
-                </View>
-                <View style={styles.expandedArea}>
-                  <View style={styles.expandedRow}>
-                    <Text style={styles.expandedLabel}>Unit price</Text>
-                    <Text style={styles.expandedValue}>
-                      {formatCurrency(price)}
-                    </Text>
-                  </View>
-                  <View style={styles.expandedRow}>
-                    <Text style={styles.expandedLabel}>Qty</Text>
-                    <Text style={styles.expandedValue}>{qty}</Text>
-                  </View>
-                  {jp.notes ? (
-                    <View>
-                      <Text style={styles.expandedLabel}>Notes</Text>
-                      <Text style={[styles.expandedValue, { marginTop: 2 }]}>
-                        {jp.notes}
+                </TouchableOpacity>
+                {isExpanded && (
+                  <View style={styles.expandedArea}>
+                    {jp.product?.description ? (
+                      <Text style={styles.expandedDescription}>
+                        {jp.product.description}
                       </Text>
+                    ) : null}
+                    <View style={styles.expandedRow}>
+                      <Text style={styles.expandedLabel}>Unit price</Text>
+                      <Text style={styles.expandedValue}>{formatCurrency(price)}</Text>
                     </View>
-                  ) : null}
-                </View>
+                    <View style={styles.expandedRow}>
+                      <Text style={styles.expandedLabel}>Quantity</Text>
+                      <Text style={styles.expandedValue}>{qty}</Text>
+                    </View>
+                    {jp.notes ? (
+                      <View style={styles.expandedRow}>
+                        <Text style={styles.expandedLabel}>Notes</Text>
+                        <Text style={[styles.expandedValue, { flex: 1, textAlign: "right" }]}>
+                          {jp.notes}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+                )}
               </View>
             );
           })}

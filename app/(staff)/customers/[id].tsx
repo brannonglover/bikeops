@@ -27,6 +27,15 @@ import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { ImageViewer } from "@/components/ui/ImageViewer";
 import { customerName, formatPhoneNumber, unformatPhoneNumber } from "@/lib/format";
 
+type BikeTypeOption = "REGULAR" | "E_BIKE" | null;
+
+interface BikeEditState {
+  make: string;
+  model: string;
+  nickname: string;
+  bikeType: BikeTypeOption;
+}
+
 export default function CustomerDetailScreen() {
   const { theme } = useTheme();
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -41,6 +50,14 @@ export default function CustomerDetailScreen() {
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
   const [notes, setNotes] = useState("");
+
+  const [editingBikeId, setEditingBikeId] = useState<string | null>(null);
+  const [bikeEdit, setBikeEdit] = useState<BikeEditState>({
+    make: "",
+    model: "",
+    nickname: "",
+    bikeType: null,
+  });
 
   const {
     data: customer,
@@ -197,6 +214,65 @@ export default function CustomerDetailScreen() {
     onError: (e) =>
       Alert.alert("Error", e instanceof Error ? e.message : "Failed to delete"),
   });
+
+  const updateBike = useMutation({
+    mutationFn: async (bikeId: string) => {
+      const { data } = await api.patch<Bike>(
+        `/api/customers/${id}/bikes/${bikeId}`,
+        {
+          make: bikeEdit.make.trim(),
+          model: bikeEdit.model.trim(),
+          nickname: bikeEdit.nickname.trim() || null,
+          bikeType: bikeEdit.bikeType,
+        }
+      );
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["customer", id] });
+      setEditingBikeId(null);
+    },
+    onError: (e) =>
+      Alert.alert("Error", e instanceof Error ? e.message : "Failed to update bike"),
+  });
+
+  const startEditingBike = (bike: Bike) => {
+    setBikeEdit({
+      make: bike.make,
+      model: bike.model,
+      nickname: bike.nickname ?? "",
+      bikeType: bike.bikeType,
+    });
+    setEditingBikeId(bike.id);
+  };
+
+  const handleDeleteBike = useCallback(
+    (bike: Bike) => {
+      Alert.alert(
+        "Remove Bike",
+        `Remove ${bike.make} ${bike.model} from this customer?`,
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Remove",
+            style: "destructive",
+            onPress: async () => {
+              try {
+                await api.delete(`/api/customers/${id}/bikes/${bike.id}`);
+                queryClient.invalidateQueries({ queryKey: ["customer", id] });
+              } catch (e) {
+                Alert.alert(
+                  "Error",
+                  e instanceof Error ? e.message : "Failed to remove bike"
+                );
+              }
+            },
+          },
+        ]
+      );
+    },
+    [id, queryClient]
+  );
 
   const handleDelete = useCallback(() => {
     Alert.alert(
@@ -409,43 +485,203 @@ export default function CustomerDetailScreen() {
                 <Text style={[styles.sectionTitle, { color: theme.textHeading }]}>
                   Bikes ({customer.bikes.length})
                 </Text>
-                {customer.bikes.map((bike) => (
-                  <View key={bike.id} style={styles.bikeRow}>
-                    {bike.imageUrl ? (
-                      <TouchableOpacity
-                        activeOpacity={0.8}
-                        onPress={() => setViewingImageUrl(bike.imageUrl!)}
-                      >
-                        <Image
-                          source={{ uri: bike.imageUrl }}
-                          style={[
-                            styles.bikeImage,
-                            { backgroundColor: theme.subtleBg },
-                          ]}
-                        />
-                      </TouchableOpacity>
-                    ) : (
+                {customer.bikes.map((bike, index) => (
+                  <View key={bike.id}>
+                    {index > 0 ? (
                       <View
                         style={[
-                          styles.bikePlaceholder,
-                          { backgroundColor: theme.subtleBg },
+                          styles.bikeDivider,
+                          { backgroundColor: theme.surfaceBorderSubtle },
                         ]}
-                      >
-                        <Ionicons name="bicycle" size={20} color={theme.iconMuted} />
+                      />
+                    ) : null}
+                    {editingBikeId === bike.id ? (
+                      <View style={styles.bikeEditForm}>
+                        <Input
+                          label="Make"
+                          value={bikeEdit.make}
+                          onChangeText={(v) =>
+                            setBikeEdit((s) => ({ ...s, make: v }))
+                          }
+                          containerStyle={styles.inputGap}
+                        />
+                        <Input
+                          label="Model"
+                          value={bikeEdit.model}
+                          onChangeText={(v) =>
+                            setBikeEdit((s) => ({ ...s, model: v }))
+                          }
+                          containerStyle={styles.inputGap}
+                        />
+                        <Input
+                          label="Nickname (optional)"
+                          value={bikeEdit.nickname}
+                          onChangeText={(v) =>
+                            setBikeEdit((s) => ({ ...s, nickname: v }))
+                          }
+                          containerStyle={styles.inputGap}
+                        />
+                        <View style={styles.inputGap}>
+                          <Text
+                            style={{
+                              ...fontSize.sm,
+                              fontWeight: "500",
+                              color: theme.textTertiary,
+                              marginBottom: spacing[1],
+                            }}
+                          >
+                            Bike Type
+                          </Text>
+                          <View style={styles.bikeTypeRow}>
+                            {(
+                              [
+                                { value: null, label: "Auto" },
+                                { value: "REGULAR", label: "Standard" },
+                                { value: "E_BIKE", label: "E-Bike" },
+                              ] as { value: BikeTypeOption; label: string }[]
+                            ).map(({ value, label }) => {
+                              const active = bikeEdit.bikeType === value;
+                              return (
+                                <TouchableOpacity
+                                  key={String(value)}
+                                  onPress={() =>
+                                    setBikeEdit((s) => ({
+                                      ...s,
+                                      bikeType: value,
+                                    }))
+                                  }
+                                  style={[
+                                    styles.bikeTypeBtn,
+                                    {
+                                      backgroundColor: active
+                                        ? theme.dark
+                                          ? colors.amber[600]
+                                          : colors.amber[500]
+                                        : theme.subtleBg,
+                                      borderColor: active
+                                        ? colors.amber[500]
+                                        : theme.inputBorder,
+                                    },
+                                  ]}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.bikeTypeBtnText,
+                                      {
+                                        color: active
+                                          ? colors.white
+                                          : theme.textSecondary,
+                                      },
+                                    ]}
+                                  >
+                                    {label}
+                                  </Text>
+                                </TouchableOpacity>
+                              );
+                            })}
+                          </View>
+                        </View>
+                        <View style={styles.bikeEditActions}>
+                          <Button
+                            title="Save"
+                            onPress={() => updateBike.mutate(bike.id)}
+                            loading={updateBike.isPending}
+                            disabled={
+                              !bikeEdit.make.trim() || !bikeEdit.model.trim()
+                            }
+                            size="sm"
+                            style={styles.bikeEditSaveBtn}
+                          />
+                          <Button
+                            title="Cancel"
+                            onPress={() => setEditingBikeId(null)}
+                            variant="secondary"
+                            size="sm"
+                          />
+                        </View>
+                      </View>
+                    ) : (
+                      <View style={styles.bikeRow}>
+                        {bike.imageUrl ? (
+                          <TouchableOpacity
+                            activeOpacity={0.8}
+                            onPress={() => setViewingImageUrl(bike.imageUrl!)}
+                          >
+                            <Image
+                              source={{ uri: bike.imageUrl }}
+                              style={[
+                                styles.bikeImage,
+                                { backgroundColor: theme.subtleBg },
+                              ]}
+                            />
+                          </TouchableOpacity>
+                        ) : (
+                          <View
+                            style={[
+                              styles.bikePlaceholder,
+                              { backgroundColor: theme.subtleBg },
+                            ]}
+                          >
+                            <Ionicons
+                              name="bicycle"
+                              size={20}
+                              color={theme.iconMuted}
+                            />
+                          </View>
+                        )}
+                        <View style={{ flex: 1 }}>
+                          <Text style={[styles.bikeName, { color: theme.text }]}>
+                            {bike.make} {bike.model}
+                          </Text>
+                          {bike.nickname ? (
+                            <Text
+                              style={[
+                                styles.bikeNickname,
+                                { color: theme.textSecondary },
+                              ]}
+                            >
+                              {bike.nickname}
+                            </Text>
+                          ) : null}
+                          {bike.bikeType ? (
+                            <Text
+                              style={[
+                                styles.bikeNickname,
+                                { color: theme.textMuted },
+                              ]}
+                            >
+                              {bike.bikeType === "E_BIKE"
+                                ? "E-Bike"
+                                : "Standard"}
+                            </Text>
+                          ) : null}
+                        </View>
+                        <View style={styles.bikeActions}>
+                          <TouchableOpacity
+                            onPress={() => startEditingBike(bike)}
+                            style={styles.bikeActionBtn}
+                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          >
+                            <Ionicons
+                              name="create-outline"
+                              size={18}
+                              color={theme.icon}
+                            />
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            onPress={() => handleDeleteBike(bike)}
+                            style={styles.bikeActionBtn}
+                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          >
+                            <Ionicons
+                              name="trash-outline"
+                              size={18}
+                              color={colors.red[400]}
+                            />
+                          </TouchableOpacity>
+                        </View>
                       </View>
                     )}
-                    <View>
-                      <Text style={[styles.bikeName, { color: theme.text }]}>
-                        {bike.make} {bike.model}
-                      </Text>
-                      {bike.nickname ? (
-                        <Text
-                          style={[styles.bikeNickname, { color: theme.textSecondary }]}
-                        >
-                          {bike.nickname}
-                        </Text>
-                      ) : null}
-                    </View>
                   </View>
                 ))}
               </Card>
@@ -628,6 +864,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: spacing[3],
+    paddingVertical: spacing[1],
   },
   bikeImage: {
     width: 48,
@@ -647,6 +884,43 @@ const styles = StyleSheet.create({
   },
   bikeNickname: {
     ...fontSize.xs,
+  },
+  bikeDivider: {
+    height: 1,
+    marginVertical: spacing[2],
+  },
+  bikeActions: {
+    flexDirection: "row",
+    gap: spacing[1],
+  },
+  bikeActionBtn: {
+    padding: spacing[1],
+  },
+  bikeEditForm: {
+    paddingVertical: spacing[1],
+  },
+  bikeTypeRow: {
+    flexDirection: "row",
+    gap: spacing[2],
+  },
+  bikeTypeBtn: {
+    flex: 1,
+    paddingVertical: spacing[2],
+    borderRadius: borderRadius.lg,
+    borderWidth: 1,
+    alignItems: "center",
+  },
+  bikeTypeBtnText: {
+    ...fontSize.sm,
+    fontWeight: "500",
+  },
+  bikeEditActions: {
+    flexDirection: "row",
+    gap: spacing[2],
+    marginTop: spacing[1],
+  },
+  bikeEditSaveBtn: {
+    flex: 1,
   },
   modalContainer: {
     flex: 1,
