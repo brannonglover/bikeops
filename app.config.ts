@@ -75,4 +75,10 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     ["expo-notifications", { sounds: [], mode: IS_DEV ? "development" : "production" }],
     "./plugins/withDynamicVersioning",
   ],
+  extra: {
+    eas: {
+      // Find this at expo.dev → your project → Project settings, or run: eas project:info
+      projectId: process.env.EAS_PROJECT_ID ?? "dd40df73-ac62-42be-8a5c-921540bcc3b2",
+    },
+  },
 });

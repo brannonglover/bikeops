@@ -28,10 +28,12 @@ export interface NotificationData {
 
 async function getExpoPushToken(): Promise<string | null> {
   try {
-    const projectId = Constants.expoConfig?.extra?.eas?.projectId;
-    const token = await Notifications.getExpoPushTokenAsync({
-      projectId,
-    });
+    // easConfig.projectId is injected automatically by EAS builds.
+    // extra.eas.projectId is the manual fallback for local/custom builds.
+    const projectId =
+      Constants.easConfig?.projectId ??
+      Constants.expoConfig?.extra?.eas?.projectId;
+    const token = await Notifications.getExpoPushTokenAsync({ projectId });
     return token.data;
   } catch {
     return null;
