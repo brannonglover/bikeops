@@ -233,7 +233,9 @@ export default function ConversationScreen() {
           flexDirection: "row",
           alignItems: "center",
           gap: 2,
-          backgroundColor: theme.surface,
+          backgroundColor: colors.white,
+          borderWidth: 1,
+          borderColor: colors.slate[200],
           borderRadius: borderRadius.full,
           paddingHorizontal: spacing[1],
           paddingVertical: 2,
@@ -245,13 +247,14 @@ export default function ConversationScreen() {
         },
         reactionPillMine: {
           backgroundColor: colors.emerald[50],
+          borderColor: colors.emerald[300],
         },
         reactionPillEmoji: {
           fontSize: 14,
         },
         reactionPillCount: {
           ...fontSize.xs,
-          color: theme.textTertiary,
+          color: colors.slate[600],
         },
         popupBackdrop: {
           flex: 1,
@@ -260,7 +263,9 @@ export default function ConversationScreen() {
           alignItems: "center",
         },
         popupCard: {
-          backgroundColor: theme.surface,
+          backgroundColor: colors.white,
+          borderWidth: 1,
+          borderColor: colors.slate[200],
           borderRadius: borderRadius["2xl"],
           paddingVertical: spacing[3],
           paddingHorizontal: spacing[2],
@@ -292,7 +297,7 @@ export default function ConversationScreen() {
         },
         popupDivider: {
           height: 1,
-          backgroundColor: theme.surfaceBorder,
+          backgroundColor: colors.slate[200],
           marginBottom: spacing[1],
         },
         popupAction: {
