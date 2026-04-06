@@ -1596,7 +1596,7 @@ export default function JobDetailScreen() {
               title="Open Chat"
               onPress={() =>
                 router.push(
-                  `/(staff)/chat/index?customer=${job.customer!.id}&jobId=${job.id}` as never
+                  `/(staff)/chat?customer=${job.customer!.id}&jobId=${job.id}` as never
                 )
               }
               variant="secondary"

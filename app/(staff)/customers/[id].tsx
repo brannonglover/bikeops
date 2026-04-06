@@ -690,7 +690,7 @@ export default function CustomerDetailScreen() {
             <Button
               title="Open Chat"
               onPress={() =>
-                router.push(`/(staff)/chat/index?customer=${customer.id}` as never)
+                router.push(`/(staff)/chat?customer=${customer.id}` as never)
               }
               variant="secondary"
             />
