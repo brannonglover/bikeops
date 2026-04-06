@@ -67,6 +67,7 @@ export default function StaffLayout() {
         name="services"
         options={{
           title: "Services",
+          headerShown: false,
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="build" size={size} color={color} />
           ),

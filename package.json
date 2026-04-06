@@ -13,6 +13,7 @@
     "@react-native-community/datetimepicker": "^8.4.4",
     "@tanstack/react-query": "^5.96.1",
     "expo": "~54.0.33",
+    "expo-clipboard": "~8.0.8",
     "expo-constants": "~18.0.13",
     "expo-dev-client": "~6.0.20",
     "expo-device": "~8.0.10",
@@ -39,6 +40,9 @@
   "devDependencies": {
     "@types/react": "~19.1.0",
     "typescript": "~5.9.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   },
   "private": true
 }

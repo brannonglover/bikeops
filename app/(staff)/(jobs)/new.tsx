@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import {
   View,
   Text,
@@ -8,25 +8,29 @@ import {
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
+  Modal,
+  Pressable,
 } from "react-native";
 import { useRouter, Stack } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/lib/api";
-import { type Customer, type Service } from "@/lib/types";
+import { type Customer, type Bike, type Service, type DeliveryType } from "@/lib/types";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
-import { customerName, formatCurrency } from "@/lib/format";
+import { customerName, formatCurrency, formatDate } from "@/lib/format";
 
 export default function NewJobScreen() {
   const { theme } = useTheme();
   const router = useRouter();
   const queryClient = useQueryClient();
 
-  const [bikes, setBikes] = useState([{ make: "", model: "" }]);
+  const [manualBikes, setManualBikes] = useState([{ make: "", model: "" }]);
+  const [selectedCustomerBikeIds, setSelectedCustomerBikeIds] = useState<string[]>([]);
+  const [loadingCustomer, setLoadingCustomer] = useState(false);
   const [notes, setNotes] = useState("");
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [customerSearch, setCustomerSearch] = useState("");
@@ -36,6 +40,12 @@ export default function NewJobScreen() {
   const [selectedServiceIds, setSelectedServiceIds] = useState<string[]>([]);
   const [serviceSearch, setServiceSearch] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [deliveryType, setDeliveryType] = useState<DeliveryType>("DROP_OFF_AT_SHOP");
+  const [dropOffDate, setDropOffDate] = useState<string | null>(null);
+  const [pickupDate, setPickupDate] = useState<string | null>(null);
+  const [showDatePicker, setShowDatePicker] = useState<"dropOff" | "pickup" | null>(null);
+  const [calMonth, setCalMonth] = useState(new Date().getMonth());
+  const [calYear, setCalYear] = useState(new Date().getFullYear());
 
   const filteredServices = services.filter((svc) => {
     if (!serviceSearch.trim()) return true;
@@ -69,14 +79,61 @@ export default function NewJobScreen() {
     }
   };
 
-  const updateBike = (index: number, field: "make" | "model", value: string) => {
-    setBikes((prev) => prev.map((b, i) => (i === index ? { ...b, [field]: value } : b)));
+  const handleSelectCustomer = async (c: Customer) => {
+    setCustomerSearch("");
+    setCustomers([]);
+    setSelectedCustomer(c);
+    setLoadingCustomer(true);
+    try {
+      const { data } = await api.get<Customer>(`/api/customers/${c.id}`);
+
+      if (!data.bikes || data.bikes.length === 0) {
+        try {
+          const { data: bikes } = await api.get<Bike[]>(
+            `/api/customers/${c.id}/bikes`
+          );
+          if (Array.isArray(bikes) && bikes.length > 0) {
+            data.bikes = bikes;
+          }
+        } catch {
+          // Endpoint may not exist; bikes will remain empty
+        }
+      }
+
+      setSelectedCustomer(data);
+      if (data.bikes && data.bikes.length > 0) {
+        setSelectedCustomerBikeIds(data.bikes.map((b) => b.id));
+        setManualBikes([]);
+      }
+    } catch {
+      // Keep the search-result version; bikes won't be available
+    } finally {
+      setLoadingCustomer(false);
+    }
   };
 
-  const addBike = () => setBikes((prev) => [...prev, { make: "", model: "" }]);
+  const handleClearCustomer = () => {
+    setSelectedCustomer(null);
+    setSelectedCustomerBikeIds([]);
+    if (manualBikes.length === 0) {
+      setManualBikes([{ make: "", model: "" }]);
+    }
+  };
 
-  const removeBike = (index: number) => {
-    setBikes((prev) => prev.filter((_, i) => i !== index));
+  const toggleCustomerBike = (bikeId: string) => {
+    setSelectedCustomerBikeIds((prev) =>
+      prev.includes(bikeId) ? prev.filter((id) => id !== bikeId) : [...prev, bikeId]
+    );
+  };
+
+  const updateManualBike = (index: number, field: "make" | "model", value: string) => {
+    setManualBikes((prev) => prev.map((b, i) => (i === index ? { ...b, [field]: value } : b)));
+  };
+
+  const addManualBike = () => setManualBikes((prev) => [...prev, { make: "", model: "" }]);
+
+  const removeManualBike = (index: number) => {
+    setManualBikes((prev) => prev.filter((_, i) => i !== index));
   };
 
   const toggleService = (id: string) => {
@@ -85,23 +142,83 @@ export default function NewJobScreen() {
     );
   };
 
-  const hasValidBike = bikes.some((b) => b.make.trim() && b.model.trim());
+  const hasValidBike =
+    selectedCustomerBikeIds.length > 0 ||
+    manualBikes.some((b) => b.make.trim() && b.model.trim());
+
+  const calDays = useMemo(() => {
+    const firstDay = new Date(calYear, calMonth, 1).getDay();
+    const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+    const blanks: null[] = Array(firstDay).fill(null);
+    const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
+    return [...blanks, ...days];
+  }, [calYear, calMonth]);
+
+  const calSelectedDay = useMemo(() => {
+    if (!showDatePicker) return null;
+    const raw = showDatePicker === "dropOff" ? dropOffDate : pickupDate;
+    if (!raw) return null;
+    const d = new Date(raw);
+    if (d.getMonth() === calMonth && d.getFullYear() === calYear) return d.getDate();
+    return null;
+  }, [showDatePicker, dropOffDate, pickupDate, calMonth, calYear]);
+
+  const openDatePicker = useCallback(
+    (field: "dropOff" | "pickup") => {
+      const existing = field === "dropOff" ? dropOffDate : pickupDate;
+      const d = existing ? new Date(existing) : new Date();
+      setCalMonth(d.getMonth());
+      setCalYear(d.getFullYear());
+      setShowDatePicker(field);
+    },
+    [dropOffDate, pickupDate]
+  );
+
+  const handleSelectDay = useCallback(
+    (day: number) => {
+      if (!showDatePicker) return;
+      const iso = new Date(calYear, calMonth, day, 12).toISOString();
+      if (showDatePicker === "dropOff") setDropOffDate(iso);
+      else setPickupDate(iso);
+      setShowDatePicker(null);
+    },
+    [showDatePicker, calYear, calMonth]
+  );
+
+  const clearDate = useCallback(
+    (field: "dropOff" | "pickup") => {
+      if (field === "dropOff") setDropOffDate(null);
+      else setPickupDate(null);
+      setShowDatePicker(null);
+    },
+    []
+  );
 
   const handleSubmit = async () => {
-    const validBikes = bikes.filter((b) => b.make.trim() && b.model.trim());
-    if (validBikes.length === 0) {
-      Alert.alert("Required", "At least one bike with make and model is required.");
+    const customerBikes = (selectedCustomer?.bikes ?? [])
+      .filter((b) => selectedCustomerBikeIds.includes(b.id))
+      .map((b) => ({ make: b.make, model: b.model, bikeId: b.id }));
+    const validManual = manualBikes
+      .filter((b) => b.make.trim() && b.model.trim())
+      .map((b) => ({ make: b.make.trim(), model: b.model.trim() }));
+    const allBikes = [...customerBikes, ...validManual];
+
+    if (allBikes.length === 0) {
+      Alert.alert("Required", "At least one bike is required.");
       return;
     }
     setSubmitting(true);
     try {
       await api.post("/api/jobs", {
-        bikeMake: validBikes[0].make.trim(),
-        bikeModel: validBikes[0].model.trim(),
+        bikeMake: allBikes[0].make,
+        bikeModel: allBikes[0].model,
         customerId: selectedCustomer?.id ?? null,
         notes: notes.trim() || null,
         serviceIds: selectedServiceIds,
-        bikes: validBikes.map((b) => ({ make: b.make.trim(), model: b.model.trim() })),
+        bikes: allBikes,
+        deliveryType,
+        dropOffDate: dropOffDate ?? null,
+        pickupDate: pickupDate ?? null,
       });
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
       router.back();
@@ -158,8 +275,18 @@ export default function NewJobScreen() {
                       {selectedCustomer.email}
                     </Text>
                   ) : null}
+                  {loadingCustomer ? (
+                    <Text style={[styles.meta, { color: theme.textTertiary }]}>
+                      Loading bikes…
+                    </Text>
+                  ) : selectedCustomer.bikes?.length ? (
+                    <Text style={[styles.meta, { color: theme.textSecondary }]}>
+                      {selectedCustomer.bikes.length}{" "}
+                      {selectedCustomer.bikes.length === 1 ? "bike" : "bikes"} on file
+                    </Text>
+                  ) : null}
                 </View>
-                <TouchableOpacity onPress={() => setSelectedCustomer(null)}>
+                <TouchableOpacity onPress={handleClearCustomer}>
                   <Ionicons name="close-circle" size={20} color={theme.iconMuted} />
                 </TouchableOpacity>
               </View>
@@ -181,11 +308,7 @@ export default function NewJobScreen() {
                     {customers.slice(0, 5).map((c) => (
                       <TouchableOpacity
                         key={c.id}
-                        onPress={() => {
-                          setSelectedCustomer(c);
-                          setCustomerSearch("");
-                          setCustomers([]);
-                        }}
+                        onPress={() => handleSelectCustomer(c)}
                         style={[
                           styles.customerOption,
                           { borderBottomColor: theme.surfaceBorderSubtle },
@@ -215,47 +338,111 @@ export default function NewJobScreen() {
           {/* Bikes */}
           <Card style={styles.section}>
             <Text style={[styles.sectionTitle, { color: theme.textHeading }]}>
-              {bikes.length === 1 ? "Bike" : "Bikes"}
+              Bikes
             </Text>
-            {bikes.map((bike, index) => (
-              <View
-                key={index}
-                style={[
-                  styles.bikeEntry,
-                  index > 0 && { borderTopWidth: 1, borderTopColor: theme.surfaceBorderSubtle },
-                ]}
-              >
-                {bikes.length > 1 && (
-                  <View style={styles.bikeHeader}>
-                    <Text style={[styles.bikeLabel, { color: theme.textSecondary }]}>
-                      Bike {index + 1}
-                    </Text>
+
+            {selectedCustomer?.bikes && selectedCustomer.bikes.length > 0 ? (
+              <>
+                <Text style={[styles.subsectionLabel, { color: theme.textSecondary }]}>
+                  {customerName(selectedCustomer)}{"'"}s bikes
+                </Text>
+                {selectedCustomer.bikes.map((bike) => {
+                  const selected = selectedCustomerBikeIds.includes(bike.id);
+                  return (
                     <TouchableOpacity
-                      onPress={() => removeBike(index)}
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      key={bike.id}
+                      onPress={() => toggleCustomerBike(bike.id)}
+                      style={[
+                        styles.customerBikeOption,
+                        selected && {
+                          backgroundColor: theme.dark
+                            ? "rgba(245, 158, 11, 0.15)"
+                            : colors.amber[50],
+                        },
+                      ]}
                     >
-                      <Ionicons name="trash-outline" size={18} color={theme.iconMuted} />
+                      <Ionicons
+                        name={selected ? "checkbox" : "square-outline"}
+                        size={20}
+                        color={selected ? colors.amber[500] : theme.iconMuted}
+                      />
+                      <Ionicons name="bicycle" size={18} color={theme.icon} />
+                      <View style={styles.customerBikeInfo}>
+                        <Text style={[styles.customerBikeName, { color: theme.text }]}>
+                          {bike.make} {bike.model}
+                        </Text>
+                        {bike.nickname ? (
+                          <Text
+                            style={[styles.customerBikeNickname, { color: theme.textSecondary }]}
+                          >
+                            {bike.nickname}
+                          </Text>
+                        ) : null}
+                      </View>
                     </TouchableOpacity>
-                  </View>
-                )}
-                <Input
-                  label="Make"
-                  placeholder="e.g. Trek, Specialized"
-                  value={bike.make}
-                  onChangeText={(v) => updateBike(index, "make", v)}
-                  containerStyle={styles.inputGap}
-                />
-                <Input
-                  label="Model"
-                  placeholder="e.g. Domane, Roubaix"
-                  value={bike.model}
-                  onChangeText={(v) => updateBike(index, "model", v)}
-                />
-              </View>
-            ))}
-            <TouchableOpacity onPress={addBike} style={styles.addBikeBtn}>
+                  );
+                })}
+              </>
+            ) : null}
+
+            {loadingCustomer ? (
+              <Text style={[styles.loadingBikesText, { color: theme.textTertiary }]}>
+                Loading customer bikes…
+              </Text>
+            ) : null}
+
+            {manualBikes.map((bike, index) => {
+              const hasCustomerBikes = (selectedCustomer?.bikes?.length ?? 0) > 0;
+              return (
+                <View
+                  key={`manual-${index}`}
+                  style={[
+                    styles.bikeEntry,
+                    (index > 0 || hasCustomerBikes) && {
+                      borderTopWidth: 1,
+                      borderTopColor: theme.surfaceBorderSubtle,
+                    },
+                  ]}
+                >
+                  {(manualBikes.length > 1 || hasCustomerBikes) && (
+                    <View style={styles.bikeHeader}>
+                      <Text style={[styles.bikeLabel, { color: theme.textSecondary }]}>
+                        {hasCustomerBikes
+                          ? manualBikes.length > 1
+                            ? `New Bike ${index + 1}`
+                            : "New Bike"
+                          : `Bike ${index + 1}`}
+                      </Text>
+                      <TouchableOpacity
+                        onPress={() => removeManualBike(index)}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Ionicons name="trash-outline" size={18} color={theme.iconMuted} />
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                  <Input
+                    label="Make"
+                    placeholder="e.g. Trek, Specialized"
+                    value={bike.make}
+                    onChangeText={(v) => updateManualBike(index, "make", v)}
+                    containerStyle={styles.inputGap}
+                  />
+                  <Input
+                    label="Model"
+                    placeholder="e.g. Domane, Roubaix"
+                    value={bike.model}
+                    onChangeText={(v) => updateManualBike(index, "model", v)}
+                  />
+                </View>
+              );
+            })}
+
+            <TouchableOpacity onPress={addManualBike} style={styles.addBikeBtn}>
               <Ionicons name="add-circle-outline" size={20} color={colors.amber[600]} />
-              <Text style={styles.addBikeText}>Add Bike</Text>
+              <Text style={styles.addBikeText}>
+                {(selectedCustomer?.bikes?.length ?? 0) > 0 ? "Add New Bike" : "Add Bike"}
+              </Text>
             </TouchableOpacity>
           </Card>
 
@@ -294,7 +481,11 @@ export default function NewJobScreen() {
                             onPress={() => toggleService(svc.id)}
                             style={[
                               styles.serviceOption,
-                              selected && styles.serviceOptionSelected,
+                              selected && {
+                                backgroundColor: theme.dark
+                                  ? "rgba(245, 158, 11, 0.15)"
+                                  : colors.amber[50],
+                              },
                             ]}
                           >
                             <Ionicons
@@ -330,6 +521,114 @@ export default function NewJobScreen() {
             </Card>
           ) : null}
 
+          {/* Details: Delivery & Dates */}
+          <Card style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: theme.textHeading }]}>
+              Details
+            </Text>
+            <Text style={[styles.detailLabel, { color: theme.textSecondary }]}>
+              Delivery
+            </Text>
+            <View style={styles.deliveryOptions}>
+              <TouchableOpacity
+                onPress={() => setDeliveryType("DROP_OFF_AT_SHOP")}
+                style={[
+                  styles.deliveryOption,
+                  deliveryType === "DROP_OFF_AT_SHOP" && {
+                    backgroundColor: theme.dark
+                      ? `${colors.amber[500]}22`
+                      : colors.amber[50],
+                  },
+                ]}
+              >
+                <Ionicons
+                  name={
+                    deliveryType === "DROP_OFF_AT_SHOP"
+                      ? "radio-button-on"
+                      : "radio-button-off"
+                  }
+                  size={20}
+                  color={
+                    deliveryType === "DROP_OFF_AT_SHOP"
+                      ? colors.amber[500]
+                      : theme.textMuted
+                  }
+                />
+                <Text style={[styles.deliveryLabel, { color: theme.text }]}>
+                  Drop-off at shop
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => setDeliveryType("COLLECTION_SERVICE")}
+                style={[
+                  styles.deliveryOption,
+                  deliveryType === "COLLECTION_SERVICE" && {
+                    backgroundColor: theme.dark
+                      ? `${colors.amber[500]}22`
+                      : colors.amber[50],
+                  },
+                ]}
+              >
+                <Ionicons
+                  name={
+                    deliveryType === "COLLECTION_SERVICE"
+                      ? "radio-button-on"
+                      : "radio-button-off"
+                  }
+                  size={20}
+                  color={
+                    deliveryType === "COLLECTION_SERVICE"
+                      ? colors.amber[500]
+                      : theme.textMuted
+                  }
+                />
+                <Text style={[styles.deliveryLabel, { color: theme.text }]}>
+                  Collection service
+                </Text>
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity
+              style={styles.dateRow}
+              onPress={() => openDatePicker("dropOff")}
+              activeOpacity={0.6}
+            >
+              <Text style={[styles.detailLabel, { color: theme.textSecondary }]}>
+                Drop-off
+              </Text>
+              <View style={styles.dateValue}>
+                <Text
+                  style={[
+                    styles.dateText,
+                    { color: dropOffDate ? theme.text : theme.textMuted },
+                  ]}
+                >
+                  {dropOffDate ? formatDate(dropOffDate) : "Set date"}
+                </Text>
+                <Ionicons name="calendar-outline" size={16} color={theme.textMuted} />
+              </View>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.dateRow}
+              onPress={() => openDatePicker("pickup")}
+              activeOpacity={0.6}
+            >
+              <Text style={[styles.detailLabel, { color: theme.textSecondary }]}>
+                Pickup
+              </Text>
+              <View style={styles.dateValue}>
+                <Text
+                  style={[
+                    styles.dateText,
+                    { color: pickupDate ? theme.text : theme.textMuted },
+                  ]}
+                >
+                  {pickupDate ? formatDate(pickupDate) : "Set date"}
+                </Text>
+                <Ionicons name="calendar-outline" size={16} color={theme.textMuted} />
+              </View>
+            </TouchableOpacity>
+          </Card>
+
           {/* Notes */}
           <Card style={styles.section}>
             <Text style={[styles.sectionTitle, { color: theme.textHeading }]}>
@@ -354,6 +653,131 @@ export default function NewJobScreen() {
           />
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* Date picker modal */}
+      <Modal
+        visible={showDatePicker !== null}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setShowDatePicker(null)}
+      >
+        <Pressable
+          style={datePickerStyles.backdrop}
+          onPress={() => setShowDatePicker(null)}
+        >
+          <Pressable
+            style={[datePickerStyles.sheet, { backgroundColor: theme.surface }]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <Text style={[datePickerStyles.title, { color: theme.textHeading }]}>
+              {showDatePicker === "dropOff" ? "Drop-off Date" : "Pickup Date"}
+            </Text>
+
+            <View style={datePickerStyles.navRow}>
+              <TouchableOpacity
+                onPress={() => {
+                  if (calMonth === 0) { setCalMonth(11); setCalYear(calYear - 1); }
+                  else setCalMonth(calMonth - 1);
+                }}
+                style={datePickerStyles.navButton}
+              >
+                <Ionicons name="chevron-back" size={20} color={theme.text} />
+              </TouchableOpacity>
+              <Text style={[datePickerStyles.navLabel, { color: theme.text }]}>
+                {new Date(calYear, calMonth).toLocaleString("en-US", {
+                  month: "long",
+                  year: "numeric",
+                })}
+              </Text>
+              <TouchableOpacity
+                onPress={() => {
+                  if (calMonth === 11) { setCalMonth(0); setCalYear(calYear + 1); }
+                  else setCalMonth(calMonth + 1);
+                }}
+                style={datePickerStyles.navButton}
+              >
+                <Ionicons name="chevron-forward" size={20} color={theme.text} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={datePickerStyles.weekRow}>
+              {["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].map((d) => (
+                <Text
+                  key={d}
+                  style={[datePickerStyles.weekDay, { color: theme.textMuted }]}
+                >
+                  {d}
+                </Text>
+              ))}
+            </View>
+
+            <View style={datePickerStyles.grid}>
+              {calDays.map((day, i) => {
+                if (day === null)
+                  return <View key={`b${i}`} style={datePickerStyles.cell} />;
+                const isSelected = day === calSelectedDay;
+                const isToday =
+                  day === new Date().getDate() &&
+                  calMonth === new Date().getMonth() &&
+                  calYear === new Date().getFullYear();
+                return (
+                  <TouchableOpacity
+                    key={day}
+                    onPress={() => handleSelectDay(day)}
+                    style={datePickerStyles.cell}
+                    activeOpacity={0.6}
+                  >
+                    <View
+                      style={[
+                        datePickerStyles.dayCircle,
+                        isSelected && { backgroundColor: colors.amber[500] },
+                        !isSelected &&
+                          isToday && {
+                            borderWidth: 1,
+                            borderColor: colors.amber[400],
+                          },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          datePickerStyles.dayText,
+                          { color: theme.text },
+                          isSelected && { color: colors.white, fontWeight: "700" },
+                        ]}
+                      >
+                        {day}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            <View style={datePickerStyles.actions}>
+              {((showDatePicker === "dropOff" && dropOffDate) ||
+                (showDatePicker === "pickup" && pickupDate)) ? (
+                <TouchableOpacity
+                  onPress={() => clearDate(showDatePicker!)}
+                  style={datePickerStyles.clearButton}
+                >
+                  <Text style={[datePickerStyles.clearText, { color: colors.red[500] }]}>
+                    Clear
+                  </Text>
+                </TouchableOpacity>
+              ) : (
+                <View />
+              )}
+              <Button
+                title="Cancel"
+                onPress={() => setShowDatePicker(null)}
+                variant="ghost"
+                size="md"
+              />
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </>
   );
 }
@@ -407,6 +831,34 @@ const styles = StyleSheet.create({
     ...fontSize.sm,
     fontWeight: "600",
     color: colors.amber[600],
+  },
+  subsectionLabel: {
+    ...fontSize.xs,
+    fontWeight: "600",
+    textTransform: "uppercase",
+    letterSpacing: 0.3,
+  },
+  customerBikeOption: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing[2],
+    paddingVertical: spacing[2],
+    paddingHorizontal: spacing[2],
+    borderRadius: borderRadius.lg,
+  },
+  customerBikeInfo: {
+    flex: 1,
+  },
+  customerBikeName: {
+    ...fontSize.sm,
+    fontWeight: "500",
+  },
+  customerBikeNickname: {
+    ...fontSize.xs,
+  },
+  loadingBikesText: {
+    ...fontSize.sm,
+    paddingVertical: spacing[2],
   },
   selectedCustomer: {
     flexDirection: "row",
@@ -478,8 +930,37 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing[2],
     borderRadius: borderRadius.lg,
   },
-  serviceOptionSelected: {
-    backgroundColor: colors.amber[50],
+  serviceOptionSelected: {},
+  detailLabel: {
+    ...fontSize.sm,
+  },
+  deliveryOptions: {
+    gap: spacing[1],
+  },
+  deliveryOption: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing[3],
+    paddingHorizontal: spacing[3],
+    minHeight: 44,
+    borderRadius: borderRadius.lg,
+  },
+  deliveryLabel: {
+    ...fontSize.sm,
+  },
+  dateRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  dateValue: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing[1.5],
+  },
+  dateText: {
+    ...fontSize.sm,
+    fontWeight: "500",
   },
   serviceInfo: {
     flex: 1,
@@ -495,5 +976,88 @@ const styles = StyleSheet.create({
     ...fontSize.sm,
     fontWeight: "600",
     fontVariant: ["tabular-nums"],
+  },
+});
+
+const datePickerStyles = StyleSheet.create({
+  backdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: spacing[4],
+  },
+  sheet: {
+    width: "100%",
+    maxWidth: 360,
+    borderRadius: borderRadius.xl,
+    padding: spacing[4],
+    gap: spacing[2],
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.2,
+    shadowRadius: 24,
+    elevation: 12,
+  },
+  title: {
+    ...fontSize.lg,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  navRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  navButton: {
+    padding: spacing[2],
+  },
+  navLabel: {
+    ...fontSize.base,
+    fontWeight: "600",
+  },
+  weekRow: {
+    flexDirection: "row",
+  },
+  weekDay: {
+    width: `${100 / 7}%`,
+    textAlign: "center",
+    ...fontSize.xs,
+    fontWeight: "600",
+    paddingVertical: spacing[1],
+  },
+  grid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+  },
+  cell: {
+    width: `${100 / 7}%`,
+    aspectRatio: 1,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  dayCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  dayText: {
+    ...fontSize.sm,
+  },
+  actions: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: spacing[1],
+  },
+  clearButton: {
+    paddingVertical: spacing[2],
+    paddingHorizontal: spacing[1],
+  },
+  clearText: {
+    ...fontSize.sm,
+    fontWeight: "600",
   },
 });

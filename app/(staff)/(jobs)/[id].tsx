@@ -28,6 +28,7 @@ import { StageBadge, PaymentBadge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { ImageViewer } from "@/components/ui/ImageViewer";
+import { InvoiceTab } from "@/components/jobs/InvoiceTab";
 import {
   customerName,
   jobBikeLabel,
@@ -37,6 +38,8 @@ import {
 } from "@/lib/format";
 import { AppleMaps } from "expo-maps";
 import * as Device from "expo-device";
+
+type Tab = "details" | "invoice";
 
 const MAP_HEIGHT = 150;
 const MAP_ZOOM = 15;
@@ -114,6 +117,7 @@ export default function JobDetailScreen() {
   const [showDatePicker, setShowDatePicker] = useState<"dropOff" | "pickup" | null>(null);
   const [calMonth, setCalMonth] = useState(new Date().getMonth());
   const [calYear, setCalYear] = useState(new Date().getFullYear());
+  const [activeTab, setActiveTab] = useState<Tab>("details");
 
   const styles = useMemo(
     () =>
@@ -601,6 +605,34 @@ export default function JobDetailScreen() {
           gap: spacing[3],
           marginTop: spacing[2],
         },
+        tabBar: {
+          flexDirection: "row",
+          borderBottomWidth: 1,
+          borderBottomColor: theme.surfaceBorder,
+          backgroundColor: theme.background,
+        },
+        tab: {
+          flex: 1,
+          paddingVertical: spacing[3],
+          alignItems: "center",
+        },
+        tabText: {
+          ...fontSize.sm,
+          fontWeight: "500",
+          color: theme.textSecondary,
+        },
+        tabActive: {
+          borderBottomWidth: 2,
+          borderBottomColor: colors.blue[500],
+        },
+        tabTextActive: {
+          color: colors.blue[500],
+          fontWeight: "600",
+        },
+        invoiceContainer: {
+          padding: spacing[4],
+          paddingBottom: spacing[12],
+        },
       }),
     [theme]
   );
@@ -923,6 +955,14 @@ export default function JobDetailScreen() {
     return { tiles, pinLeft: cx - 14, pinTop: cy - 28 };
   }, [addressCoords, mapWidth]);
 
+  const handleInvoiceJobUpdated = useCallback(
+    (updated: Job) => {
+      queryClient.setQueryData(["job", id], updated);
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    },
+    [queryClient, id]
+  );
+
   if (isLoading || !job) return <LoadingScreen message="Loading job..." />;
 
   const total = jobTotal(job.jobServices, job.jobProducts);
@@ -939,13 +979,38 @@ export default function JobDetailScreen() {
           ),
         }}
       />
+      {/* Tab bar */}
+      <View style={styles.tabBar}>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === "details" && styles.tabActive]}
+          onPress={() => setActiveTab("details")}
+          activeOpacity={0.7}
+        >
+          <Text style={[styles.tabText, activeTab === "details" && styles.tabTextActive]}>
+            Details
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === "invoice" && styles.tabActive]}
+          onPress={() => setActiveTab("invoice")}
+          activeOpacity={0.7}
+        >
+          <Text style={[styles.tabText, activeTab === "invoice" && styles.tabTextActive]}>
+            Invoice
+          </Text>
+        </TouchableOpacity>
+      </View>
       <ScrollView
         style={styles.container}
-        contentContainerStyle={styles.content}
+        contentContainerStyle={activeTab === "invoice" ? styles.invoiceContainer : styles.content}
         refreshControl={
           <RefreshControl refreshing={isManualRefresh} onRefresh={handleRefresh} />
         }
       >
+        {activeTab === "invoice" ? (
+          <InvoiceTab job={job} onJobUpdated={handleInvoiceJobUpdated} />
+        ) : (
+        <>
         {/* Stage and Status */}
         <Card style={styles.section}>
           <View style={styles.row}>
@@ -1550,6 +1615,8 @@ export default function JobDetailScreen() {
             variant="danger"
           />
         </View>
+        </>
+        )}
       </ScrollView>
       <ImageViewer uri={viewingImageUrl} onClose={() => setViewingImageUrl(null)} />
 

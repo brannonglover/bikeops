@@ -53,7 +53,7 @@ export function JobCard({
 
       {job.jobServices.length > 0 ? (
         <Text style={[styles.meta, { color: theme.textSecondary }]} numberOfLines={1}>
-          {job.jobServices.map((s) => s.service.name).join(", ")}
+          {job.jobServices.filter((s) => s.service).map((s) => s.service.name).join(", ")}
         </Text>
       ) : null}
 

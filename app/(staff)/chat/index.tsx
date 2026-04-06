@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   View,
   Text,
@@ -16,6 +16,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/lib/api";
 import { type Conversation, type Customer } from "@/lib/types";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
+import { useTheme } from "@/lib/ThemeContext";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { customerName, formatDateTime } from "@/lib/format";
@@ -46,6 +47,7 @@ function pickConversationForCustomer(
 }
 
 export default function ChatListScreen() {
+  const { theme } = useTheme();
   const router = useRouter();
   const params = useLocalSearchParams<{
     customer?: string | string[];
@@ -159,8 +161,16 @@ export default function ChatListScreen() {
   };
 
   return (
-    <View style={styles.container}>
-      <View style={styles.toolbar}>
+    <View style={[styles.container, { backgroundColor: theme.background }]}>
+      <View
+        style={[
+          styles.toolbar,
+          {
+            backgroundColor: theme.surface,
+            borderBottomColor: theme.surfaceBorder,
+          },
+        ]}
+      >
         <TouchableOpacity onPress={openNewModal} style={styles.newButton}>
           <Ionicons name="add" size={18} color={colors.white} />
           <Text style={styles.newButtonText}>New conversation</Text>
@@ -195,9 +205,22 @@ export default function ChatListScreen() {
                     },
                   ]);
                 }}
-                style={[styles.row, unread && styles.rowUnread]}
+                style={[
+                  styles.row,
+                  { borderBottomColor: theme.surfaceBorderSubtle },
+                  unread && {
+                    backgroundColor: theme.dark
+                      ? colors.emerald[900] + "30"
+                      : colors.emerald[50] + "40",
+                  },
+                ]}
               >
-                <View style={styles.avatar}>
+                <View
+                  style={[
+                    styles.avatar,
+                    { backgroundColor: theme.dark ? colors.slate[600] : colors.slate[400] },
+                  ]}
+                >
                   <Ionicons
                     name="person"
                     size={20}
@@ -207,7 +230,11 @@ export default function ChatListScreen() {
                 <View style={styles.rowContent}>
                   <View style={styles.rowHeader}>
                     <Text
-                      style={[styles.rowName, unread && styles.rowNameBold]}
+                      style={[
+                        styles.rowName,
+                        { color: theme.text },
+                        unread && styles.rowNameBold,
+                      ]}
                       numberOfLines={1}
                     >
                       {customerName(item.customer)}
@@ -216,21 +243,27 @@ export default function ChatListScreen() {
                         : ""}
                     </Text>
                     {lastMsg ? (
-                      <Text style={styles.rowTime}>
+                      <Text style={[styles.rowTime, { color: theme.textMuted }]}>
                         {formatDateTime(lastMsg.createdAt)}
                       </Text>
                     ) : null}
                   </View>
                   {lastMsg ? (
                     <Text
-                      style={[styles.rowPreview, unread && styles.rowPreviewBold]}
+                      style={[
+                        styles.rowPreview,
+                        { color: theme.textSecondary },
+                        unread && { fontWeight: "500", color: theme.textTertiary },
+                      ]}
                       numberOfLines={1}
                     >
                       {lastMsg.sender === "STAFF" ? "You: " : ""}
                       {lastMsg.body || "(image)"}
                     </Text>
                   ) : (
-                    <Text style={styles.rowPreview}>No messages yet</Text>
+                    <Text style={[styles.rowPreview, { color: theme.textSecondary }]}>
+                      No messages yet
+                    </Text>
                   )}
                 </View>
                 {unread ? <View style={styles.unreadDot} /> : null}
@@ -241,26 +274,39 @@ export default function ChatListScreen() {
         />
       )}
 
-      {/* New conversation modal */}
       <Modal
         visible={showNewModal}
         animationType="slide"
         presentationStyle="pageSheet"
         onRequestClose={() => setShowNewModal(false)}
       >
-        <View style={styles.modalContainer}>
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Start conversation</Text>
+        <View style={[styles.modalContainer, { backgroundColor: theme.surface }]}>
+          <View
+            style={[
+              styles.modalHeader,
+              { borderBottomColor: theme.surfaceBorder },
+            ]}
+          >
+            <Text style={[styles.modalTitle, { color: theme.text }]}>
+              Start conversation
+            </Text>
             <TouchableOpacity onPress={() => setShowNewModal(false)}>
-              <Ionicons name="close" size={24} color={colors.slate[500]} />
+              <Ionicons name="close" size={24} color={theme.icon} />
             </TouchableOpacity>
           </View>
           <TextInput
             value={search}
             onChangeText={setSearch}
             placeholder="Search by name, email, or phone..."
-            style={styles.searchInput}
-            placeholderTextColor={colors.slate[400]}
+            style={[
+              styles.searchInput,
+              {
+                borderColor: theme.inputBorder,
+                backgroundColor: theme.inputBg,
+                color: theme.inputText,
+              },
+            ]}
+            placeholderTextColor={theme.textMuted}
           />
           <FlatList
             data={filteredCustomers}
@@ -268,18 +314,25 @@ export default function ChatListScreen() {
             renderItem={({ item }) => (
               <TouchableOpacity
                 onPress={() => selectCustomer(item.id)}
-                style={styles.customerOption}
+                style={[
+                  styles.customerOption,
+                  { borderBottomColor: theme.surfaceBorderSubtle },
+                ]}
               >
-                <Text style={styles.customerName}>
+                <Text style={[styles.customerName, { color: theme.text }]}>
                   {customerName(item)}
                 </Text>
                 {item.email ? (
-                  <Text style={styles.customerEmail}>{item.email}</Text>
+                  <Text style={[styles.customerEmail, { color: theme.textSecondary }]}>
+                    {item.email}
+                  </Text>
                 ) : null}
               </TouchableOpacity>
             )}
             ListEmptyComponent={
-              <Text style={styles.emptyText}>No customers found</Text>
+              <Text style={[styles.emptyText, { color: theme.textSecondary }]}>
+                No customers found
+              </Text>
             }
           />
         </View>
@@ -291,12 +344,10 @@ export default function ChatListScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.white,
   },
   toolbar: {
     padding: spacing[3],
     borderBottomWidth: 1,
-    borderBottomColor: colors.slate[200],
   },
   newButton: {
     flexDirection: "row",
@@ -321,16 +372,11 @@ const styles = StyleSheet.create({
     padding: spacing[3],
     gap: spacing[3],
     borderBottomWidth: 1,
-    borderBottomColor: colors.slate[100],
-  },
-  rowUnread: {
-    backgroundColor: colors.emerald[50] + "40",
   },
   avatar: {
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: colors.slate[400],
     justifyContent: "center",
     alignItems: "center",
   },
@@ -345,7 +391,6 @@ const styles = StyleSheet.create({
   },
   rowName: {
     ...fontSize.sm,
-    color: colors.slate[900],
     flex: 1,
   },
   rowNameBold: {
@@ -353,16 +398,10 @@ const styles = StyleSheet.create({
   },
   rowTime: {
     ...fontSize.xs,
-    color: colors.slate[400],
     marginLeft: spacing[2],
   },
   rowPreview: {
     ...fontSize.xs,
-    color: colors.slate[500],
-  },
-  rowPreviewBold: {
-    fontWeight: "500",
-    color: colors.slate[700],
   },
   unreadDot: {
     width: 8,
@@ -372,7 +411,6 @@ const styles = StyleSheet.create({
   },
   modalContainer: {
     flex: 1,
-    backgroundColor: colors.white,
   },
   modalHeader: {
     flexDirection: "row",
@@ -380,41 +418,33 @@ const styles = StyleSheet.create({
     alignItems: "center",
     padding: spacing[4],
     borderBottomWidth: 1,
-    borderBottomColor: colors.slate[200],
   },
   modalTitle: {
     ...fontSize.lg,
     fontWeight: "600",
-    color: colors.slate[900],
   },
   searchInput: {
     margin: spacing[4],
     borderWidth: 1,
-    borderColor: colors.slate[300],
     borderRadius: borderRadius.lg,
     paddingHorizontal: spacing[3],
     paddingVertical: spacing[2.5],
     ...fontSize.sm,
-    color: colors.slate[900],
   },
   customerOption: {
     padding: spacing[3],
     marginHorizontal: spacing[4],
     borderBottomWidth: 1,
-    borderBottomColor: colors.slate[100],
   },
   customerName: {
     ...fontSize.sm,
     fontWeight: "500",
-    color: colors.slate[900],
   },
   customerEmail: {
     ...fontSize.xs,
-    color: colors.slate[500],
   },
   emptyText: {
     ...fontSize.sm,
-    color: colors.slate[500],
     textAlign: "center",
     padding: spacing[6],
   },

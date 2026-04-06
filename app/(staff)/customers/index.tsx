@@ -11,7 +11,12 @@ import {
   Modal,
 } from "react-native";
 import { useRouter } from "expo-router";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  useQuery,
+  useMutation,
+  useQueryClient,
+  keepPreviousData,
+} from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/lib/api";
 import { type Customer } from "@/lib/types";
@@ -46,6 +51,7 @@ export default function CustomersScreen() {
       const { data } = await api.get<Customer[]>(`/api/customers${q}`);
       return data;
     },
+    placeholderData: keepPreviousData,
   });
 
   const [isManualRefresh, setIsManualRefresh] = useState(false);
@@ -85,11 +91,13 @@ export default function CustomersScreen() {
     setPhone("");
   };
 
-  const findDuplicates = async (): Promise<Customer[]> => {
+  const findDuplicates = async (
+    excludeId?: string
+  ): Promise<Customer[]> => {
     const trimmedFirst = firstName.trim().toLowerCase();
     const trimmedLast = lastName.trim().toLowerCase();
     const trimmedEmail = email.trim().toLowerCase();
-    const trimmedPhone = phone.trim();
+    const trimmedPhone = phone.trim().replace(/\D/g, "");
 
     const searches = new Set<string>();
     if (trimmedFirst) searches.add(trimmedFirst);
@@ -100,27 +108,23 @@ export default function CustomersScreen() {
     const matches: Customer[] = [];
 
     for (const q of searches) {
-      try {
-        const { data } = await api.get<Customer[]>(
-          `/api/customers?q=${encodeURIComponent(q)}`
-        );
-        for (const c of data) {
-          if (seen.has(c.id)) continue;
-          const nameMatch =
-            c.firstName.toLowerCase() === trimmedFirst &&
-            (c.lastName?.toLowerCase() ?? "") === trimmedLast;
-          const emailMatch =
-            trimmedEmail && c.email?.toLowerCase() === trimmedEmail;
-          const phoneMatch =
-            trimmedPhone &&
-            (c.phone?.replace(/\D/g, "") ?? "") === trimmedPhone;
-          if (nameMatch || emailMatch || phoneMatch) {
-            seen.add(c.id);
-            matches.push(c);
-          }
+      const { data } = await api.get<Customer[]>(
+        `/api/customers?q=${encodeURIComponent(q)}`
+      );
+      for (const c of data) {
+        if (seen.has(c.id) || c.id === excludeId) continue;
+        const nameMatch =
+          c.firstName.toLowerCase() === trimmedFirst &&
+          (c.lastName?.toLowerCase() ?? "") === trimmedLast;
+        const emailMatch =
+          trimmedEmail && c.email?.toLowerCase() === trimmedEmail;
+        const phoneMatch =
+          trimmedPhone &&
+          (c.phone?.replace(/\D/g, "") ?? "") === trimmedPhone;
+        if (nameMatch || emailMatch || phoneMatch) {
+          seen.add(c.id);
+          matches.push(c);
         }
-      } catch {
-        // If search fails, allow creation to proceed
       }
     }
     return matches;
@@ -131,6 +135,13 @@ export default function CustomersScreen() {
     let dupes: Customer[];
     try {
       dupes = await findDuplicates();
+    } catch {
+      setCheckingDuplicate(false);
+      Alert.alert(
+        "Unable to Check for Duplicates",
+        "Please check your connection and try again."
+      );
+      return;
     } finally {
       setCheckingDuplicate(false);
     }
@@ -144,21 +155,17 @@ export default function CustomersScreen() {
         })
         .join("\n");
       Alert.alert(
-        "Possible Duplicate",
-        `A similar customer already exists:\n\n${names}\n\nCreate anyway?`,
+        "Customer Already Exists",
+        `This customer matches an existing entry:\n\n${names}`,
         [
           { text: "Cancel", style: "cancel" },
           {
             text: "View Existing",
             onPress: () => {
               setShowNewModal(false);
+              resetForm();
               router.push(`/(staff)/customers/${dupes[0].id}`);
             },
-          },
-          {
-            text: "Create Anyway",
-            style: "destructive",
-            onPress: () => createCustomer.mutate(),
           },
         ]
       );
@@ -167,7 +174,7 @@ export default function CustomersScreen() {
     }
   };
 
-  if (isLoading) return <LoadingScreen message="Loading customers..." />;
+  if (isLoading && !customers.length) return <LoadingScreen message="Loading customers..." />;
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
@@ -245,8 +252,16 @@ export default function CustomersScreen() {
                 ) : null}
                 {item.phone ? (
                   <Text style={[styles.customerMeta, { color: theme.textSecondary }]}>
-                    {item.phone}
+                    {formatPhoneNumber(item.phone)}
                   </Text>
+                ) : null}
+                {item.bikes && item.bikes.length > 0 ? (
+                  <View style={styles.bikeBadgeRow}>
+                    <Ionicons name="bicycle" size={12} color={theme.textTertiary} />
+                    <Text style={[styles.customerMeta, { color: theme.textTertiary }]}>
+                      {item.bikes.length} {item.bikes.length === 1 ? "bike" : "bikes"}
+                    </Text>
+                  </View>
                 ) : null}
               </View>
               <Ionicons
@@ -387,6 +402,12 @@ const styles = StyleSheet.create({
   },
   customerMeta: {
     ...fontSize.xs,
+  },
+  bikeBadgeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginTop: 2,
   },
   modalContainer: {
     flex: 1,
