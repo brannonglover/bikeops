@@ -29,6 +29,7 @@ export default function ServicesScreen() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [price, setPrice] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
 
   const {
     data: services = [],
@@ -40,6 +41,15 @@ export default function ServicesScreen() {
       const { data } = await api.get<Service[]>("/api/services");
       return data;
     },
+  });
+
+  const filteredServices = services.filter((svc) => {
+    if (!searchQuery.trim()) return true;
+    const q = searchQuery.toLowerCase();
+    return (
+      svc.name.toLowerCase().includes(q) ||
+      (svc.description && svc.description.toLowerCase().includes(q))
+    );
   });
 
   const [isManualRefresh, setIsManualRefresh] = useState(false);
@@ -130,13 +140,23 @@ export default function ServicesScreen() {
           <Ionicons name="add" size={18} color={colors.white} />
           <Text style={styles.addText}>Add Service</Text>
         </TouchableOpacity>
+        <Input
+          placeholder="Search services..."
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          autoCapitalize="none"
+          autoCorrect={false}
+          containerStyle={styles.searchInput}
+        />
       </View>
 
       {services.length === 0 ? (
         <EmptyState icon="build-outline" title="No services" />
+      ) : filteredServices.length === 0 ? (
+        <EmptyState icon="search-outline" title={`No services match "${searchQuery}"`} />
       ) : (
         <FlatList
-          data={services}
+          data={filteredServices}
           keyExtractor={(item) => item.id}
           refreshControl={
             <RefreshControl refreshing={isManualRefresh} onRefresh={handleRefresh} />
@@ -232,7 +252,11 @@ const styles = StyleSheet.create({
   },
   toolbar: {
     padding: spacing[3],
+    gap: spacing[2],
     borderBottomWidth: 1,
+  },
+  searchInput: {
+    marginBottom: 0,
   },
   addButton: {
     flexDirection: "row",
