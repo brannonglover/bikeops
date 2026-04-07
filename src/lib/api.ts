@@ -218,10 +218,11 @@ export async function staffLogin(
       token: string;
       user?: { id: string; email: string; name?: string };
     };
-    await storeCookie(
-      STAFF_COOKIE_KEY,
-      `next-auth.session-token=${token}`
-    );
+    // On HTTPS production NextAuth uses the __Secure- prefix; on HTTP (local) it does not.
+    const cookieName = API_URL.startsWith("https://")
+      ? "__Secure-next-auth.session-token"
+      : "next-auth.session-token";
+    await storeCookie(STAFF_COOKIE_KEY, `${cookieName}=${token}`);
     return { ok: true, user };
   } catch (e) {
     return {

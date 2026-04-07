@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { AppState, type AppStateStatus } from "react-native";
 import * as Notifications from "expo-notifications";
 import { useRouter } from "expo-router";
 import { useAuth } from "@/lib/auth";
@@ -47,6 +48,22 @@ export function useNotifications() {
     if (!role || registered.current) return;
     registered.current = true;
     registerForPushNotifications(role);
+  }, [role]);
+
+  // Re-register whenever the app comes back to the foreground.
+  // This recovers from a first-launch registration failure (e.g. wrong session
+  // cookie stored before the auth fix) without requiring a full logout/login.
+  useEffect(() => {
+    if (!role) return;
+
+    const handleAppStateChange = (nextState: AppStateStatus) => {
+      if (nextState === "active") {
+        registerForPushNotifications(role);
+      }
+    };
+
+    const subscription = AppState.addEventListener("change", handleAppStateChange);
+    return () => subscription.remove();
   }, [role]);
 
   useEffect(() => {

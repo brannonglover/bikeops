@@ -214,16 +214,16 @@ export default function JobDetailScreen() {
           backgroundColor: theme.surface,
         },
         bikeRowCompleted: {
-          borderColor: colors.emerald[300],
-          backgroundColor: colors.emerald[50] + "80",
+          borderColor: theme.dark ? colors.emerald[700] : colors.emerald[300],
+          backgroundColor: theme.dark ? colors.emerald[800] + "80" : colors.emerald[50] + "80",
         },
         bikeRowWorkingOn: {
-          borderColor: colors.amber[400],
-          backgroundColor: colors.amber[50] + "99",
+          borderColor: theme.dark ? colors.amber[600] : colors.amber[400],
+          backgroundColor: theme.dark ? colors.amber[800] + "99" : colors.amber[50] + "99",
         },
         bikeRowWaiting: {
-          borderColor: colors.red[300],
-          backgroundColor: colors.red[50] + "80",
+          borderColor: theme.dark ? colors.red[700] : colors.red[300],
+          backgroundColor: theme.dark ? colors.red[800] + "80" : colors.red[50] + "80",
         },
         bikeImage: {
           width: 56,
@@ -262,7 +262,7 @@ export default function JobDetailScreen() {
           flexDirection: "row",
           alignItems: "center",
           gap: 3,
-          backgroundColor: colors.emerald[200],
+          backgroundColor: theme.dark ? colors.emerald[800] : colors.emerald[200],
           paddingHorizontal: spacing[1.5],
           paddingVertical: 2,
           borderRadius: borderRadius.md,
@@ -270,7 +270,7 @@ export default function JobDetailScreen() {
         doneBadgeText: {
           fontSize: 10,
           fontWeight: "700",
-          color: colors.emerald[700],
+          color: theme.dark ? colors.emerald[300] : colors.emerald[700],
           textTransform: "uppercase",
           letterSpacing: 0.5,
         },
@@ -278,7 +278,7 @@ export default function JobDetailScreen() {
           flexDirection: "row",
           alignItems: "center",
           gap: spacing[1],
-          backgroundColor: colors.amber[200],
+          backgroundColor: theme.dark ? colors.amber[800] : colors.amber[200],
           paddingHorizontal: spacing[1.5],
           paddingVertical: 2,
           borderRadius: borderRadius.md,
@@ -286,7 +286,7 @@ export default function JobDetailScreen() {
         workingOnBadgeText: {
           fontSize: 10,
           fontWeight: "700",
-          color: colors.amber[700],
+          color: theme.dark ? colors.amber[300] : colors.amber[700],
           textTransform: "uppercase",
           letterSpacing: 0.5,
         },
@@ -294,7 +294,7 @@ export default function JobDetailScreen() {
           flexDirection: "row",
           alignItems: "center",
           gap: 3,
-          backgroundColor: colors.red[100],
+          backgroundColor: theme.dark ? colors.red[800] : colors.red[100],
           paddingHorizontal: spacing[1.5],
           paddingVertical: 2,
           borderRadius: borderRadius.md,
@@ -302,7 +302,7 @@ export default function JobDetailScreen() {
         waitingBadgeText: {
           fontSize: 10,
           fontWeight: "700",
-          color: colors.red[700],
+          color: theme.dark ? colors.red[300] : colors.red[700],
           textTransform: "uppercase",
           letterSpacing: 0.5,
         },
@@ -325,10 +325,10 @@ export default function JobDetailScreen() {
           backgroundColor: theme.subtleBg,
         },
         bikeTypeOptionActive: {
-          backgroundColor: colors.slate[200],
+          backgroundColor: theme.dark ? colors.slate[600] : colors.slate[200],
         },
         bikeTypeOptionEBikeActive: {
-          backgroundColor: colors.blue[100],
+          backgroundColor: theme.dark ? colors.blue[600] : colors.blue[100],
         },
         bikeTypeText: {
           ...fontSize.xs,
@@ -336,11 +336,11 @@ export default function JobDetailScreen() {
         },
         bikeTypeTextActive: {
           fontWeight: "600",
-          color: colors.slate[700],
+          color: theme.dark ? colors.slate[100] : colors.slate[700],
         },
         bikeTypeTextEBikeActive: {
           fontWeight: "600",
-          color: colors.blue[700],
+          color: theme.dark ? colors.white : colors.blue[600],
         },
         bikeActions: {
           marginTop: spacing[2],
@@ -387,13 +387,13 @@ export default function JobDetailScreen() {
           paddingHorizontal: spacing[2.5],
           paddingVertical: spacing[1.5],
           borderRadius: borderRadius.lg,
-          backgroundColor: colors.emerald[100],
+          backgroundColor: theme.dark ? colors.emerald[800] : colors.emerald[100],
           minHeight: 32,
         },
         undoDoneText: {
           ...fontSize.xs,
           fontWeight: "600",
-          color: colors.emerald[700],
+          color: theme.dark ? colors.emerald[300] : colors.emerald[700],
         },
         waitForPartsButton: {
           flexDirection: "row",
@@ -402,13 +402,13 @@ export default function JobDetailScreen() {
           paddingHorizontal: spacing[2.5],
           paddingVertical: spacing[1.5],
           borderRadius: borderRadius.lg,
-          backgroundColor: colors.red[100],
+          backgroundColor: theme.dark ? colors.red[800] : colors.red[100],
           minHeight: 32,
         },
         waitForPartsText: {
           ...fontSize.xs,
           fontWeight: "600",
-          color: colors.red[700],
+          color: theme.dark ? colors.red[300] : colors.red[700],
         },
         resumeWorkButton: {
           flexDirection: "row",
@@ -417,13 +417,13 @@ export default function JobDetailScreen() {
           paddingHorizontal: spacing[2.5],
           paddingVertical: spacing[1.5],
           borderRadius: borderRadius.lg,
-          backgroundColor: colors.amber[100],
+          backgroundColor: theme.dark ? colors.amber[800] : colors.amber[100],
           minHeight: 32,
         },
         resumeWorkText: {
           ...fontSize.xs,
           fontWeight: "600",
-          color: colors.amber[800],
+          color: theme.dark ? colors.amber[300] : colors.amber[800],
         },
         buttonDisabled: {
           opacity: 0.5,
