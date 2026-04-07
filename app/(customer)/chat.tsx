@@ -28,6 +28,13 @@ import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { ImageViewer } from "@/components/ui/ImageViewer";
+import { LinkifiedText } from "@/components/chat/LinkifiedText";
+import { LinkPreview } from "@/components/chat/LinkPreview";
+
+const URL_REGEX = /(https?:\/\/[^\s]+)/g;
+function extractUrls(text: string): string[] {
+  return Array.from(new Set(text.match(URL_REGEX) ?? []));
+}
 import { formatTime } from "@/lib/format";
 
 const POLL_MS = 3000;
@@ -370,6 +377,13 @@ export default function CustomerChatScreen() {
         bubbleTextOther: {
           color: theme.text,
         },
+        bubbleLinkOwn: {
+          color: colors.white,
+          opacity: 0.85,
+        },
+        bubbleLinkOther: {
+          color: colors.amber[700],
+        },
         bubbleMeta: {
           ...fontSize.xs,
           alignSelf: "flex-end",
@@ -690,14 +704,18 @@ export default function CustomerChatScreen() {
                     </TouchableOpacity>
                   ))}
                   {item.body ? (
-                    <Text
+                    <LinkifiedText
+                      text={item.body}
                       style={[
                         styles.bubbleText,
                         isOwn ? styles.bubbleTextOwn : styles.bubbleTextOther,
                       ]}
-                    >
-                      {item.body}
-                    </Text>
+                      linkStyle={
+                        isOwn
+                          ? styles.bubbleLinkOwn
+                          : styles.bubbleLinkOther
+                      }
+                    />
                   ) : null}
                   <Text
                     style={[
@@ -713,6 +731,11 @@ export default function CustomerChatScreen() {
                     {item.editedAt ? " (edited)" : ""}
                   </Text>
                 </TouchableOpacity>
+                {item.body
+                  ? extractUrls(item.body).map((url) => (
+                      <LinkPreview key={url} url={url} />
+                    ))
+                  : null}
                 {hasReactions ? (
                   <View
                     style={[

@@ -24,6 +24,13 @@ import { type ChatMessage, type Conversation } from "@/lib/types";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
+import { LinkifiedText } from "@/components/chat/LinkifiedText";
+import { LinkPreview } from "@/components/chat/LinkPreview";
+
+const URL_REGEX = /(https?:\/\/[^\s]+)/g;
+function extractUrls(text: string): string[] {
+  return Array.from(new Set(text.match(URL_REGEX) ?? []));
+}
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Button } from "@/components/ui/Button";
 import { ImageViewer } from "@/components/ui/ImageViewer";
@@ -100,6 +107,13 @@ export default function ConversationScreen() {
         },
         bubbleTextOther: {
           color: theme.text,
+        },
+        bubbleLinkOwn: {
+          color: colors.white,
+          opacity: 0.85,
+        },
+        bubbleLinkOther: {
+          color: colors.emerald[500],
         },
         bubbleMeta: {
           ...fontSize.xs,
@@ -607,14 +621,18 @@ export default function ConversationScreen() {
                     </TouchableOpacity>
                   ))}
                   {item.body ? (
-                    <Text
+                    <LinkifiedText
+                      text={item.body}
                       style={[
                         styles.bubbleText,
                         isOwn ? styles.bubbleTextOwn : styles.bubbleTextOther,
                       ]}
-                    >
-                      {item.body}
-                    </Text>
+                      linkStyle={
+                        isOwn
+                          ? styles.bubbleLinkOwn
+                          : styles.bubbleLinkOther
+                      }
+                    />
                   ) : null}
                   <Text
                     style={[
@@ -630,6 +648,11 @@ export default function ConversationScreen() {
                     {item.editedAt ? " (edited)" : ""}
                   </Text>
                 </TouchableOpacity>
+                {item.body
+                  ? extractUrls(item.body).map((url) => (
+                      <LinkPreview key={url} url={url} />
+                    ))
+                  : null}
                 {hasReactions ? (
                   <View
                     style={[
