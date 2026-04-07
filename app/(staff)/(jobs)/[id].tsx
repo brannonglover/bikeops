@@ -1102,7 +1102,9 @@ export default function JobDetailScreen() {
           {job.jobBikes.map((jb) => {
             const isWorkingOn = job.workingOnJobBikeId === jb.id;
             const isCompleted = !!jb.completedAt;
-            const isWaitingOnParts = !!jb.waitingOnPartsAt && !isCompleted;
+            // Never show "waiting on parts" for the bike currently being worked on —
+            // waitingOnPartsAt may still be set from a previous state.
+            const isWaitingOnParts = !!jb.waitingOnPartsAt && !isCompleted && !isWorkingOn;
 
             return (
               <View
