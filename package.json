@@ -41,6 +41,9 @@
     "@types/react": "~19.1.0",
     "typescript": "~5.9.2"
   },
+  "overrides": {
+    "react-dom": "19.1.0"
+  },
   "engines": {
     "node": ">=20.0.0"
   },

@@ -33,9 +33,13 @@ async function getExpoPushToken(): Promise<string | null> {
     const projectId =
       Constants.easConfig?.projectId ??
       Constants.expoConfig?.extra?.eas?.projectId;
+    if (!projectId) {
+      console.warn("[Push] No EAS projectId found — token will not be obtained. Check EAS_PROJECT_ID env and app.config.ts.");
+    }
     const token = await Notifications.getExpoPushTokenAsync({ projectId });
     return token.data;
-  } catch {
+  } catch (err) {
+    console.warn("[Push] getExpoPushTokenAsync failed:", err);
     return null;
   }
 }
@@ -58,6 +62,7 @@ export async function registerForPushNotifications(
   }
 
   if (finalStatus !== "granted") {
+    console.warn("[Push] Permission not granted — status:", finalStatus);
     return null;
   }
 
@@ -71,7 +76,10 @@ export async function registerForPushNotifications(
   }
 
   const token = await getExpoPushToken();
-  if (!token) return null;
+  if (!token) {
+    console.warn("[Push] No token returned — skipping server registration");
+    return null;
+  }
 
   try {
     await api.post(
@@ -79,8 +87,10 @@ export async function registerForPushNotifications(
       { token, platform: Platform.OS },
       { role: role ?? "staff" }
     );
+    console.log("[Push] Token registered with server successfully");
   } catch (err) {
-    console.warn("Failed to register push token with server:", err);
+    console.warn("[Push] Failed to register push token with server:", err);
+    return null;
   }
 
   return token;

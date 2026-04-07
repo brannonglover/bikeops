@@ -45,9 +45,14 @@ export function useNotifications() {
   const registered = useRef(false);
 
   useEffect(() => {
-    if (!role || registered.current) return;
-    registered.current = true;
-    registerForPushNotifications(role);
+    if (!role) {
+      registered.current = false;
+      return;
+    }
+    if (registered.current) return;
+    registerForPushNotifications(role).then((token) => {
+      if (token) registered.current = true;
+    });
   }, [role]);
 
   // Re-register whenever the app comes back to the foreground.

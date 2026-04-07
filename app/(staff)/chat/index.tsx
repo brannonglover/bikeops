@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   View,
   Text,
@@ -61,6 +61,7 @@ export default function ChatListScreen() {
   const [search, setSearch] = useState("");
 
   const [isManualRefresh, setIsManualRefresh] = useState(false);
+  const hasNavigatedRef = useRef(false);
 
   const {
     data: conversations = [],
@@ -85,14 +86,15 @@ export default function ChatListScreen() {
   }, [refetch]);
 
   useEffect(() => {
-    if (!customerId || isLoading) return;
+    if (!customerId || isLoading || hasNavigatedRef.current) return;
     const existing = pickConversationForCustomer(
       conversations,
       customerId,
       jobId
     );
     if (existing) {
-      router.replace(`/(staff)/chat/${existing.id}`);
+      hasNavigatedRef.current = true;
+      router.push(`/(staff)/chat/${existing.id}`);
     }
   }, [customerId, jobId, conversations, isLoading, router]);
 
