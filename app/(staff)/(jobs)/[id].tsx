@@ -118,6 +118,8 @@ export default function JobDetailScreen() {
   const [calMonth, setCalMonth] = useState(new Date().getMonth());
   const [calYear, setCalYear] = useState(new Date().getFullYear());
   const [activeTab, setActiveTab] = useState<Tab>("details");
+  const [internalNotesValue, setInternalNotesValue] = useState("");
+  const [savingInternalNotes, setSavingInternalNotes] = useState(false);
 
   const styles = useMemo(
     () =>
@@ -670,6 +672,25 @@ export default function JobDetailScreen() {
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
     },
   });
+
+  useEffect(() => {
+    setInternalNotesValue(job?.internalNotes ?? "");
+  }, [job?.id]);
+
+  const handleSaveInternalNotes = useCallback(async () => {
+    if (!job) return;
+    const trimmed = internalNotesValue.trim();
+    const current = (job.internalNotes ?? "").trim();
+    if (trimmed === current) return;
+    setSavingInternalNotes(true);
+    try {
+      await api.patch(`/api/jobs/${job.id}`, { internalNotes: trimmed || null });
+      queryClient.invalidateQueries({ queryKey: ["job", id] });
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    } finally {
+      setSavingInternalNotes(false);
+    }
+  }, [job, internalNotesValue, id, queryClient]);
 
   const deleteJob = useMutation({
     mutationFn: async () => {
@@ -1567,19 +1588,13 @@ export default function JobDetailScreen() {
         </Card>
 
         {/* Notes */}
-        {job.notes || job.internalNotes || job.customerNotes ? (
+        {job.notes || job.customerNotes ? (
           <Card style={styles.section}>
             <Text style={styles.sectionTitle}>Notes</Text>
             {job.notes ? (
               <View style={styles.noteBlock}>
                 <Text style={styles.noteLabel}>Notes</Text>
                 <Text style={styles.noteText}>{job.notes}</Text>
-              </View>
-            ) : null}
-            {job.internalNotes ? (
-              <View style={styles.noteBlock}>
-                <Text style={styles.noteLabel}>Internal Notes</Text>
-                <Text style={styles.noteText}>{job.internalNotes}</Text>
               </View>
             ) : null}
             {job.customerNotes ? (
@@ -1590,6 +1605,41 @@ export default function JobDetailScreen() {
             ) : null}
           </Card>
         ) : null}
+
+        {/* Internal Notes */}
+        <Card style={styles.section}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: spacing[2] }}>
+            <Text style={styles.sectionTitle}>Internal Notes</Text>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: spacing[1], backgroundColor: colors.amber[100], paddingHorizontal: spacing[2], paddingVertical: 2, borderRadius: borderRadius.full }}>
+              <Ionicons name="lock-closed" size={10} color={colors.amber[700]} />
+              <Text style={{ fontSize: 10, lineHeight: 14, fontWeight: "700", color: colors.amber[700], textTransform: "uppercase", letterSpacing: 0.5 }}>Staff only</Text>
+            </View>
+          </View>
+          <TextInput
+            value={internalNotesValue}
+            onChangeText={setInternalNotesValue}
+            onBlur={handleSaveInternalNotes}
+            placeholder="Add private notes about this job…"
+            placeholderTextColor={theme.textSecondary}
+            multiline
+            numberOfLines={3}
+            style={{
+              ...fontSize.sm,
+              color: theme.inputText,
+              backgroundColor: theme.inputBg,
+              borderWidth: 1,
+              borderColor: theme.inputBorder,
+              borderRadius: borderRadius.lg,
+              padding: spacing[3],
+              minHeight: 80,
+              textAlignVertical: "top",
+            }}
+            editable={!savingInternalNotes}
+          />
+          {savingInternalNotes ? (
+            <Text style={{ ...fontSize.xs, color: theme.textSecondary }}>Saving…</Text>
+          ) : null}
+        </Card>
 
         {/* Actions */}
         <View style={styles.actionsSection}>
