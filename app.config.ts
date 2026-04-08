@@ -59,6 +59,11 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
           : "com.brannonglover.bikeops.app.notifications",
       ],
     },
+    // Required for Tap to Pay on iPhone (must be approved by Apple at
+    // developer.apple.com → Account → Certificates, Identifiers & Profiles)
+    entitlements: {
+      "com.apple.developer.proximity-reader.payment.acceptance": true,
+    },
   },
   android: {
     adaptiveIcon: {
@@ -76,6 +81,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     "expo-system-ui",
     ["expo-notifications", { sounds: [], mode: IS_DEV ? "development" : "production" }],
     "./plugins/withDynamicVersioning",
+    "@stripe/stripe-terminal-react-native",
   ],
   extra: {
     eas: {

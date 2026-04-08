@@ -36,6 +36,7 @@
     "react-native-screens": "~4.16.0",
     "react-native-worklets": "0.5.1",
     "tailwindcss": "^3.3.2",
+    "@stripe/stripe-terminal-react-native": "0.0.1-beta.29",
     "zod": "^4.3.6"
   },
   "devDependencies": {

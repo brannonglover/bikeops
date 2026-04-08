@@ -1,12 +1,20 @@
+import { useCallback, useEffect } from "react";
 import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { StripeTerminalProvider, useStripeTerminal } from "@stripe/stripe-terminal-react-native";
 import { colors } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { HamburgerMenu } from "@/components/ui/HamburgerMenu";
 import { ShopLogo } from "@/components/ui/ShopLogo";
+import { api } from "@/lib/api";
 
-export default function StaffLayout() {
+function StaffTabs() {
   const { theme } = useTheme();
+  const { initialize } = useStripeTerminal();
+
+  useEffect(() => {
+    initialize();
+  }, [initialize]);
 
   return (
     <Tabs
@@ -93,5 +101,20 @@ export default function StaffLayout() {
         }}
       />
     </Tabs>
+  );
+}
+
+async function fetchConnectionToken(): Promise<string> {
+  const { data } = await api.post<{ secret: string }>("/api/terminal/connection-token");
+  return data.secret;
+}
+
+export default function StaffLayout() {
+  const tokenProvider = useCallback(fetchConnectionToken, []);
+
+  return (
+    <StripeTerminalProvider logLevel="none" tokenProvider={tokenProvider}>
+      <StaffTabs />
+    </StripeTerminalProvider>
   );
 }

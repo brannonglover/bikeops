@@ -15,6 +15,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import { api } from "@/lib/api";
+import { TapToPaySheet } from "@/components/jobs/TapToPaySheet";
 import {
   type Job,
   type JobService,
@@ -73,6 +74,7 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
 
   const [recordingCash, setRecordingCash] = useState(false);
   const [showCashConfirm, setShowCashConfirm] = useState(false);
+  const [showTapToPay, setShowTapToPay] = useState(false);
   const [resending, setResending] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
 
@@ -639,6 +641,22 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
           fontWeight: "600",
           color: colors.emerald[800],
         },
+        tapToPayButton: {
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: spacing[2],
+          backgroundColor: colors.blue[600],
+          paddingVertical: spacing[2.5],
+          paddingHorizontal: spacing[3],
+          borderRadius: borderRadius.lg,
+          minHeight: 44,
+        },
+        tapToPayText: {
+          ...fontSize.sm,
+          fontWeight: "600",
+          color: colors.white,
+        },
         copyLinkButton: {
           flexDirection: "row",
           alignItems: "center",
@@ -1127,6 +1145,14 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
         </View>
       ) : (
         <View style={styles.paymentActions}>
+          <TouchableOpacity
+            style={styles.tapToPayButton}
+            onPress={() => setShowTapToPay(true)}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="phone-portrait" size={16} color={colors.white} />
+            <Text style={styles.tapToPayText}>Tap to Pay</Text>
+          </TouchableOpacity>
           <View style={styles.paymentRow}>
             <TouchableOpacity
               style={styles.payOnlineButton}
@@ -1283,6 +1309,18 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
           </Pressable>
         </Pressable>
       </Modal>
+
+      {/* Tap to Pay sheet */}
+      <TapToPaySheet
+        visible={showTapToPay}
+        jobId={job.id}
+        total={total}
+        onClose={() => setShowTapToPay(false)}
+        onJobPaid={async () => {
+          setShowTapToPay(false);
+          await refetchJob();
+        }}
+      />
 
       {/* Record cash confirmation modal */}
       <Modal
