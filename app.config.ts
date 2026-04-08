@@ -33,6 +33,12 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   scheme: "bikeops",
   userInterfaceStyle: "automatic",
   newArchEnabled: true,
+  updates: {
+    url: "https://u.expo.dev/dd40df73-ac62-42be-8a5c-921540bcc3b2",
+  },
+  runtimeVersion: {
+    policy: "appVersion",
+  },
   splash: {
     image: "./assets/splash-icon.png",
     resizeMode: "contain",
@@ -62,10 +68,6 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     userInterfaceStyle: "automatic",
     package: IS_DEV ? "com.brannonglover.bikeops.app.dev" : "com.brannonglover.bikeops.app",
     versionCode,
-  },
-  web: {
-    favicon: "./assets/favicon.png",
-    bundler: "metro",
   },
   plugins: [
     "expo-router",

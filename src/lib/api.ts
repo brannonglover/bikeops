@@ -51,6 +51,14 @@ interface FetchOptions extends Omit<RequestInit, "headers"> {
   role?: "staff" | "customer";
 }
 
+/** Extracts the raw JWT value from a stored cookie string like "cookieName=<jwt>". */
+function extractJwtFromCookie(cookieString: string | null): string | null {
+  if (!cookieString) return null;
+  const eqIdx = cookieString.indexOf("=");
+  if (eqIdx === -1) return null;
+  return cookieString.slice(eqIdx + 1) || null;
+}
+
 async function apiFetch<T = unknown>(
   path: string,
   options: FetchOptions = {}
@@ -66,6 +74,12 @@ async function apiFetch<T = unknown>(
 
   if (storedCookie) {
     headers["Cookie"] = storedCookie;
+    // Also send as Bearer so server-side getToken() can authenticate
+    // without relying on cookie header parsing (more reliable in native apps).
+    if (role === "staff") {
+      const jwt = extractJwtFromCookie(storedCookie);
+      if (jwt) headers["Authorization"] = `Bearer ${encodeURIComponent(jwt)}`;
+    }
   }
 
   if (
