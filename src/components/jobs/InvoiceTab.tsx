@@ -58,19 +58,6 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
 
   const [editingPriceId, setEditingPriceId] = useState<string | null>(null);
   const [editingPriceValue, setEditingPriceValue] = useState("");
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
-
-  const toggleExpanded = useCallback((id: string) => {
-    setExpandedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
-    });
-  }, []);
 
   const [recordingCash, setRecordingCash] = useState(false);
   const [showCashConfirm, setShowCashConfirm] = useState(false);
@@ -383,27 +370,18 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
           marginBottom: spacing[2],
           overflow: "hidden",
         },
-        lineItemHeader: {
-          flexDirection: "row",
-          justifyContent: "space-between",
-          alignItems: "center",
-          paddingVertical: spacing[2],
-          paddingHorizontal: spacing[3],
-        },
-        lineItemLeft: {
+        lineItemTop: {
           flexDirection: "row",
           alignItems: "center",
           gap: spacing[2],
-          flex: 1,
-          minWidth: 0,
-        },
-        chevron: {
-          flexShrink: 0,
+          paddingVertical: spacing[2.5],
+          paddingHorizontal: spacing[3],
         },
         typeBadge: {
           paddingHorizontal: spacing[1.5],
           paddingVertical: 2,
           borderRadius: borderRadius.sm,
+          flexShrink: 0,
         },
         typeBadgeService: {
           backgroundColor: colors.purple[50],
@@ -425,14 +403,36 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
         },
         lineItemName: {
           ...fontSize.sm,
-          fontWeight: "500",
+          fontWeight: "600",
           color: theme.text,
           flex: 1,
         },
-        lineItemRight: {
+        removeButton: {
+          padding: spacing[1],
+          flexShrink: 0,
+        },
+        lineItemBottom: {
+          borderTopWidth: 1,
+          borderTopColor: theme.surfaceBorder,
+          backgroundColor: theme.subtleBg,
+          paddingHorizontal: spacing[3],
+          paddingVertical: spacing[2],
+          gap: spacing[2],
+        },
+        lineItemRow: {
           flexDirection: "row",
           alignItems: "center",
-          gap: spacing[2],
+          justifyContent: "space-between",
+        },
+        lineItemRowLabel: {
+          ...fontSize.xs,
+          color: theme.textSecondary,
+          fontWeight: "500",
+        },
+        lineItemRowValue: {
+          ...fontSize.sm,
+          color: theme.text,
+          fontVariant: ["tabular-nums"],
         },
         qtyControl: {
           flexDirection: "row",
@@ -440,65 +440,68 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
           borderWidth: 1,
           borderColor: theme.surfaceBorder,
           borderRadius: borderRadius.md,
-          backgroundColor: theme.background,
+          backgroundColor: theme.surface,
         },
         qtyButton: {
-          paddingHorizontal: spacing[2],
+          paddingHorizontal: spacing[2.5],
           paddingVertical: spacing[1],
         },
         qtyButtonDisabled: {
           opacity: 0.4,
         },
         qtyButtonText: {
-          ...fontSize.sm,
+          fontSize: 16,
+          lineHeight: 20,
           color: theme.textSecondary,
-          fontWeight: "600",
+          fontWeight: "500",
         },
         qtyValue: {
           ...fontSize.sm,
           color: theme.text,
           fontVariant: ["tabular-nums"],
-          minWidth: 24,
+          minWidth: 28,
           textAlign: "center",
-        },
-        lineItemPrice: {
-          ...fontSize.sm,
           fontWeight: "600",
+        },
+        priceRowRight: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: spacing[3],
+        },
+        unitPriceText: {
+          ...fontSize.sm,
+          color: theme.textSecondary,
+          fontVariant: ["tabular-nums"],
+        },
+        editablePriceTap: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: spacing[1],
+          borderBottomWidth: 1,
+          borderBottomColor: theme.textMuted,
+          paddingBottom: 1,
+        },
+        lineTotalText: {
+          ...fontSize.sm,
+          fontWeight: "700",
           color: theme.text,
           fontVariant: ["tabular-nums"],
-          minWidth: 56,
+          minWidth: 60,
           textAlign: "right",
         },
-        removeButton: {
-          padding: spacing[1],
-        },
-        expandedArea: {
-          paddingHorizontal: spacing[3],
-          paddingBottom: spacing[3],
+        notesRow: {
+          flexDirection: "row",
+          alignItems: "flex-start",
+          gap: spacing[1.5],
           paddingTop: spacing[1],
           borderTopWidth: 1,
           borderTopColor: theme.surfaceBorder,
-          backgroundColor: theme.subtleBg,
-          gap: spacing[1.5],
         },
-        expandedRow: {
-          flexDirection: "row",
-          justifyContent: "space-between",
-          alignItems: "center",
-        },
-        expandedLabel: {
+        notesText: {
           ...fontSize.xs,
           color: theme.textSecondary,
-        },
-        expandedValue: {
-          ...fontSize.xs,
-          color: theme.text,
-        },
-        expandedDescription: {
-          ...fontSize.xs,
-          color: theme.textSecondary,
+          flex: 1,
           lineHeight: 16,
-          marginBottom: spacing[0.5],
         },
         priceInput: {
           ...fontSize.sm,
@@ -509,7 +512,7 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
           borderRadius: borderRadius.md,
           paddingHorizontal: spacing[2],
           paddingVertical: spacing[1],
-          width: 100,
+          width: 90,
           textAlign: "right",
           fontVariant: ["tabular-nums"],
         },
@@ -838,34 +841,46 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
             const qtyBusy = updatingQty === js.id;
             const isEditingPrice = editingPriceId === js.id;
 
-            const isExpanded = expandedIds.has(js.id);
-
             return (
               <View key={js.id} style={styles.lineItem}>
-                <TouchableOpacity
-                  style={styles.lineItemHeader}
-                  onPress={() => toggleExpanded(js.id)}
-                  activeOpacity={0.7}
-                >
-                  <View style={styles.lineItemLeft}>
-                    <Ionicons
-                      name={isExpanded ? "chevron-down" : "chevron-forward"}
-                      size={14}
-                      color={theme.textMuted}
-                      style={styles.chevron}
-                    />
-                    <View style={[styles.typeBadge, styles.typeBadgeService]}>
-                      <Text style={[styles.typeBadgeText, styles.typeBadgeServiceText]}>
-                        Service
-                      </Text>
-                    </View>
-                    <Text style={styles.lineItemName} numberOfLines={1}>
-                      {js.service?.name ?? "Unknown"}
-                      {qty > 1 ? ` × ${qty}` : ""}
+                {/* Top: badge + name + remove */}
+                <View style={styles.lineItemTop}>
+                  <View style={[styles.typeBadge, styles.typeBadgeService]}>
+                    <Text style={[styles.typeBadgeText, styles.typeBadgeServiceText]}>
+                      Service
                     </Text>
                   </View>
-                  <View style={styles.lineItemRight}>
-                    {!isSystem && (
+                  <Text style={styles.lineItemName} numberOfLines={2}>
+                    {js.service?.name ?? "Unknown"}
+                  </Text>
+                  <TouchableOpacity
+                    onPress={() =>
+                      Alert.alert("Remove Service", `Remove "${js.service?.name}"?`, [
+                        { text: "Cancel", style: "cancel" },
+                        {
+                          text: "Remove",
+                          style: "destructive",
+                          onPress: () => handleRemoveService(js.id),
+                        },
+                      ])
+                    }
+                    disabled={removing === js.id}
+                    style={styles.removeButton}
+                  >
+                    <Ionicons
+                      name="trash-outline"
+                      size={16}
+                      color={removing === js.id ? theme.textMuted : theme.textSecondary}
+                    />
+                  </TouchableOpacity>
+                </View>
+
+                {/* Bottom: qty + price + total */}
+                <View style={styles.lineItemBottom}>
+                  {/* Qty row */}
+                  <View style={styles.lineItemRow}>
+                    <Text style={styles.lineItemRowLabel}>Qty</Text>
+                    {!isSystem ? (
                       <View
                         style={styles.qtyControl}
                         onStartShouldSetResponder={() => true}
@@ -894,43 +909,17 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
                           <Text style={styles.qtyButtonText}>+</Text>
                         </TouchableOpacity>
                       </View>
+                    ) : (
+                      <Text style={styles.lineItemRowValue}>{qty}</Text>
                     )}
-                    <Text style={styles.lineItemPrice}>
-                      {formatCurrency(lineTotal)}
-                    </Text>
-                    <TouchableOpacity
-                      onPress={() =>
-                        Alert.alert("Remove Service", `Remove "${js.service?.name}"?`, [
-                          { text: "Cancel", style: "cancel" },
-                          {
-                            text: "Remove",
-                            style: "destructive",
-                            onPress: () => handleRemoveService(js.id),
-                          },
-                        ])
-                      }
-                      disabled={removing === js.id}
-                      style={styles.removeButton}
-                    >
-                      <Ionicons
-                        name="close-circle"
-                        size={18}
-                        color={removing === js.id ? theme.textMuted : colors.red[500]}
-                      />
-                    </TouchableOpacity>
                   </View>
-                </TouchableOpacity>
-                {isExpanded && (
-                  <View style={styles.expandedArea}>
-                    {js.service?.description ? (
-                      <Text style={styles.expandedDescription}>
-                        {js.service.description}
-                      </Text>
-                    ) : null}
-                    <View style={styles.expandedRow}>
-                      <Text style={styles.expandedLabel}>Unit price</Text>
+
+                  {/* Price row */}
+                  <View style={styles.lineItemRow}>
+                    <Text style={styles.lineItemRowLabel}>Unit price</Text>
+                    <View style={styles.priceRowRight}>
                       {isSystem || updatingPrice === js.id ? (
-                        <Text style={styles.expandedValue}>
+                        <Text style={styles.unitPriceText}>
                           {updatingPrice === js.id ? "Saving…" : formatCurrency(price)}
                         </Text>
                       ) : isEditingPrice ? (
@@ -951,27 +940,24 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
                               Number.isFinite(price) ? String(price) : "0"
                             );
                           }}
+                          style={styles.editablePriceTap}
                         >
-                          <Text style={[styles.expandedValue, { textDecorationLine: "underline" }]}>
-                            {formatCurrency(price)}
-                          </Text>
+                          <Text style={styles.unitPriceText}>{formatCurrency(price)}</Text>
+                          <Ionicons name="pencil" size={11} color={theme.textMuted} />
                         </TouchableOpacity>
                       )}
+                      <Text style={styles.lineTotalText}>{formatCurrency(lineTotal)}</Text>
                     </View>
-                    <View style={styles.expandedRow}>
-                      <Text style={styles.expandedLabel}>Quantity</Text>
-                      <Text style={styles.expandedValue}>{qty}</Text>
-                    </View>
-                    {js.notes ? (
-                      <View style={styles.expandedRow}>
-                        <Text style={styles.expandedLabel}>Notes</Text>
-                        <Text style={[styles.expandedValue, { flex: 1, textAlign: "right" }]}>
-                          {js.notes}
-                        </Text>
-                      </View>
-                    ) : null}
                   </View>
-                )}
+
+                  {/* Notes row (if any) */}
+                  {js.notes ? (
+                    <View style={styles.notesRow}>
+                      <Ionicons name="document-text-outline" size={12} color={theme.textMuted} />
+                      <Text style={styles.notesText}>{js.notes}</Text>
+                    </View>
+                  ) : null}
+                </View>
               </View>
             );
           })}
@@ -984,89 +970,69 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
             const qty = jp.quantity || 1;
             const lineTotal = price * qty;
 
-            const isExpanded = expandedIds.has(jp.id);
-
             return (
               <View key={jp.id} style={styles.lineItem}>
-                <TouchableOpacity
-                  style={styles.lineItemHeader}
-                  onPress={() => toggleExpanded(jp.id)}
-                  activeOpacity={0.7}
-                >
-                  <View style={styles.lineItemLeft}>
+                {/* Top: badge + name + remove */}
+                <View style={styles.lineItemTop}>
+                  <View style={[styles.typeBadge, styles.typeBadgeProduct]}>
+                    <Text style={[styles.typeBadgeText, styles.typeBadgeProductText]}>
+                      Part
+                    </Text>
+                  </View>
+                  <Text style={styles.lineItemName} numberOfLines={2}>
+                    {jp.product?.name ?? "Unknown"}
+                  </Text>
+                  <TouchableOpacity
+                    onPress={() =>
+                      Alert.alert(
+                        "Remove Part",
+                        `Remove "${jp.product?.name}"?`,
+                        [
+                          { text: "Cancel", style: "cancel" },
+                          {
+                            text: "Remove",
+                            style: "destructive",
+                            onPress: () => handleRemoveProduct(jp.id),
+                          },
+                        ]
+                      )
+                    }
+                    disabled={removingProduct === jp.id}
+                    style={styles.removeButton}
+                  >
                     <Ionicons
-                      name={isExpanded ? "chevron-down" : "chevron-forward"}
-                      size={14}
-                      color={theme.textMuted}
-                      style={styles.chevron}
+                      name="trash-outline"
+                      size={16}
+                      color={removingProduct === jp.id ? theme.textMuted : theme.textSecondary}
                     />
-                    <View style={[styles.typeBadge, styles.typeBadgeProduct]}>
-                      <Text style={[styles.typeBadgeText, styles.typeBadgeProductText]}>
-                        Product
-                      </Text>
-                    </View>
-                    <Text style={styles.lineItemName} numberOfLines={1}>
-                      {jp.product?.name ?? "Unknown"}
-                      {qty > 1 ? ` × ${qty}` : ""}
-                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* Bottom: qty + price + total */}
+                <View style={styles.lineItemBottom}>
+                  {/* Qty row */}
+                  <View style={styles.lineItemRow}>
+                    <Text style={styles.lineItemRowLabel}>Qty</Text>
+                    <Text style={styles.lineItemRowValue}>{qty}</Text>
                   </View>
-                  <View style={styles.lineItemRight}>
-                    <Text style={styles.lineItemPrice}>
-                      {formatCurrency(lineTotal)}
-                    </Text>
-                    <TouchableOpacity
-                      onPress={() =>
-                        Alert.alert(
-                          "Remove Product",
-                          `Remove "${jp.product?.name}"?`,
-                          [
-                            { text: "Cancel", style: "cancel" },
-                            {
-                              text: "Remove",
-                              style: "destructive",
-                              onPress: () => handleRemoveProduct(jp.id),
-                            },
-                          ]
-                        )
-                      }
-                      disabled={removingProduct === jp.id}
-                      style={styles.removeButton}
-                    >
-                      <Ionicons
-                        name="close-circle"
-                        size={18}
-                        color={
-                          removingProduct === jp.id ? theme.textMuted : colors.red[500]
-                        }
-                      />
-                    </TouchableOpacity>
-                  </View>
-                </TouchableOpacity>
-                {isExpanded && (
-                  <View style={styles.expandedArea}>
-                    {jp.product?.description ? (
-                      <Text style={styles.expandedDescription}>
-                        {jp.product.description}
-                      </Text>
-                    ) : null}
-                    <View style={styles.expandedRow}>
-                      <Text style={styles.expandedLabel}>Unit price</Text>
-                      <Text style={styles.expandedValue}>{formatCurrency(price)}</Text>
+
+                  {/* Price row */}
+                  <View style={styles.lineItemRow}>
+                    <Text style={styles.lineItemRowLabel}>Unit price</Text>
+                    <View style={styles.priceRowRight}>
+                      <Text style={styles.unitPriceText}>{formatCurrency(price)}</Text>
+                      <Text style={styles.lineTotalText}>{formatCurrency(lineTotal)}</Text>
                     </View>
-                    <View style={styles.expandedRow}>
-                      <Text style={styles.expandedLabel}>Quantity</Text>
-                      <Text style={styles.expandedValue}>{qty}</Text>
-                    </View>
-                    {jp.notes ? (
-                      <View style={styles.expandedRow}>
-                        <Text style={styles.expandedLabel}>Notes</Text>
-                        <Text style={[styles.expandedValue, { flex: 1, textAlign: "right" }]}>
-                          {jp.notes}
-                        </Text>
-                      </View>
-                    ) : null}
                   </View>
-                )}
+
+                  {/* Notes row (if any) */}
+                  {jp.notes ? (
+                    <View style={styles.notesRow}>
+                      <Ionicons name="document-text-outline" size={12} color={theme.textMuted} />
+                      <Text style={styles.notesText}>{jp.notes}</Text>
+                    </View>
+                  ) : null}
+                </View>
               </View>
             );
           })}

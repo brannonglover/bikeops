@@ -59,8 +59,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
           : "com.brannonglover.bikeops.app.notifications",
       ],
     },
-    // Required for Tap to Pay on iPhone (must be approved by Apple at
-    // developer.apple.com → Account → Certificates, Identifiers & Profiles)
+    // Tap to Pay on iPhone — approved by Apple Apr 8, 2026
     entitlements: {
       "com.apple.developer.proximity-reader.payment.acceptance": true,
     },
@@ -81,7 +80,12 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     "expo-system-ui",
     ["expo-notifications", { sounds: [], mode: IS_DEV ? "development" : "production" }],
     "./plugins/withDynamicVersioning",
-    "@stripe/stripe-terminal-react-native",
+    ["@stripe/stripe-terminal-react-native", {
+      bluetoothBackgroundMode: true,
+      locationWhenInUsePermission: "Location access is required in order to accept payments.",
+      bluetoothPeripheralPermission: "Bluetooth access is required in order to connect to supported card readers.",
+      bluetoothAlwaysUsagePermission: "This app uses Bluetooth to connect to supported card readers.",
+    }],
   ],
   extra: {
     eas: {
