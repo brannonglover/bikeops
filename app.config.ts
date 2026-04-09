@@ -59,10 +59,10 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
           : "com.brannonglover.bikeops.app.notifications",
       ],
     },
-    // Tap to Pay on iPhone — approved by Apple Apr 8, 2026
-    entitlements: {
-      "com.apple.developer.proximity-reader.payment.acceptance": true,
-    },
+    // TODO: re-add proximity-reader entitlement once Apple approves the app for Tap to Pay
+    // entitlements: {
+    //   "com.apple.developer.proximity-reader.payment.acceptance": true,
+    // },
   },
   android: {
     adaptiveIcon: {
