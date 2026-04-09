@@ -73,6 +73,8 @@ export interface JobService {
   quantity: number;
   unitPrice: string;
   notes: string | null;
+  jobBikeId?: string | null;
+  jobBike?: { id: string; make: string; model: string; nickname: string | null } | null;
   createdAt: string;
 }
 
@@ -96,6 +98,8 @@ export interface JobProduct {
   quantity: number;
   unitPrice: string;
   notes: string | null;
+  jobBikeId?: string | null;
+  jobBike?: { id: string; make: string; model: string; nickname: string | null } | null;
   createdAt: string;
 }
 

@@ -50,6 +50,9 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
   const [removingProduct, setRemovingProduct] = useState<string | null>(null);
   const [updatingQty, setUpdatingQty] = useState<string | null>(null);
   const [updatingPrice, setUpdatingPrice] = useState<string | null>(null);
+  const [updatingProductPrice, setUpdatingProductPrice] = useState<string | null>(null);
+  const [updatingServiceBike, setUpdatingServiceBike] = useState<string | null>(null);
+  const [updatingProductBike, setUpdatingProductBike] = useState<string | null>(null);
 
   const [showServicePicker, setShowServicePicker] = useState(false);
   const [showProductPicker, setShowProductPicker] = useState(false);
@@ -58,6 +61,8 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
 
   const [editingPriceId, setEditingPriceId] = useState<string | null>(null);
   const [editingPriceValue, setEditingPriceValue] = useState("");
+  const [editingProductPriceId, setEditingProductPriceId] = useState<string | null>(null);
+  const [editingProductPriceValue, setEditingProductPriceValue] = useState("");
 
   const [recordingCash, setRecordingCash] = useState(false);
   const [showCashConfirm, setShowCashConfirm] = useState(false);
@@ -222,6 +227,54 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
     [job.id, refetchJob]
   );
 
+  const updateProductUnitPrice = useCallback(
+    async (jobProductId: string, unitPrice: number) => {
+      setUpdatingProductPrice(jobProductId);
+      try {
+        const res = await api.patch(`/api/jobs/${job.id}/products`, {
+          jobProductId,
+          unitPrice,
+        });
+        if (res.response.ok) await refetchJob();
+      } finally {
+        setUpdatingProductPrice(null);
+      }
+    },
+    [job.id, refetchJob]
+  );
+
+  const assignServiceBike = useCallback(
+    async (jobServiceId: string, jobBikeId: string | null) => {
+      setUpdatingServiceBike(jobServiceId);
+      try {
+        const res = await api.patch(`/api/jobs/${job.id}/services`, {
+          jobServiceId,
+          jobBikeId,
+        });
+        if (res.response.ok) await refetchJob();
+      } finally {
+        setUpdatingServiceBike(null);
+      }
+    },
+    [job.id, refetchJob]
+  );
+
+  const assignProductBike = useCallback(
+    async (jobProductId: string, jobBikeId: string | null) => {
+      setUpdatingProductBike(jobProductId);
+      try {
+        const res = await api.patch(`/api/jobs/${job.id}/products`, {
+          jobProductId,
+          jobBikeId,
+        });
+        if (res.response.ok) await refetchJob();
+      } finally {
+        setUpdatingProductBike(null);
+      }
+    },
+    [job.id, refetchJob]
+  );
+
   const handleAddProduct = useCallback(
     async (productId: string) => {
       setAddingProduct(true);
@@ -308,6 +361,19 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
       updateServiceUnitPrice(jsId, rounded);
     },
     [editingPriceValue, updateServiceUnitPrice]
+  );
+
+  const handleProductPriceBlur = useCallback(
+    (jpId: string, currentPrice: number) => {
+      setEditingProductPriceId(null);
+      const next = parseFloat(editingProductPriceValue);
+      if (!Number.isFinite(next) || next < 0) return;
+      const rounded = Math.round(next * 100) / 100;
+      const current = Math.round(currentPrice * 100) / 100;
+      if (rounded === current) return;
+      updateProductUnitPrice(jpId, rounded);
+    },
+    [editingProductPriceValue, updateProductUnitPrice]
   );
 
   const styles = useMemo(
@@ -791,6 +857,72 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
           gap: spacing[2],
           marginTop: spacing[1],
         },
+        lineBikePill: {
+          borderRadius: 99,
+          paddingHorizontal: spacing[2],
+          paddingVertical: 2,
+          flexShrink: 0,
+        },
+        lineBikePillService: {
+          backgroundColor: colors.purple[100],
+        },
+        lineBikePillProduct: {
+          backgroundColor: colors.blue[100],
+        },
+        lineBikePillText: {
+          fontSize: 10,
+          fontWeight: "500",
+        },
+        lineBikePillServiceText: {
+          color: colors.purple[700],
+        },
+        lineBikePillProductText: {
+          color: colors.blue[700],
+        },
+        bikeAssignSection: {
+          borderTopWidth: 1,
+          borderTopColor: theme.surfaceBorder,
+          paddingTop: spacing[2],
+          gap: spacing[1.5],
+        },
+        bikeAssignLabel: {
+          ...fontSize.xs,
+          color: theme.textSecondary,
+          fontWeight: "500",
+        },
+        bikeAssignRow: {
+          flexDirection: "row",
+          flexWrap: "wrap",
+          gap: spacing[1.5],
+        },
+        bikeAssignButton: {
+          borderRadius: 99,
+          paddingHorizontal: spacing[2.5],
+          paddingVertical: spacing[1],
+          borderWidth: 1,
+          borderColor: theme.surfaceBorder,
+          backgroundColor: theme.surface,
+        },
+        bikeAssignButtonNeutralSelected: {
+          backgroundColor: colors.slate[700],
+          borderColor: colors.slate[700],
+        },
+        bikeAssignButtonServiceSelected: {
+          backgroundColor: colors.purple[600],
+          borderColor: colors.purple[600],
+        },
+        bikeAssignButtonProductSelected: {
+          backgroundColor: colors.blue[600],
+          borderColor: colors.blue[600],
+        },
+        bikeAssignButtonText: {
+          ...fontSize.xs,
+          fontWeight: "500",
+          color: theme.textSecondary,
+        },
+        bikeAssignButtonTextSelected: {
+          color: colors.white,
+        },
       }),
     [theme]
   );
@@ -853,6 +985,13 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
                   <Text style={styles.lineItemName} numberOfLines={2}>
                     {js.service?.name ?? "Unknown"}
                   </Text>
+                  {(job.jobBikes?.length ?? 0) > 1 && js.jobBike ? (
+                    <View style={[styles.lineBikePill, styles.lineBikePillService]}>
+                      <Text style={[styles.lineBikePillText, styles.lineBikePillServiceText]} numberOfLines={1}>
+                        {js.jobBike.nickname?.trim() || `${js.jobBike.make} ${js.jobBike.model}`}
+                      </Text>
+                    </View>
+                  ) : null}
                   <TouchableOpacity
                     onPress={() =>
                       Alert.alert("Remove Service", `Remove "${js.service?.name}"?`, [
@@ -957,6 +1096,48 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
                       <Text style={styles.notesText}>{js.notes}</Text>
                     </View>
                   ) : null}
+
+                  {/* Bike assignment (multi-bike jobs only) */}
+                  {(job.jobBikes?.length ?? 0) > 1 ? (
+                    <View style={styles.bikeAssignSection}>
+                      <Text style={styles.bikeAssignLabel}>Bike</Text>
+                      <View style={styles.bikeAssignRow}>
+                        <TouchableOpacity
+                          onPress={() => assignServiceBike(js.id, null)}
+                          disabled={updatingServiceBike === js.id}
+                          style={[
+                            styles.bikeAssignButton,
+                            !js.jobBikeId && styles.bikeAssignButtonNeutralSelected,
+                          ]}
+                        >
+                          <Text style={[
+                            styles.bikeAssignButtonText,
+                            !js.jobBikeId && styles.bikeAssignButtonTextSelected,
+                          ]}>All bikes</Text>
+                        </TouchableOpacity>
+                        {(job.jobBikes ?? []).map((b) => {
+                          const label = b.nickname?.trim() || `${b.make} ${b.model}`;
+                          const isSelected = js.jobBikeId === b.id;
+                          return (
+                            <TouchableOpacity
+                              key={b.id}
+                              onPress={() => assignServiceBike(js.id, isSelected ? null : b.id)}
+                              disabled={updatingServiceBike === js.id}
+                              style={[
+                                styles.bikeAssignButton,
+                                isSelected && styles.bikeAssignButtonServiceSelected,
+                              ]}
+                            >
+                              <Text style={[
+                                styles.bikeAssignButtonText,
+                                isSelected && styles.bikeAssignButtonTextSelected,
+                              ]}>{label}</Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    </View>
+                  ) : null}
                 </View>
               </View>
             );
@@ -982,6 +1163,13 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
                   <Text style={styles.lineItemName} numberOfLines={2}>
                     {jp.product?.name ?? "Unknown"}
                   </Text>
+                  {(job.jobBikes?.length ?? 0) > 1 && jp.jobBike ? (
+                    <View style={[styles.lineBikePill, styles.lineBikePillProduct]}>
+                      <Text style={[styles.lineBikePillText, styles.lineBikePillProductText]} numberOfLines={1}>
+                        {jp.jobBike.nickname?.trim() || `${jp.jobBike.make} ${jp.jobBike.model}`}
+                      </Text>
+                    </View>
+                  ) : null}
                   <TouchableOpacity
                     onPress={() =>
                       Alert.alert(
@@ -1020,7 +1208,32 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
                   <View style={styles.lineItemRow}>
                     <Text style={styles.lineItemRowLabel}>Unit price</Text>
                     <View style={styles.priceRowRight}>
-                      <Text style={styles.unitPriceText}>{formatCurrency(price)}</Text>
+                      {updatingProductPrice === jp.id ? (
+                        <Text style={styles.unitPriceText}>Saving…</Text>
+                      ) : editingProductPriceId === jp.id ? (
+                        <TextInput
+                          style={styles.priceInput}
+                          value={editingProductPriceValue}
+                          onChangeText={setEditingProductPriceValue}
+                          onBlur={() => handleProductPriceBlur(jp.id, price)}
+                          keyboardType="decimal-pad"
+                          autoFocus
+                          selectTextOnFocus
+                        />
+                      ) : (
+                        <TouchableOpacity
+                          onPress={() => {
+                            setEditingProductPriceId(jp.id);
+                            setEditingProductPriceValue(
+                              Number.isFinite(price) ? String(price) : "0"
+                            );
+                          }}
+                          style={styles.editablePriceTap}
+                        >
+                          <Text style={styles.unitPriceText}>{formatCurrency(price)}</Text>
+                          <Ionicons name="pencil" size={11} color={theme.textMuted} />
+                        </TouchableOpacity>
+                      )}
                       <Text style={styles.lineTotalText}>{formatCurrency(lineTotal)}</Text>
                     </View>
                   </View>
@@ -1030,6 +1243,48 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
                     <View style={styles.notesRow}>
                       <Ionicons name="document-text-outline" size={12} color={theme.textMuted} />
                       <Text style={styles.notesText}>{jp.notes}</Text>
+                    </View>
+                  ) : null}
+
+                  {/* Bike assignment (multi-bike jobs only) */}
+                  {(job.jobBikes?.length ?? 0) > 1 ? (
+                    <View style={styles.bikeAssignSection}>
+                      <Text style={styles.bikeAssignLabel}>Bike</Text>
+                      <View style={styles.bikeAssignRow}>
+                        <TouchableOpacity
+                          onPress={() => assignProductBike(jp.id, null)}
+                          disabled={updatingProductBike === jp.id}
+                          style={[
+                            styles.bikeAssignButton,
+                            !jp.jobBikeId && styles.bikeAssignButtonNeutralSelected,
+                          ]}
+                        >
+                          <Text style={[
+                            styles.bikeAssignButtonText,
+                            !jp.jobBikeId && styles.bikeAssignButtonTextSelected,
+                          ]}>All bikes</Text>
+                        </TouchableOpacity>
+                        {(job.jobBikes ?? []).map((b) => {
+                          const label = b.nickname?.trim() || `${b.make} ${b.model}`;
+                          const isSelected = jp.jobBikeId === b.id;
+                          return (
+                            <TouchableOpacity
+                              key={b.id}
+                              onPress={() => assignProductBike(jp.id, isSelected ? null : b.id)}
+                              disabled={updatingProductBike === jp.id}
+                              style={[
+                                styles.bikeAssignButton,
+                                isSelected && styles.bikeAssignButtonProductSelected,
+                              ]}
+                            >
+                              <Text style={[
+                                styles.bikeAssignButtonText,
+                                isSelected && styles.bikeAssignButtonTextSelected,
+                              ]}>{label}</Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
                     </View>
                   ) : null}
                 </View>
