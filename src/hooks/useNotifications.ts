@@ -39,37 +39,68 @@ function routeForNotification(
   return null;
 }
 
+const FOREGROUND_REGISTER_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+
 export function useNotifications() {
   const { role } = useAuth();
   const router = useRouter();
   const registered = useRef(false);
+  const coldStartHandled = useRef(false);
+  const lastRegisteredAt = useRef(0);
 
   useEffect(() => {
     if (!role) {
       registered.current = false;
+      lastRegisteredAt.current = 0;
       return;
     }
     if (registered.current) return;
     registerForPushNotifications(role).then((token) => {
-      if (token) registered.current = true;
+      if (token) {
+        registered.current = true;
+        lastRegisteredAt.current = Date.now();
+      }
     });
   }, [role]);
 
-  // Re-register whenever the app comes back to the foreground.
-  // This recovers from a first-launch registration failure (e.g. wrong session
-  // cookie stored before the auth fix) without requiring a full logout/login.
+  // Re-register when the app returns to the foreground to recover from a
+  // first-launch failure, but throttled to at most once per hour so it
+  // doesn't spike work every time the user switches apps.
   useEffect(() => {
     if (!role) return;
 
     const handleAppStateChange = (nextState: AppStateStatus) => {
       if (nextState === "active") {
-        registerForPushNotifications(role);
+        const now = Date.now();
+        if (now - lastRegisteredAt.current > FOREGROUND_REGISTER_INTERVAL_MS) {
+          lastRegisteredAt.current = now;
+          registerForPushNotifications(role);
+        }
       }
     };
 
     const subscription = AppState.addEventListener("change", handleAppStateChange);
     return () => subscription.remove();
   }, [role]);
+
+  // Handle cold-start: the app was launched by tapping a notification while it
+  // was killed or suspended. The response listener below won't fire in that case
+  // because it isn't registered yet when Expo delivers the tap event, so we
+  // must explicitly fetch it once the role (and router) are ready.
+  useEffect(() => {
+    if (!role || coldStartHandled.current) return;
+    coldStartHandled.current = true;
+
+    Notifications.getLastNotificationResponseAsync().then((response) => {
+      if (!response) return;
+      const data = response.notification.request.content
+        .data as NotificationData;
+      const route = routeForNotification(data, role);
+      if (route) {
+        router.push(route as never);
+      }
+    });
+  }, [role, router]);
 
   useEffect(() => {
     if (!role) return;

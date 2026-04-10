@@ -14,6 +14,8 @@ import {
   Alert,
   Keyboard,
   Linking,
+  type NativeSyntheticEvent,
+  type NativeScrollEvent,
 } from "react-native";
 import { Stack } from "expo-router";
 import { useHeaderHeight } from "@react-navigation/elements";
@@ -47,6 +49,8 @@ export default function CustomerChatScreen() {
   const { setCustomerAuthenticated } = useAuth();
   const headerHeight = useHeaderHeight();
   const flatListRef = useRef<FlatList<ChatMessage>>(null);
+  const isAtBottomRef = useRef(true);
+  const [showScrollButton, setShowScrollButton] = useState(false);
   const [authState, setAuthState] = useState<AuthState>("loading");
   const [email, setEmail] = useState("");
   const [requestingLogin, setRequestingLogin] = useState(false);
@@ -127,7 +131,7 @@ export default function CustomerChatScreen() {
   }, [authState, fetchMessages]);
 
   useEffect(() => {
-    if (messages.length > 0) {
+    if (messages.length > 0 && isAtBottomRef.current) {
       setTimeout(
         () => flatListRef.current?.scrollToEnd({ animated: false }),
         100
@@ -137,9 +141,33 @@ export default function CustomerChatScreen() {
 
   useEffect(() => {
     const sub = Keyboard.addListener("keyboardDidShow", () => {
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 50);
+      if (isAtBottomRef.current) {
+        setTimeout(
+          () => flatListRef.current?.scrollToEnd({ animated: true }),
+          50
+        );
+      }
     });
     return () => sub.remove();
+  }, []);
+
+  const handleScroll = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const { contentOffset, contentSize, layoutMeasurement } =
+        event.nativeEvent;
+      const distanceFromBottom =
+        contentSize.height - contentOffset.y - layoutMeasurement.height;
+      const atBottom = distanceFromBottom < 60;
+      isAtBottomRef.current = atBottom;
+      setShowScrollButton(!atBottom);
+    },
+    []
+  );
+
+  const scrollToBottom = useCallback(() => {
+    isAtBottomRef.current = true;
+    setShowScrollButton(false);
+    flatListRef.current?.scrollToEnd({ animated: true });
   }, []);
 
   const handleRequestLogin = async () => {
@@ -177,6 +205,8 @@ export default function CustomerChatScreen() {
       );
       setText("");
       setPendingImages([]);
+      isAtBottomRef.current = true;
+      setShowScrollButton(false);
       fetchMessages();
     } catch {
       Alert.alert("Error", "Failed to send message");
@@ -592,6 +622,24 @@ export default function CustomerChatScreen() {
           fontWeight: "500",
           color: theme.textTertiary,
         },
+        scrollToBottomButton: {
+          position: "absolute",
+          bottom: spacing[3],
+          alignSelf: "center",
+          backgroundColor: theme.background,
+          borderRadius: 20,
+          width: 36,
+          height: 36,
+          alignItems: "center",
+          justifyContent: "center",
+          shadowColor: colors.black,
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.2,
+          shadowRadius: 4,
+          elevation: 4,
+          borderWidth: 1,
+          borderColor: theme.surfaceBorder,
+        },
       }),
     [theme]
   );
@@ -653,11 +701,14 @@ export default function CustomerChatScreen() {
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         keyboardVerticalOffset={headerHeight}
       >
+        <View style={{ flex: 1 }}>
         <FlatList
           ref={flatListRef}
           data={messages}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.messageList}
+          onScroll={handleScroll}
+          scrollEventThrottle={100}
           renderItem={({ item }) => {
             const isOwn = item.sender === "CUSTOMER";
             const imageOnly =
@@ -782,6 +833,15 @@ export default function CustomerChatScreen() {
             );
           }}
         />
+        {showScrollButton ? (
+          <TouchableOpacity
+            style={styles.scrollToBottomButton}
+            onPress={scrollToBottom}
+          >
+            <Ionicons name="chevron-down" size={20} color={theme.icon} />
+          </TouchableOpacity>
+        ) : null}
+        </View>
 
         {pendingImages.length > 0 ? (
           <View style={styles.pendingRow}>

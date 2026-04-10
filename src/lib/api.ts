@@ -7,19 +7,28 @@ const STAFF_SESSION_CACHE_KEY = "staff_session_cache";
 const CUSTOMER_COOKIE_KEY = "customer_session_cookie";
 const CUSTOMER_ROLE_KEY = "customer_role_persisted";
 
+// In-memory cache so each apiFetch call doesn't hit SecureStore on disk.
+// Values are invalidated on write/delete so they stay consistent.
+const cookieMemCache = new Map<string, string | null>();
+
 async function getStoredCookie(key: string): Promise<string | null> {
+  if (cookieMemCache.has(key)) return cookieMemCache.get(key) ?? null;
   try {
-    return await SecureStore.getItemAsync(key);
+    const value = await SecureStore.getItemAsync(key);
+    cookieMemCache.set(key, value);
+    return value;
   } catch {
     return null;
   }
 }
 
 async function storeCookie(key: string, value: string): Promise<void> {
+  cookieMemCache.set(key, value);
   await SecureStore.setItemAsync(key, value);
 }
 
 async function clearCookie(key: string): Promise<void> {
+  cookieMemCache.delete(key);
   await SecureStore.deleteItemAsync(key);
 }
 

@@ -13,6 +13,8 @@ import {
   StyleSheet,
   Alert,
   Keyboard,
+  type NativeSyntheticEvent,
+  type NativeScrollEvent,
 } from "react-native";
 import { useLocalSearchParams, Stack } from "expo-router";
 import { useHeaderHeight } from "@react-navigation/elements";
@@ -52,6 +54,8 @@ export default function ConversationScreen() {
   const queryClient = useQueryClient();
   const headerHeight = useHeaderHeight();
   const flatListRef = useRef<FlatList<ChatMessage>>(null);
+  const isAtBottomRef = useRef(true);
+  const [showScrollButton, setShowScrollButton] = useState(false);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [pendingImages, setPendingImages] = useState<
@@ -335,6 +339,24 @@ export default function ConversationScreen() {
           fontWeight: "500",
           color: theme.textTertiary,
         },
+        scrollToBottomButton: {
+          position: "absolute",
+          bottom: spacing[3],
+          alignSelf: "center",
+          backgroundColor: theme.background,
+          borderRadius: 20,
+          width: 36,
+          height: 36,
+          alignItems: "center",
+          justifyContent: "center",
+          shadowColor: colors.black,
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.2,
+          shadowRadius: 4,
+          elevation: 4,
+          borderWidth: 1,
+          borderColor: theme.surfaceBorder,
+        },
       }),
     [theme]
   );
@@ -383,16 +405,37 @@ export default function ConversationScreen() {
     Date.now() - new Date(customerTypingAt).getTime() < 8000;
 
   useEffect(() => {
-    if (messages.length > 0) {
+    if (messages.length > 0 && isAtBottomRef.current) {
       setTimeout(() => flatListRef.current?.scrollToEnd({ animated: false }), 100);
     }
   }, [messages.length]);
 
   useEffect(() => {
     const sub = Keyboard.addListener("keyboardDidShow", () => {
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 50);
+      if (isAtBottomRef.current) {
+        setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 50);
+      }
     });
     return () => sub.remove();
+  }, []);
+
+  const handleScroll = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const { contentOffset, contentSize, layoutMeasurement } =
+        event.nativeEvent;
+      const distanceFromBottom =
+        contentSize.height - contentOffset.y - layoutMeasurement.height;
+      const atBottom = distanceFromBottom < 60;
+      isAtBottomRef.current = atBottom;
+      setShowScrollButton(!atBottom);
+    },
+    []
+  );
+
+  const scrollToBottom = useCallback(() => {
+    isAtBottomRef.current = true;
+    setShowScrollButton(false);
+    flatListRef.current?.scrollToEnd({ animated: true });
   }, []);
 
   const handleSend = useCallback(async () => {
@@ -406,6 +449,8 @@ export default function ConversationScreen() {
       });
       setText("");
       setPendingImages([]);
+      isAtBottomRef.current = true;
+      setShowScrollButton(false);
       queryClient.invalidateQueries({ queryKey: ["messages", id] });
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
     } catch {
@@ -570,11 +615,14 @@ export default function ConversationScreen() {
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         keyboardVerticalOffset={headerHeight}
       >
+        <View style={{ flex: 1 }}>
         <FlatList
           ref={flatListRef}
           data={messages}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.messageList}
+          onScroll={handleScroll}
+          scrollEventThrottle={100}
           renderItem={({ item }) => {
             const isOwn = item.sender === "STAFF";
             const imageOnly =
@@ -703,6 +751,15 @@ export default function ConversationScreen() {
             ) : null
           }
         />
+        {showScrollButton ? (
+          <TouchableOpacity
+            style={styles.scrollToBottomButton}
+            onPress={scrollToBottom}
+          >
+            <Ionicons name="chevron-down" size={20} color={theme.icon} />
+          </TouchableOpacity>
+        ) : null}
+        </View>
 
         {pendingImages.length > 0 ? (
           <View style={styles.pendingRow}>

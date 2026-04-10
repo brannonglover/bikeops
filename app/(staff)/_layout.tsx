@@ -1,4 +1,5 @@
 import { useCallback, useEffect } from "react";
+import { InteractionManager } from "react-native";
 import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { StripeTerminalProvider, useStripeTerminal } from "@stripe/stripe-terminal-react-native";
@@ -13,7 +14,12 @@ function StaffTabs() {
   const { initialize } = useStripeTerminal();
 
   useEffect(() => {
-    initialize();
+    // Defer until after the first screen has finished rendering so the
+    // heavy native Stripe Terminal SDK doesn't compete with initial paint.
+    const task = InteractionManager.runAfterInteractions(() => {
+      initialize();
+    });
+    return () => task.cancel();
   }, [initialize]);
 
   return (

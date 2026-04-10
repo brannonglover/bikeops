@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import {
   View,
   Text,
@@ -97,27 +97,55 @@ export default function JobBoardScreen() {
     [patchStage]
   );
 
-  const jobsByStage = DISPLAY_STAGES.reduce(
-    (acc, stage) => ({
-      ...acc,
-      [stage]: jobs.filter((j) => j.stage === stage),
-    }),
-    {} as Record<Stage, Job[]>
+  const jobsByStage = useMemo(
+    () =>
+      DISPLAY_STAGES.reduce(
+        (acc, stage) => ({ ...acc, [stage]: jobs.filter((j) => j.stage === stage) }),
+        {} as Record<Stage, Job[]>
+      ),
+    [jobs]
   );
 
-  const cancelledJobs = jobs.filter((j) => j.stage === "CANCELLED");
-  const completedCount = jobs.filter((j) => j.stage === "COMPLETED").length;
+  const cancelledJobs = useMemo(
+    () => jobs.filter((j) => j.stage === "CANCELLED"),
+    [jobs]
+  );
 
-  const sections = DISPLAY_STAGES.filter(
-    (stage) => (jobsByStage[stage]?.length ?? 0) > 0
-  ).map((stage) => ({
-    title: stage,
-    data: jobsByStage[stage] ?? [],
-  }));
+  const completedCount = useMemo(
+    () => jobs.filter((j) => j.stage === "COMPLETED").length,
+    [jobs]
+  );
 
-  if (cancelledExpanded && cancelledJobs.length > 0) {
-    sections.push({ title: "CANCELLED" as Stage, data: cancelledJobs });
-  }
+  const sections = useMemo(() => {
+    const result = DISPLAY_STAGES.filter(
+      (stage) => (jobsByStage[stage]?.length ?? 0) > 0
+    ).map((stage) => ({
+      title: stage,
+      data: jobsByStage[stage] ?? [],
+    }));
+    if (cancelledExpanded && cancelledJobs.length > 0) {
+      result.push({ title: "CANCELLED" as Stage, data: cancelledJobs });
+    }
+    return result;
+  }, [jobsByStage, cancelledJobs, cancelledExpanded]);
+
+  const renderItem = useCallback(
+    ({ item }: { item: Job }) => (
+      <View style={styles.cardWrapper}>
+        <JobCard
+          job={item}
+          onPress={() => router.push(`/(staff)/(jobs)/${item.id}`)}
+          onAccept={
+            item.stage === "PENDING_APPROVAL" ? () => handleAccept(item.id) : undefined
+          }
+          onReject={
+            item.stage === "PENDING_APPROVAL" ? () => handleReject(item) : undefined
+          }
+        />
+      </View>
+    ),
+    [router, handleAccept, handleReject]
+  );
 
   if (isLoading) return <LoadingScreen message="Loading jobs..." />;
 
@@ -172,24 +200,7 @@ export default function JobBoardScreen() {
         <SectionList
           sections={sections}
           keyExtractor={(item) => item.id}
-          renderItem={({ item }) => (
-            <View style={styles.cardWrapper}>
-              <JobCard
-                job={item}
-                onPress={() => router.push(`/(staff)/(jobs)/${item.id}`)}
-                onAccept={
-                  item.stage === "PENDING_APPROVAL"
-                    ? () => handleAccept(item.id)
-                    : undefined
-                }
-                onReject={
-                  item.stage === "PENDING_APPROVAL"
-                    ? () => handleReject(item)
-                    : undefined
-                }
-              />
-            </View>
-          )}
+          renderItem={renderItem}
           renderSectionHeader={({ section }) => (
             <View
               style={[

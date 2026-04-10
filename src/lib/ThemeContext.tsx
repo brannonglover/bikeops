@@ -104,15 +104,16 @@ const ThemeContext = createContext<ThemeContextValue>({
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const systemScheme = useColorScheme();
-  const [themeMode, setThemeModeState] = useState<ThemeMode>("light");
-  const [loaded, setLoaded] = useState(false);
+  // Default to "system" so the initial render already matches the device
+  // colour scheme without waiting for SecureStore. The persisted preference
+  // will override this once it loads asynchronously.
+  const [themeMode, setThemeModeState] = useState<ThemeMode>("system");
 
   useEffect(() => {
     SecureStore.getItemAsync(THEME_KEY).then((value) => {
-      if (value === "dark" || value === "system") {
+      if (value === "light" || value === "dark" || value === "system") {
         setThemeModeState(value);
       }
-      setLoaded(true);
     });
   }, []);
 
@@ -129,8 +130,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const isDark =
     themeMode === "dark" ||
     (themeMode === "system" && (systemScheme ?? "light") === "dark");
-
-  if (!loaded) return null;
 
   return (
     <ThemeContext.Provider
