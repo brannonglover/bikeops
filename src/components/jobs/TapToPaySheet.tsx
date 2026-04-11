@@ -70,6 +70,15 @@ export function TapToPaySheet({
     isConnectingRef.current = false;
   }, []);
 
+  // Bail out if discovery takes too long (missing entitlement, unsupported device, etc.)
+  useEffect(() => {
+    if (phase !== "discovering") return;
+    const timeout = setTimeout(() => {
+      handleError("Could not find a reader. Make sure Tap to Pay is enabled and supported on this device.");
+    }, 20_000);
+    return () => clearTimeout(timeout);
+  }, [phase, handleError]);
+
   // When readers are found during discovery, connect immediately
   useEffect(() => {
     if (phase !== "discovering") return;

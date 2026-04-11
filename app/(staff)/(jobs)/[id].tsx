@@ -19,7 +19,7 @@ import { useLocalSearchParams, useRouter, Stack } from "expo-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/lib/api";
-import { type Job, type Stage, type DeliveryType, type BikeType, STAGES, STAGE_LABELS, STAGE_COLORS } from "@/lib/types";
+import { type Job, type Stage, type DeliveryType, type BikeType, type Conversation, STAGES, STAGE_LABELS, STAGE_COLORS } from "@/lib/types";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { Card } from "@/components/ui/Card";
@@ -120,6 +120,7 @@ export default function JobDetailScreen() {
   const [activeTab, setActiveTab] = useState<Tab>("details");
   const [internalNotesValue, setInternalNotesValue] = useState("");
   const [savingInternalNotes, setSavingInternalNotes] = useState(false);
+  const [openingChat, setOpeningChat] = useState(false);
 
   const styles = useMemo(
     () =>
@@ -704,10 +705,36 @@ export default function JobDetailScreen() {
 
   const handleStageChange = useCallback(
     (stage: Stage) => {
-      patchJob.mutate({ stage } as Partial<Job>);
+      if (!job) return;
+      const patch: Record<string, unknown> = { stage };
+
+      if (stage === "WORKING_ON") {
+        // When the stage is manually set to WORKING_ON, also clear the per-bike
+        // "waiting on parts" state so the badge doesn't linger. Mirror what
+        // handleResumeWork does: pick the first waiting (non-completed) bike.
+        const waitingBike = job.jobBikes.find(
+          (jb) => !!jb.waitingOnPartsAt && !jb.completedAt
+        );
+        if (waitingBike) {
+          patch.unwaitForPartsJobBikeId = waitingBike.id;
+          patch.workingOnJobBikeId = waitingBike.id;
+        } else if (!job.workingOnJobBikeId) {
+          const firstActive = job.jobBikes.find((jb) => !jb.completedAt);
+          if (firstActive) patch.workingOnJobBikeId = firstActive.id;
+        }
+      } else if (stage === "WAITING_ON_PARTS") {
+        // Mirror what handleWaitForParts does: pick the currently active bike
+        // (or the first non-completed one) so the per-bike badge updates too.
+        const targetBike =
+          job.jobBikes.find((jb) => jb.id === job.workingOnJobBikeId) ??
+          job.jobBikes.find((jb) => !jb.completedAt);
+        if (targetBike) patch.waitForPartsJobBikeId = targetBike.id;
+      }
+
+      patchJob.mutate(patch as unknown as Partial<Job>);
       setShowStageMenu(false);
     },
-    [patchJob]
+    [job, patchJob]
   );
 
   const handleDelete = useCallback(() => {
@@ -983,6 +1010,42 @@ export default function JobDetailScreen() {
     },
     [queryClient, id]
   );
+
+  const handleOpenChat = useCallback(async () => {
+    if (!job?.customer || openingChat) return;
+    setOpeningChat(true);
+    try {
+      const cached = queryClient.getQueryData<Conversation[]>(["conversations"]);
+      const findConv = (list: Conversation[]) =>
+        list.find((c) => c.customerId === job.customer!.id && c.jobId === job.id) ??
+        list.find((c) => c.customerId === job.customer!.id && !c.jobId) ??
+        list.find((c) => c.customerId === job.customer!.id);
+
+      const fromCache = cached ? findConv(cached) : undefined;
+      if (fromCache) {
+        router.push(`/(staff)/chat/${fromCache.id}` as never);
+        return;
+      }
+
+      const { data: convs } = await api.get<Conversation[]>("/api/conversations");
+      queryClient.setQueryData(["conversations"], convs);
+      const existing = findConv(convs);
+      if (existing) {
+        router.push(`/(staff)/chat/${existing.id}` as never);
+        return;
+      }
+
+      const { data: newConv } = await api.post<Conversation>("/api/conversations", {
+        customerId: job.customer!.id,
+      });
+      queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      router.push(`/(staff)/chat/${newConv.id}` as never);
+    } catch {
+      Alert.alert("Error", "Failed to open chat");
+    } finally {
+      setOpeningChat(false);
+    }
+  }, [job, openingChat, queryClient, router]);
 
   if (isLoading || !job) return <LoadingScreen message="Loading job..." />;
 
@@ -1645,13 +1708,10 @@ export default function JobDetailScreen() {
         <View style={styles.actionsSection}>
           {job.customer ? (
             <Button
-              title="Open Chat"
-              onPress={() =>
-                router.push(
-                  `/(staff)/chat?customer=${job.customer!.id}&jobId=${job.id}` as never
-                )
-              }
+              title={openingChat ? "Opening…" : "Open Chat"}
+              onPress={handleOpenChat}
               variant="secondary"
+              disabled={openingChat}
             />
           ) : null}
           {job.stage !== "CANCELLED" ? (
