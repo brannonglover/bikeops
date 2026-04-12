@@ -11,6 +11,8 @@ import {
   Pressable,
   Linking,
   FlatList,
+  KeyboardAvoidingView,
+  Platform,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
@@ -1575,63 +1577,68 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
         statusBarTranslucent
         onRequestClose={() => setShowServicePicker(false)}
       >
-        <Pressable
-          style={styles.pickerBackdrop}
-          onPress={() => setShowServicePicker(false)}
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={{ flex: 1 }}
         >
           <Pressable
-            style={styles.pickerSheet}
-            onPress={(e) => e.stopPropagation()}
+            style={styles.pickerBackdrop}
+            onPress={() => setShowServicePicker(false)}
           >
-            <View style={styles.pickerHandle} />
-            <Text style={styles.pickerTitle}>Add Service</Text>
-            <TextInput
-              style={styles.pickerSearch}
-              placeholder="Search or type a custom service…"
-              placeholderTextColor={theme.textMuted}
-              value={serviceSearch}
-              onChangeText={setServiceSearch}
-              autoFocus
-            />
-            <FlatList
-              data={filteredServices}
-              keyExtractor={(item) => item.id}
-              renderItem={({ item }) => (
-                <TouchableOpacity
-                  style={styles.pickerItem}
-                  onPress={() => handleAddService(item.id)}
-                >
-                  <Text style={styles.pickerItemName}>{item.name}</Text>
-                  <Text style={styles.pickerItemPrice}>
-                    {formatCurrency(item.price)}
-                  </Text>
-                </TouchableOpacity>
-              )}
-              ListEmptyComponent={
-                serviceSearch.trim() ? (
+            <Pressable
+              style={styles.pickerSheet}
+              onPress={(e) => e.stopPropagation()}
+            >
+              <View style={styles.pickerHandle} />
+              <Text style={styles.pickerTitle}>Add Service</Text>
+              <TextInput
+                style={styles.pickerSearch}
+                placeholder="Search or type a custom service…"
+                placeholderTextColor={theme.textMuted}
+                value={serviceSearch}
+                onChangeText={setServiceSearch}
+                autoFocus
+              />
+              <FlatList
+                data={filteredServices}
+                keyExtractor={(item) => item.id}
+                renderItem={({ item }) => (
                   <TouchableOpacity
-                    style={styles.customServiceOption}
-                    onPress={() => handleAddCustomService(serviceSearch)}
+                    style={styles.pickerItem}
+                    onPress={() => handleAddService(item.id)}
                   >
-                    <Ionicons
-                      name="add-circle"
-                      size={18}
-                      color={colors.purple[600]}
-                    />
-                    <Text style={styles.customServiceText}>
-                      Add "{serviceSearch.trim()}" as custom service
+                    <Text style={styles.pickerItemName}>{item.name}</Text>
+                    <Text style={styles.pickerItemPrice}>
+                      {formatCurrency(item.price)}
                     </Text>
                   </TouchableOpacity>
-                ) : (
-                  <Text style={styles.pickerEmpty}>
-                    No available services. Type a name to add a custom one.
-                  </Text>
-                )
-              }
-              keyboardShouldPersistTaps="handled"
-            />
+                )}
+                ListEmptyComponent={
+                  serviceSearch.trim() ? (
+                    <TouchableOpacity
+                      style={styles.customServiceOption}
+                      onPress={() => handleAddCustomService(serviceSearch)}
+                    >
+                      <Ionicons
+                        name="add-circle"
+                        size={18}
+                        color={colors.purple[600]}
+                      />
+                      <Text style={styles.customServiceText}>
+                        Add "{serviceSearch.trim()}" as custom service
+                      </Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <Text style={styles.pickerEmpty}>
+                      No available services. Type a name to add a custom one.
+                    </Text>
+                  )
+                }
+                keyboardShouldPersistTaps="handled"
+              />
+            </Pressable>
           </Pressable>
-        </Pressable>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Product picker modal */}
@@ -1642,45 +1649,50 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
         statusBarTranslucent
         onRequestClose={() => setShowProductPicker(false)}
       >
-        <Pressable
-          style={styles.pickerBackdrop}
-          onPress={() => setShowProductPicker(false)}
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={{ flex: 1 }}
         >
           <Pressable
-            style={styles.pickerSheet}
-            onPress={(e) => e.stopPropagation()}
+            style={styles.pickerBackdrop}
+            onPress={() => setShowProductPicker(false)}
           >
-            <View style={styles.pickerHandle} />
-            <Text style={styles.pickerTitle}>Add Product</Text>
-            <TextInput
-              style={styles.pickerSearch}
-              placeholder="Search products…"
-              placeholderTextColor={theme.textMuted}
-              value={productSearch}
-              onChangeText={setProductSearch}
-              autoFocus
-            />
-            <FlatList
-              data={filteredProducts}
-              keyExtractor={(item) => item.id}
-              renderItem={({ item }) => (
-                <TouchableOpacity
-                  style={styles.pickerItem}
-                  onPress={() => handleAddProduct(item.id)}
-                >
-                  <Text style={styles.pickerItemName}>{item.name}</Text>
-                  <Text style={styles.pickerItemPrice}>
-                    {formatCurrency(item.price)}
-                  </Text>
-                </TouchableOpacity>
-              )}
-              ListEmptyComponent={
-                <Text style={styles.pickerEmpty}>No matching products</Text>
-              }
-              keyboardShouldPersistTaps="handled"
-            />
+            <Pressable
+              style={styles.pickerSheet}
+              onPress={(e) => e.stopPropagation()}
+            >
+              <View style={styles.pickerHandle} />
+              <Text style={styles.pickerTitle}>Add Product</Text>
+              <TextInput
+                style={styles.pickerSearch}
+                placeholder="Search products…"
+                placeholderTextColor={theme.textMuted}
+                value={productSearch}
+                onChangeText={setProductSearch}
+                autoFocus
+              />
+              <FlatList
+                data={filteredProducts}
+                keyExtractor={(item) => item.id}
+                renderItem={({ item }) => (
+                  <TouchableOpacity
+                    style={styles.pickerItem}
+                    onPress={() => handleAddProduct(item.id)}
+                  >
+                    <Text style={styles.pickerItemName}>{item.name}</Text>
+                    <Text style={styles.pickerItemPrice}>
+                      {formatCurrency(item.price)}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+                ListEmptyComponent={
+                  <Text style={styles.pickerEmpty}>No matching products</Text>
+                }
+                keyboardShouldPersistTaps="handled"
+              />
+            </Pressable>
           </Pressable>
-        </Pressable>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Tap to Pay sheet */}
