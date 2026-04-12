@@ -18,6 +18,7 @@ import { api } from "@/lib/api";
 import { TapToPaySheet } from "@/components/jobs/TapToPaySheet";
 import {
   type Job,
+  type JobBike,
   type JobService,
   type JobProduct,
   type Service,
@@ -53,6 +54,20 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
   const [updatingProductPrice, setUpdatingProductPrice] = useState<string | null>(null);
   const [updatingServiceBike, setUpdatingServiceBike] = useState<string | null>(null);
   const [updatingProductBike, setUpdatingProductBike] = useState<string | null>(null);
+
+  const [collapsedBikes, setCollapsedBikes] = useState<Set<string>>(new Set());
+
+  const toggleBikeSection = useCallback((key: string) => {
+    setCollapsedBikes((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }, []);
 
   const [showServicePicker, setShowServicePicker] = useState(false);
   const [showProductPicker, setShowProductPicker] = useState(false);
@@ -138,6 +153,51 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
   }, [availableProducts, productSearch]);
 
   const total = jobTotal(jobServices, jobProductsList);
+
+  interface BikeGroup {
+    key: string;
+    bike: JobBike | null;
+    services: JobService[];
+    products: JobProduct[];
+  }
+
+  const itemsByBike = useMemo((): BikeGroup[] => {
+    const bikes = (job.jobBikes ?? []).slice().sort((a, b) => a.sortOrder - b.sortOrder);
+    if (bikes.length === 0) return [];
+
+    const isMultiBike = bikes.length > 1;
+
+    if (!isMultiBike) {
+      return [{ key: bikes[0].id, bike: bikes[0], services: jobServices, products: jobProductsList }];
+    }
+
+    const bikeMap = new Map<string, BikeGroup>();
+    for (const b of bikes) {
+      bikeMap.set(b.id, { key: b.id, bike: b, services: [], products: [] });
+    }
+    const unassigned: BikeGroup = { key: "__all__", bike: null, services: [], products: [] };
+
+    for (const js of jobServices) {
+      if (js.jobBikeId && bikeMap.has(js.jobBikeId)) {
+        bikeMap.get(js.jobBikeId)!.services.push(js);
+      } else {
+        unassigned.services.push(js);
+      }
+    }
+    for (const jp of jobProductsList) {
+      if (jp.jobBikeId && bikeMap.has(jp.jobBikeId)) {
+        bikeMap.get(jp.jobBikeId)!.products.push(jp);
+      } else {
+        unassigned.products.push(jp);
+      }
+    }
+
+    const groups: BikeGroup[] = bikes.map((b) => bikeMap.get(b.id)!);
+    if (unassigned.services.length > 0 || unassigned.products.length > 0) {
+      groups.push(unassigned);
+    }
+    return groups;
+  }, [job.jobBikes, jobServices, jobProductsList]);
 
   const refetchJob = useCallback(async () => {
     const { data } = await api.get<Job>(`/api/jobs/${job.id}`);
@@ -923,374 +983,466 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
         bikeAssignButtonTextSelected: {
           color: colors.white,
         },
+        bikeAccordionSection: {
+          marginBottom: spacing[3],
+          borderWidth: 1,
+          borderColor: theme.surfaceBorder,
+          borderRadius: borderRadius.xl,
+          overflow: "hidden",
+        },
+        bikeAccordionHeader: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: spacing[2.5],
+          paddingHorizontal: spacing[3],
+          paddingVertical: spacing[3],
+          backgroundColor: theme.surface,
+        },
+        bikeAccordionImage: {
+          width: 36,
+          height: 36,
+          borderRadius: borderRadius.md,
+          backgroundColor: theme.placeholderBg,
+        },
+        bikeAccordionPlaceholder: {
+          width: 36,
+          height: 36,
+          borderRadius: borderRadius.md,
+          backgroundColor: theme.placeholderBg,
+          justifyContent: "center",
+          alignItems: "center",
+        },
+        bikeAccordionInfo: {
+          flex: 1,
+          gap: 1,
+        },
+        bikeAccordionName: {
+          ...fontSize.sm,
+          fontWeight: "600",
+          color: theme.text,
+        },
+        bikeAccordionMeta: {
+          ...fontSize.xs,
+          color: theme.textSecondary,
+        },
+        bikeAccordionBadge: {
+          minWidth: 20,
+          height: 20,
+          borderRadius: 10,
+          backgroundColor: theme.subtleBg,
+          borderWidth: 1,
+          borderColor: theme.surfaceBorder,
+          justifyContent: "center",
+          alignItems: "center",
+          paddingHorizontal: spacing[1.5],
+        },
+        bikeAccordionBadgeText: {
+          fontSize: 11,
+          fontWeight: "600",
+          color: theme.textSecondary,
+        },
+        bikeAccordionBody: {
+          borderTopWidth: 1,
+          borderTopColor: theme.surfaceBorder,
+          padding: spacing[3],
+          gap: spacing[2],
+          backgroundColor: theme.background,
+        },
+        bikeAccordionEmpty: {
+          ...fontSize.xs,
+          color: theme.textMuted,
+          paddingVertical: spacing[2],
+          textAlign: "center",
+        },
       }),
     [theme]
   );
 
   return (
     <View>
-      {/* Bikes in this job */}
-      <View style={styles.bikesSection}>
-        <Text style={styles.sectionTitle}>Bikes in this job</Text>
-        {job.jobBikes.map((b) => (
-          <View key={b.id} style={styles.bikeChip}>
-            {b.imageUrl ? (
-              <Image source={{ uri: b.imageUrl }} style={styles.bikeImage} />
-            ) : (
-              <View style={styles.bikePlaceholder}>
-                <Ionicons name="bicycle" size={20} color={theme.iconMuted} />
-              </View>
-            )}
-            <Text style={styles.bikeText} numberOfLines={1}>
-              {b.nickname?.trim()
-                ? `${b.nickname} (${b.make} ${b.model})`
-                : `${b.make} ${b.model}`}
-            </Text>
-            <Text style={styles.bikeType}>
-              {b.bikeType === "E_BIKE" ? "E-bike" : "Standard"}
-            </Text>
-          </View>
-        ))}
-      </View>
-
-      {/* Line items */}
-      <Text style={styles.sectionTitle}>Line items</Text>
-
-      {jobServices.length === 0 && jobProductsList.length === 0 ? (
-        <Text style={styles.emptyText}>
-          No services or products on this job yet. Add line items below.
-        </Text>
-      ) : (
-        <View>
-          {jobServices.map((js) => {
-            const price =
-              typeof js.unitPrice === "string"
-                ? parseFloat(js.unitPrice)
-                : Number(js.unitPrice);
-            const qty = js.quantity || 1;
-            const lineTotal = price * qty;
-            const isSystem = Boolean(js.service?.isSystem);
-            const qtyBusy = updatingQty === js.id;
-            const isEditingPrice = editingPriceId === js.id;
+      {/* Bike accordion sections */}
+      {itemsByBike.length > 0 ? (
+        <View style={{ marginBottom: spacing[1] }}>
+          {itemsByBike.map((group) => {
+            const isCollapsed = collapsedBikes.has(group.key);
+            const itemCount = group.services.length + group.products.length;
+            const isMultiBike = (job.jobBikes?.length ?? 0) > 1;
+            const isAllBikes = group.key === "__all__";
+            const bikeLabel = isAllBikes
+              ? "All bikes"
+              : group.bike
+              ? group.bike.nickname?.trim()
+                ? `${group.bike.nickname} (${group.bike.make} ${group.bike.model})`
+                : `${group.bike.make} ${group.bike.model}`
+              : "Unknown bike";
+            const bikeMeta = isAllBikes
+              ? "Items not assigned to a specific bike"
+              : group.bike?.bikeType === "E_BIKE"
+              ? "E-bike"
+              : group.bike
+              ? "Standard"
+              : null;
 
             return (
-              <View key={js.id} style={styles.lineItem}>
-                {/* Top: badge + name + remove */}
-                <View style={styles.lineItemTop}>
-                  <View style={[styles.typeBadge, styles.typeBadgeService]}>
-                    <Text style={[styles.typeBadgeText, styles.typeBadgeServiceText]}>
-                      Service
-                    </Text>
-                  </View>
-                  <Text style={styles.lineItemName} numberOfLines={2}>
-                    {js.service?.name ?? "Unknown"}
-                  </Text>
-                  {(job.jobBikes?.length ?? 0) > 1 && js.jobBike ? (
-                    <View style={[styles.lineBikePill, styles.lineBikePillService]}>
-                      <Text style={[styles.lineBikePillText, styles.lineBikePillServiceText]} numberOfLines={1}>
-                        {js.jobBike.nickname?.trim() || `${js.jobBike.make} ${js.jobBike.model}`}
-                      </Text>
+              <View key={group.key} style={styles.bikeAccordionSection}>
+                <TouchableOpacity
+                  style={styles.bikeAccordionHeader}
+                  onPress={() => toggleBikeSection(group.key)}
+                  activeOpacity={0.7}
+                >
+                  {isAllBikes ? (
+                    <View style={styles.bikeAccordionPlaceholder}>
+                      <Ionicons name="layers-outline" size={18} color={theme.iconMuted} />
                     </View>
-                  ) : null}
-                  <TouchableOpacity
-                    onPress={() =>
-                      Alert.alert("Remove Service", `Remove "${js.service?.name}"?`, [
-                        { text: "Cancel", style: "cancel" },
-                        {
-                          text: "Remove",
-                          style: "destructive",
-                          onPress: () => handleRemoveService(js.id),
-                        },
-                      ])
-                    }
-                    disabled={removing === js.id}
-                    style={styles.removeButton}
-                  >
-                    <Ionicons
-                      name="trash-outline"
-                      size={16}
-                      color={removing === js.id ? theme.textMuted : theme.textSecondary}
-                    />
-                  </TouchableOpacity>
-                </View>
+                  ) : group.bike?.imageUrl ? (
+                    <Image source={{ uri: group.bike.imageUrl }} style={styles.bikeAccordionImage} />
+                  ) : (
+                    <View style={styles.bikeAccordionPlaceholder}>
+                      <Ionicons name="bicycle" size={18} color={theme.iconMuted} />
+                    </View>
+                  )}
+                  <View style={styles.bikeAccordionInfo}>
+                    <Text style={styles.bikeAccordionName} numberOfLines={1}>
+                      {bikeLabel}
+                    </Text>
+                    {bikeMeta ? (
+                      <Text style={styles.bikeAccordionMeta}>{bikeMeta}</Text>
+                    ) : null}
+                  </View>
+                  <View style={styles.bikeAccordionBadge}>
+                    <Text style={styles.bikeAccordionBadgeText}>{itemCount}</Text>
+                  </View>
+                  <Ionicons
+                    name={isCollapsed ? "chevron-forward" : "chevron-down"}
+                    size={16}
+                    color={theme.textMuted}
+                  />
+                </TouchableOpacity>
 
-                {/* Bottom: qty + price + total */}
-                <View style={styles.lineItemBottom}>
-                  {/* Qty row */}
-                  <View style={styles.lineItemRow}>
-                    <Text style={styles.lineItemRowLabel}>Qty</Text>
-                    {!isSystem ? (
-                      <View
-                        style={styles.qtyControl}
-                        onStartShouldSetResponder={() => true}
-                      >
-                        <TouchableOpacity
-                          onPress={() => adjustServiceQuantity(js.id, qty - 1)}
-                          disabled={qty <= 1 || qtyBusy}
-                          style={[
-                            styles.qtyButton,
-                            (qty <= 1 || qtyBusy) && styles.qtyButtonDisabled,
-                          ]}
-                        >
-                          <Text style={styles.qtyButtonText}>−</Text>
-                        </TouchableOpacity>
-                        <Text style={styles.qtyValue}>
-                          {qtyBusy ? "…" : qty}
-                        </Text>
-                        <TouchableOpacity
-                          onPress={() => adjustServiceQuantity(js.id, qty + 1)}
-                          disabled={qtyBusy}
-                          style={[
-                            styles.qtyButton,
-                            qtyBusy && styles.qtyButtonDisabled,
-                          ]}
-                        >
-                          <Text style={styles.qtyButtonText}>+</Text>
-                        </TouchableOpacity>
-                      </View>
+                {!isCollapsed && (
+                  <View style={styles.bikeAccordionBody}>
+                    {itemCount === 0 ? (
+                      <Text style={styles.bikeAccordionEmpty}>No items assigned to this bike</Text>
                     ) : (
-                      <Text style={styles.lineItemRowValue}>{qty}</Text>
+                      <>
+                        {group.services.map((js) => {
+                          const price =
+                            typeof js.unitPrice === "string"
+                              ? parseFloat(js.unitPrice)
+                              : Number(js.unitPrice);
+                          const qty = js.quantity || 1;
+                          const lineTotal = price * qty;
+                          const isSystem = Boolean(js.service?.isSystem);
+                          const qtyBusy = updatingQty === js.id;
+                          const isEditingPrice = editingPriceId === js.id;
+
+                          return (
+                            <View key={js.id} style={styles.lineItem}>
+                              <View style={styles.lineItemTop}>
+                                <View style={[styles.typeBadge, styles.typeBadgeService]}>
+                                  <Text style={[styles.typeBadgeText, styles.typeBadgeServiceText]}>
+                                    Service
+                                  </Text>
+                                </View>
+                                <Text style={styles.lineItemName} numberOfLines={2}>
+                                  {js.service?.name ?? "Unknown"}
+                                </Text>
+                                <TouchableOpacity
+                                  onPress={() =>
+                                    Alert.alert("Remove Service", `Remove "${js.service?.name}"?`, [
+                                      { text: "Cancel", style: "cancel" },
+                                      {
+                                        text: "Remove",
+                                        style: "destructive",
+                                        onPress: () => handleRemoveService(js.id),
+                                      },
+                                    ])
+                                  }
+                                  disabled={removing === js.id}
+                                  style={styles.removeButton}
+                                >
+                                  <Ionicons
+                                    name="trash-outline"
+                                    size={16}
+                                    color={removing === js.id ? theme.textMuted : theme.textSecondary}
+                                  />
+                                </TouchableOpacity>
+                              </View>
+
+                              <View style={styles.lineItemBottom}>
+                                <View style={styles.lineItemRow}>
+                                  <Text style={styles.lineItemRowLabel}>Qty</Text>
+                                  {!isSystem ? (
+                                    <View
+                                      style={styles.qtyControl}
+                                      onStartShouldSetResponder={() => true}
+                                    >
+                                      <TouchableOpacity
+                                        onPress={() => adjustServiceQuantity(js.id, qty - 1)}
+                                        disabled={qty <= 1 || qtyBusy}
+                                        style={[
+                                          styles.qtyButton,
+                                          (qty <= 1 || qtyBusy) && styles.qtyButtonDisabled,
+                                        ]}
+                                      >
+                                        <Text style={styles.qtyButtonText}>−</Text>
+                                      </TouchableOpacity>
+                                      <Text style={styles.qtyValue}>{qtyBusy ? "…" : qty}</Text>
+                                      <TouchableOpacity
+                                        onPress={() => adjustServiceQuantity(js.id, qty + 1)}
+                                        disabled={qtyBusy}
+                                        style={[
+                                          styles.qtyButton,
+                                          qtyBusy && styles.qtyButtonDisabled,
+                                        ]}
+                                      >
+                                        <Text style={styles.qtyButtonText}>+</Text>
+                                      </TouchableOpacity>
+                                    </View>
+                                  ) : (
+                                    <Text style={styles.lineItemRowValue}>{qty}</Text>
+                                  )}
+                                </View>
+
+                                <View style={styles.lineItemRow}>
+                                  <Text style={styles.lineItemRowLabel}>Unit price</Text>
+                                  <View style={styles.priceRowRight}>
+                                    {isSystem || updatingPrice === js.id ? (
+                                      <Text style={styles.unitPriceText}>
+                                        {updatingPrice === js.id ? "Saving…" : formatCurrency(price)}
+                                      </Text>
+                                    ) : isEditingPrice ? (
+                                      <TextInput
+                                        style={styles.priceInput}
+                                        value={editingPriceValue}
+                                        onChangeText={setEditingPriceValue}
+                                        onBlur={() => handlePriceBlur(js.id, price)}
+                                        keyboardType="decimal-pad"
+                                        autoFocus
+                                        selectTextOnFocus
+                                      />
+                                    ) : (
+                                      <TouchableOpacity
+                                        onPress={() => {
+                                          setEditingPriceId(js.id);
+                                          setEditingPriceValue(
+                                            Number.isFinite(price) ? String(price) : "0"
+                                          );
+                                        }}
+                                        style={styles.editablePriceTap}
+                                      >
+                                        <Text style={styles.unitPriceText}>{formatCurrency(price)}</Text>
+                                        <Ionicons name="pencil" size={11} color={theme.textMuted} />
+                                      </TouchableOpacity>
+                                    )}
+                                    <Text style={styles.lineTotalText}>{formatCurrency(lineTotal)}</Text>
+                                  </View>
+                                </View>
+
+                                {js.notes ? (
+                                  <View style={styles.notesRow}>
+                                    <Ionicons name="document-text-outline" size={12} color={theme.textMuted} />
+                                    <Text style={styles.notesText}>{js.notes}</Text>
+                                  </View>
+                                ) : null}
+
+                                {isMultiBike ? (
+                                  <View style={styles.bikeAssignSection}>
+                                    <Text style={styles.bikeAssignLabel}>Bike</Text>
+                                    <View style={styles.bikeAssignRow}>
+                                      <TouchableOpacity
+                                        onPress={() => assignServiceBike(js.id, null)}
+                                        disabled={updatingServiceBike === js.id}
+                                        style={[
+                                          styles.bikeAssignButton,
+                                          !js.jobBikeId && styles.bikeAssignButtonNeutralSelected,
+                                        ]}
+                                      >
+                                        <Text style={[
+                                          styles.bikeAssignButtonText,
+                                          !js.jobBikeId && styles.bikeAssignButtonTextSelected,
+                                        ]}>All bikes</Text>
+                                      </TouchableOpacity>
+                                      {(job.jobBikes ?? []).map((b) => {
+                                        const label = b.nickname?.trim() || `${b.make} ${b.model}`;
+                                        const isSelected = js.jobBikeId === b.id;
+                                        return (
+                                          <TouchableOpacity
+                                            key={b.id}
+                                            onPress={() => assignServiceBike(js.id, isSelected ? null : b.id)}
+                                            disabled={updatingServiceBike === js.id}
+                                            style={[
+                                              styles.bikeAssignButton,
+                                              isSelected && styles.bikeAssignButtonServiceSelected,
+                                            ]}
+                                          >
+                                            <Text style={[
+                                              styles.bikeAssignButtonText,
+                                              isSelected && styles.bikeAssignButtonTextSelected,
+                                            ]}>{label}</Text>
+                                          </TouchableOpacity>
+                                        );
+                                      })}
+                                    </View>
+                                  </View>
+                                ) : null}
+                              </View>
+                            </View>
+                          );
+                        })}
+
+                        {group.products.map((jp) => {
+                          const price =
+                            typeof jp.unitPrice === "string"
+                              ? parseFloat(jp.unitPrice)
+                              : Number(jp.unitPrice);
+                          const qty = jp.quantity || 1;
+                          const lineTotal = price * qty;
+
+                          return (
+                            <View key={jp.id} style={styles.lineItem}>
+                              <View style={styles.lineItemTop}>
+                                <View style={[styles.typeBadge, styles.typeBadgeProduct]}>
+                                  <Text style={[styles.typeBadgeText, styles.typeBadgeProductText]}>
+                                    Part
+                                  </Text>
+                                </View>
+                                <Text style={styles.lineItemName} numberOfLines={2}>
+                                  {jp.product?.name ?? "Unknown"}
+                                </Text>
+                                <TouchableOpacity
+                                  onPress={() =>
+                                    Alert.alert(
+                                      "Remove Part",
+                                      `Remove "${jp.product?.name}"?`,
+                                      [
+                                        { text: "Cancel", style: "cancel" },
+                                        {
+                                          text: "Remove",
+                                          style: "destructive",
+                                          onPress: () => handleRemoveProduct(jp.id),
+                                        },
+                                      ]
+                                    )
+                                  }
+                                  disabled={removingProduct === jp.id}
+                                  style={styles.removeButton}
+                                >
+                                  <Ionicons
+                                    name="trash-outline"
+                                    size={16}
+                                    color={removingProduct === jp.id ? theme.textMuted : theme.textSecondary}
+                                  />
+                                </TouchableOpacity>
+                              </View>
+
+                              <View style={styles.lineItemBottom}>
+                                <View style={styles.lineItemRow}>
+                                  <Text style={styles.lineItemRowLabel}>Qty</Text>
+                                  <Text style={styles.lineItemRowValue}>{qty}</Text>
+                                </View>
+
+                                <View style={styles.lineItemRow}>
+                                  <Text style={styles.lineItemRowLabel}>Unit price</Text>
+                                  <View style={styles.priceRowRight}>
+                                    {updatingProductPrice === jp.id ? (
+                                      <Text style={styles.unitPriceText}>Saving…</Text>
+                                    ) : editingProductPriceId === jp.id ? (
+                                      <TextInput
+                                        style={styles.priceInput}
+                                        value={editingProductPriceValue}
+                                        onChangeText={setEditingProductPriceValue}
+                                        onBlur={() => handleProductPriceBlur(jp.id, price)}
+                                        keyboardType="decimal-pad"
+                                        autoFocus
+                                        selectTextOnFocus
+                                      />
+                                    ) : (
+                                      <TouchableOpacity
+                                        onPress={() => {
+                                          setEditingProductPriceId(jp.id);
+                                          setEditingProductPriceValue(
+                                            Number.isFinite(price) ? String(price) : "0"
+                                          );
+                                        }}
+                                        style={styles.editablePriceTap}
+                                      >
+                                        <Text style={styles.unitPriceText}>{formatCurrency(price)}</Text>
+                                        <Ionicons name="pencil" size={11} color={theme.textMuted} />
+                                      </TouchableOpacity>
+                                    )}
+                                    <Text style={styles.lineTotalText}>{formatCurrency(lineTotal)}</Text>
+                                  </View>
+                                </View>
+
+                                {jp.notes ? (
+                                  <View style={styles.notesRow}>
+                                    <Ionicons name="document-text-outline" size={12} color={theme.textMuted} />
+                                    <Text style={styles.notesText}>{jp.notes}</Text>
+                                  </View>
+                                ) : null}
+
+                                {isMultiBike ? (
+                                  <View style={styles.bikeAssignSection}>
+                                    <Text style={styles.bikeAssignLabel}>Bike</Text>
+                                    <View style={styles.bikeAssignRow}>
+                                      <TouchableOpacity
+                                        onPress={() => assignProductBike(jp.id, null)}
+                                        disabled={updatingProductBike === jp.id}
+                                        style={[
+                                          styles.bikeAssignButton,
+                                          !jp.jobBikeId && styles.bikeAssignButtonNeutralSelected,
+                                        ]}
+                                      >
+                                        <Text style={[
+                                          styles.bikeAssignButtonText,
+                                          !jp.jobBikeId && styles.bikeAssignButtonTextSelected,
+                                        ]}>All bikes</Text>
+                                      </TouchableOpacity>
+                                      {(job.jobBikes ?? []).map((b) => {
+                                        const label = b.nickname?.trim() || `${b.make} ${b.model}`;
+                                        const isSelected = jp.jobBikeId === b.id;
+                                        return (
+                                          <TouchableOpacity
+                                            key={b.id}
+                                            onPress={() => assignProductBike(jp.id, isSelected ? null : b.id)}
+                                            disabled={updatingProductBike === jp.id}
+                                            style={[
+                                              styles.bikeAssignButton,
+                                              isSelected && styles.bikeAssignButtonProductSelected,
+                                            ]}
+                                          >
+                                            <Text style={[
+                                              styles.bikeAssignButtonText,
+                                              isSelected && styles.bikeAssignButtonTextSelected,
+                                            ]}>{label}</Text>
+                                          </TouchableOpacity>
+                                        );
+                                      })}
+                                    </View>
+                                  </View>
+                                ) : null}
+                              </View>
+                            </View>
+                          );
+                        })}
+                      </>
                     )}
                   </View>
-
-                  {/* Price row */}
-                  <View style={styles.lineItemRow}>
-                    <Text style={styles.lineItemRowLabel}>Unit price</Text>
-                    <View style={styles.priceRowRight}>
-                      {isSystem || updatingPrice === js.id ? (
-                        <Text style={styles.unitPriceText}>
-                          {updatingPrice === js.id ? "Saving…" : formatCurrency(price)}
-                        </Text>
-                      ) : isEditingPrice ? (
-                        <TextInput
-                          style={styles.priceInput}
-                          value={editingPriceValue}
-                          onChangeText={setEditingPriceValue}
-                          onBlur={() => handlePriceBlur(js.id, price)}
-                          keyboardType="decimal-pad"
-                          autoFocus
-                          selectTextOnFocus
-                        />
-                      ) : (
-                        <TouchableOpacity
-                          onPress={() => {
-                            setEditingPriceId(js.id);
-                            setEditingPriceValue(
-                              Number.isFinite(price) ? String(price) : "0"
-                            );
-                          }}
-                          style={styles.editablePriceTap}
-                        >
-                          <Text style={styles.unitPriceText}>{formatCurrency(price)}</Text>
-                          <Ionicons name="pencil" size={11} color={theme.textMuted} />
-                        </TouchableOpacity>
-                      )}
-                      <Text style={styles.lineTotalText}>{formatCurrency(lineTotal)}</Text>
-                    </View>
-                  </View>
-
-                  {/* Notes row (if any) */}
-                  {js.notes ? (
-                    <View style={styles.notesRow}>
-                      <Ionicons name="document-text-outline" size={12} color={theme.textMuted} />
-                      <Text style={styles.notesText}>{js.notes}</Text>
-                    </View>
-                  ) : null}
-
-                  {/* Bike assignment (multi-bike jobs only) */}
-                  {(job.jobBikes?.length ?? 0) > 1 ? (
-                    <View style={styles.bikeAssignSection}>
-                      <Text style={styles.bikeAssignLabel}>Bike</Text>
-                      <View style={styles.bikeAssignRow}>
-                        <TouchableOpacity
-                          onPress={() => assignServiceBike(js.id, null)}
-                          disabled={updatingServiceBike === js.id}
-                          style={[
-                            styles.bikeAssignButton,
-                            !js.jobBikeId && styles.bikeAssignButtonNeutralSelected,
-                          ]}
-                        >
-                          <Text style={[
-                            styles.bikeAssignButtonText,
-                            !js.jobBikeId && styles.bikeAssignButtonTextSelected,
-                          ]}>All bikes</Text>
-                        </TouchableOpacity>
-                        {(job.jobBikes ?? []).map((b) => {
-                          const label = b.nickname?.trim() || `${b.make} ${b.model}`;
-                          const isSelected = js.jobBikeId === b.id;
-                          return (
-                            <TouchableOpacity
-                              key={b.id}
-                              onPress={() => assignServiceBike(js.id, isSelected ? null : b.id)}
-                              disabled={updatingServiceBike === js.id}
-                              style={[
-                                styles.bikeAssignButton,
-                                isSelected && styles.bikeAssignButtonServiceSelected,
-                              ]}
-                            >
-                              <Text style={[
-                                styles.bikeAssignButtonText,
-                                isSelected && styles.bikeAssignButtonTextSelected,
-                              ]}>{label}</Text>
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </View>
-                    </View>
-                  ) : null}
-                </View>
+                )}
               </View>
             );
           })}
-
-          {jobProductsList.map((jp) => {
-            const price =
-              typeof jp.unitPrice === "string"
-                ? parseFloat(jp.unitPrice)
-                : Number(jp.unitPrice);
-            const qty = jp.quantity || 1;
-            const lineTotal = price * qty;
-
-            return (
-              <View key={jp.id} style={styles.lineItem}>
-                {/* Top: badge + name + remove */}
-                <View style={styles.lineItemTop}>
-                  <View style={[styles.typeBadge, styles.typeBadgeProduct]}>
-                    <Text style={[styles.typeBadgeText, styles.typeBadgeProductText]}>
-                      Part
-                    </Text>
-                  </View>
-                  <Text style={styles.lineItemName} numberOfLines={2}>
-                    {jp.product?.name ?? "Unknown"}
-                  </Text>
-                  {(job.jobBikes?.length ?? 0) > 1 && jp.jobBike ? (
-                    <View style={[styles.lineBikePill, styles.lineBikePillProduct]}>
-                      <Text style={[styles.lineBikePillText, styles.lineBikePillProductText]} numberOfLines={1}>
-                        {jp.jobBike.nickname?.trim() || `${jp.jobBike.make} ${jp.jobBike.model}`}
-                      </Text>
-                    </View>
-                  ) : null}
-                  <TouchableOpacity
-                    onPress={() =>
-                      Alert.alert(
-                        "Remove Part",
-                        `Remove "${jp.product?.name}"?`,
-                        [
-                          { text: "Cancel", style: "cancel" },
-                          {
-                            text: "Remove",
-                            style: "destructive",
-                            onPress: () => handleRemoveProduct(jp.id),
-                          },
-                        ]
-                      )
-                    }
-                    disabled={removingProduct === jp.id}
-                    style={styles.removeButton}
-                  >
-                    <Ionicons
-                      name="trash-outline"
-                      size={16}
-                      color={removingProduct === jp.id ? theme.textMuted : theme.textSecondary}
-                    />
-                  </TouchableOpacity>
-                </View>
-
-                {/* Bottom: qty + price + total */}
-                <View style={styles.lineItemBottom}>
-                  {/* Qty row */}
-                  <View style={styles.lineItemRow}>
-                    <Text style={styles.lineItemRowLabel}>Qty</Text>
-                    <Text style={styles.lineItemRowValue}>{qty}</Text>
-                  </View>
-
-                  {/* Price row */}
-                  <View style={styles.lineItemRow}>
-                    <Text style={styles.lineItemRowLabel}>Unit price</Text>
-                    <View style={styles.priceRowRight}>
-                      {updatingProductPrice === jp.id ? (
-                        <Text style={styles.unitPriceText}>Saving…</Text>
-                      ) : editingProductPriceId === jp.id ? (
-                        <TextInput
-                          style={styles.priceInput}
-                          value={editingProductPriceValue}
-                          onChangeText={setEditingProductPriceValue}
-                          onBlur={() => handleProductPriceBlur(jp.id, price)}
-                          keyboardType="decimal-pad"
-                          autoFocus
-                          selectTextOnFocus
-                        />
-                      ) : (
-                        <TouchableOpacity
-                          onPress={() => {
-                            setEditingProductPriceId(jp.id);
-                            setEditingProductPriceValue(
-                              Number.isFinite(price) ? String(price) : "0"
-                            );
-                          }}
-                          style={styles.editablePriceTap}
-                        >
-                          <Text style={styles.unitPriceText}>{formatCurrency(price)}</Text>
-                          <Ionicons name="pencil" size={11} color={theme.textMuted} />
-                        </TouchableOpacity>
-                      )}
-                      <Text style={styles.lineTotalText}>{formatCurrency(lineTotal)}</Text>
-                    </View>
-                  </View>
-
-                  {/* Notes row (if any) */}
-                  {jp.notes ? (
-                    <View style={styles.notesRow}>
-                      <Ionicons name="document-text-outline" size={12} color={theme.textMuted} />
-                      <Text style={styles.notesText}>{jp.notes}</Text>
-                    </View>
-                  ) : null}
-
-                  {/* Bike assignment (multi-bike jobs only) */}
-                  {(job.jobBikes?.length ?? 0) > 1 ? (
-                    <View style={styles.bikeAssignSection}>
-                      <Text style={styles.bikeAssignLabel}>Bike</Text>
-                      <View style={styles.bikeAssignRow}>
-                        <TouchableOpacity
-                          onPress={() => assignProductBike(jp.id, null)}
-                          disabled={updatingProductBike === jp.id}
-                          style={[
-                            styles.bikeAssignButton,
-                            !jp.jobBikeId && styles.bikeAssignButtonNeutralSelected,
-                          ]}
-                        >
-                          <Text style={[
-                            styles.bikeAssignButtonText,
-                            !jp.jobBikeId && styles.bikeAssignButtonTextSelected,
-                          ]}>All bikes</Text>
-                        </TouchableOpacity>
-                        {(job.jobBikes ?? []).map((b) => {
-                          const label = b.nickname?.trim() || `${b.make} ${b.model}`;
-                          const isSelected = jp.jobBikeId === b.id;
-                          return (
-                            <TouchableOpacity
-                              key={b.id}
-                              onPress={() => assignProductBike(jp.id, isSelected ? null : b.id)}
-                              disabled={updatingProductBike === jp.id}
-                              style={[
-                                styles.bikeAssignButton,
-                                isSelected && styles.bikeAssignButtonProductSelected,
-                              ]}
-                            >
-                              <Text style={[
-                                styles.bikeAssignButtonText,
-                                isSelected && styles.bikeAssignButtonTextSelected,
-                              ]}>{label}</Text>
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </View>
-                    </View>
-                  ) : null}
-                </View>
-              </View>
-            );
-          })}
+        </View>
+      ) : (
+        /* No bikes on job — flat fallback */
+        <View>
+          <Text style={styles.sectionTitle}>Line items</Text>
+          {jobServices.length === 0 && jobProductsList.length === 0 ? (
+            <Text style={styles.emptyText}>
+              No services or products on this job yet. Add line items below.
+            </Text>
+          ) : null}
         </View>
       )}
 

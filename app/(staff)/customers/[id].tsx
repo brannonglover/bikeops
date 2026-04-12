@@ -230,6 +230,8 @@ export default function CustomerDetailScreen() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["customer", id] });
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["job"] });
       setEditingBikeId(null);
     },
     onError: (e) =>

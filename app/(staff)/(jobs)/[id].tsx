@@ -114,6 +114,8 @@ export default function JobDetailScreen() {
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [cancelReason, setCancelReason] = useState<string | null>(null);
   const [cancelReasonText, setCancelReasonText] = useState("");
+  const [showRejectModal, setShowRejectModal] = useState(false);
+  const [rejectReasonText, setRejectReasonText] = useState("");
   const [showDatePicker, setShowDatePicker] = useState<"dropOff" | "pickup" | null>(null);
   const [calMonth, setCalMonth] = useState(new Date().getMonth());
   const [calYear, setCalYear] = useState(new Date().getFullYear());
@@ -796,13 +798,41 @@ export default function JobDetailScreen() {
     );
   }, [cancelReason, cancelReasonText, patchJob]);
 
+  const handleAcceptBooking = useCallback(() => {
+    patchJob.mutate({ stage: "BOOKED_IN" } as Partial<Job>);
+  }, [patchJob]);
+
+  const openRejectModal = useCallback(() => {
+    setRejectReasonText("");
+    setShowRejectModal(true);
+  }, []);
+
+  const handleRejectBooking = useCallback(() => {
+    const reason = rejectReasonText.trim();
+    if (!reason) return;
+    patchJob.mutate(
+      { stage: "CANCELLED", cancellationReason: reason } as Partial<Job>,
+      {
+        onSuccess: () => {
+          setShowRejectModal(false);
+        },
+      }
+    );
+  }, [rejectReasonText, patchJob]);
+
   const handleToggleWorkingOn = useCallback(
     (bikeId: string) => {
       if (savingWorkingOn || !job) return;
       const nextId = job.workingOnJobBikeId === bikeId ? null : bikeId;
       setSavingWorkingOn(true);
+      const patch: Record<string, unknown> = { workingOnJobBikeId: nextId };
+      // If we're starting work on a bike and the job is stuck in WAITING_ON_PARTS,
+      // move the stage forward so only the "Working on" badge appears.
+      if (nextId && job.stage === "WAITING_ON_PARTS") {
+        patch.stage = "WORKING_ON";
+      }
       patchJob.mutate(
-        { workingOnJobBikeId: nextId } as Partial<Job>,
+        patch as Partial<Job>,
         { onSettled: () => setSavingWorkingOn(false) }
       );
     },
@@ -883,7 +913,11 @@ export default function JobDetailScreen() {
       if (savingWaiting) return;
       setSavingWaiting(bikeId);
       patchJob.mutate(
-        { unwaitForPartsJobBikeId: bikeId, workingOnJobBikeId: bikeId } as unknown as Partial<Job>,
+        {
+          stage: "WORKING_ON",
+          unwaitForPartsJobBikeId: bikeId,
+          workingOnJobBikeId: bikeId,
+        } as unknown as Partial<Job>,
         { onSettled: () => setSavingWaiting(null) }
       );
     },
@@ -1095,6 +1129,78 @@ export default function JobDetailScreen() {
           <InvoiceTab job={job} onJobUpdated={handleInvoiceJobUpdated} />
         ) : (
         <>
+        {/* Booking Request Banner */}
+        {job.stage === "PENDING_APPROVAL" ? (
+          <Card
+            style={[
+              styles.section,
+              {
+                borderWidth: 1,
+                borderColor: theme.dark ? colors.amber[700] : colors.amber[300],
+                backgroundColor: theme.dark ? `${colors.amber[900]}66` : colors.amber[50],
+              },
+            ]}
+          >
+            <View style={{ flexDirection: "row", alignItems: "center", gap: spacing[2] }}>
+              <Ionicons name="time-outline" size={18} color={theme.dark ? colors.amber[400] : colors.amber[600]} />
+              <Text style={{ ...fontSize.base, fontWeight: "700", color: theme.dark ? colors.amber[300] : colors.amber[800] }}>
+                New Booking Request
+              </Text>
+            </View>
+            <Text style={{ ...fontSize.sm, color: theme.dark ? colors.amber[400] : colors.amber[700], lineHeight: 20 }}>
+              Review this request and accept or reject it. The customer will be notified by email and SMS.
+            </Text>
+            <View style={{ flexDirection: "row", gap: spacing[2], marginTop: spacing[1] }}>
+              <TouchableOpacity
+                onPress={handleAcceptBooking}
+                disabled={patchJob.isPending}
+                style={[
+                  {
+                    flex: 1,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: spacing[1.5],
+                    paddingVertical: spacing[3],
+                    borderRadius: borderRadius.xl,
+                    backgroundColor: colors.emerald[600],
+                  },
+                  patchJob.isPending && styles.buttonDisabled,
+                ]}
+              >
+                <Ionicons name="checkmark" size={16} color={colors.white} />
+                <Text style={{ ...fontSize.sm, fontWeight: "700", color: colors.white }}>
+                  Accept
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={openRejectModal}
+                disabled={patchJob.isPending}
+                style={[
+                  {
+                    flex: 1,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: spacing[1.5],
+                    paddingVertical: spacing[3],
+                    borderRadius: borderRadius.xl,
+                    backgroundColor: theme.dark ? colors.red[900] : colors.red[50],
+                    borderWidth: 1,
+                    borderColor: theme.dark ? colors.red[700] : colors.red[300],
+                  },
+                  patchJob.isPending && styles.buttonDisabled,
+                ]}
+              >
+                <Ionicons name="close" size={16} color={theme.dark ? colors.red[400] : colors.red[600]} />
+                <Text style={{ ...fontSize.sm, fontWeight: "700", color: theme.dark ? colors.red[400] : colors.red[600] }}>
+                  Reject
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </Card>
+        ) : null}
+
         {/* Stage and Status */}
         <Card style={styles.section}>
           <View style={styles.row}>
@@ -1890,6 +1996,63 @@ export default function JobDetailScreen() {
                 onPress={() => setShowDatePicker(null)}
                 variant="ghost"
                 size="md"
+              />
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Reject booking modal */}
+      <Modal
+        visible={showRejectModal}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setShowRejectModal(false)}
+      >
+        <Pressable
+          style={cancelModalStyles.backdrop}
+          onPress={() => setShowRejectModal(false)}
+        >
+          <Pressable
+            style={[cancelModalStyles.sheet, { backgroundColor: theme.surface }]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <Text style={[cancelModalStyles.title, { color: theme.textHeading }]}>
+              Reject Booking
+            </Text>
+            <Text style={[cancelModalStyles.subtitle, { color: theme.textSecondary }]}>
+              The customer will see this reason on the status page and by email.
+            </Text>
+            <TextInput
+              style={[
+                cancelModalStyles.textInput,
+                {
+                  color: theme.text,
+                  backgroundColor: theme.inputBg,
+                  borderColor: theme.inputBorder,
+                },
+              ]}
+              placeholder="Reason for rejection..."
+              placeholderTextColor={theme.textMuted}
+              value={rejectReasonText}
+              onChangeText={setRejectReasonText}
+              multiline
+              autoFocus
+            />
+            <View style={cancelModalStyles.actions}>
+              <Button
+                title="Go Back"
+                onPress={() => setShowRejectModal(false)}
+                variant="ghost"
+                size="md"
+              />
+              <Button
+                title={patchJob.isPending ? "Rejecting…" : "Reject"}
+                onPress={handleRejectBooking}
+                variant="danger"
+                size="md"
+                disabled={!rejectReasonText.trim() || patchJob.isPending}
               />
             </View>
           </Pressable>

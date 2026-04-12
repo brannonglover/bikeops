@@ -70,16 +70,21 @@ export default function JobBoardScreen() {
     (job: Job) => {
       Alert.prompt(
         "Reject Booking",
-        "Reason for rejection (optional):",
+        "Reason for rejection (required):",
         [
           { text: "Cancel", style: "cancel" },
           {
             text: "Reject",
             style: "destructive",
             onPress: (reason?: string) => {
+              const trimmed = reason?.trim();
+              if (!trimmed) {
+                Alert.alert("Reason required", "Please enter a reason for rejecting this booking.");
+                return;
+              }
               api.patch(`/api/jobs/${job.id}`, {
                 stage: "CANCELLED",
-                cancellationReason: reason?.trim() || undefined,
+                cancellationReason: trimmed,
               }).then(() => queryClient.invalidateQueries({ queryKey: ["jobs"] }));
             },
           },
