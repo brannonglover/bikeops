@@ -137,11 +137,6 @@ export default function ConversationScreen() {
           height: 220,
           borderRadius: borderRadius.xl,
         },
-        inlineImage: {
-          width: 200,
-          height: 200,
-          borderRadius: borderRadius.lg,
-        },
         imageMetaText: {
           ...fontSize.xs,
           color: theme.textMuted,
@@ -625,8 +620,9 @@ export default function ConversationScreen() {
           scrollEventThrottle={100}
           renderItem={({ item }) => {
             const isOwn = item.sender === "STAFF";
-            const imageOnly =
-              (item.attachments?.length ?? 0) > 0 && !item.body;
+            const hasAttachments = (item.attachments?.length ?? 0) > 0;
+            const imageOnly = hasAttachments && !item.body;
+            const splitBubble = hasAttachments && !!item.body;
             const hasReactions = (item.reactions?.length ?? 0) > 0;
             return (
               <View
@@ -638,64 +634,123 @@ export default function ConversationScreen() {
                   hasReactions && styles.messageWrapperWithReaction,
                 ]}
               >
-                <TouchableOpacity
-                  onLongPress={() => setActiveMessage(item)}
-                  activeOpacity={0.7}
-                  style={
-                    imageOnly
-                      ? styles.imageMessage
-                      : [
-                          styles.bubble,
-                          isOwn ? styles.bubbleOwn : styles.bubbleOther,
-                        ]
-                  }
-                >
-                  {item.attachments?.map((att: { id: string; url: string }) => (
+                {splitBubble ? (
+                  <View style={styles.imageMessage}>
+                    {item.attachments?.map(
+                      (att: { id: string; url: string }) => (
+                        <TouchableOpacity
+                          key={att.id}
+                          activeOpacity={0.8}
+                          onPress={() =>
+                            setViewingImageUrl(resolveUrl(att.url))
+                          }
+                          onLongPress={() => setActiveMessage(item)}
+                        >
+                          <Image
+                            source={{ uri: resolveUrl(att.url) }}
+                            style={styles.standaloneImage}
+                            resizeMode="cover"
+                          />
+                        </TouchableOpacity>
+                      )
+                    )}
                     <TouchableOpacity
-                      key={att.id}
-                      activeOpacity={0.8}
-                      onPress={() => setViewingImageUrl(resolveUrl(att.url))}
                       onLongPress={() => setActiveMessage(item)}
-                    >
-                      <Image
-                        source={{ uri: resolveUrl(att.url) }}
-                        style={
-                          imageOnly
-                            ? styles.standaloneImage
-                            : styles.inlineImage
-                        }
-                        resizeMode="cover"
-                      />
-                    </TouchableOpacity>
-                  ))}
-                  {item.body ? (
-                    <LinkifiedText
-                      text={item.body}
+                      activeOpacity={0.7}
                       style={[
-                        styles.bubbleText,
-                        isOwn ? styles.bubbleTextOwn : styles.bubbleTextOther,
+                        styles.bubble,
+                        isOwn ? styles.bubbleOwn : styles.bubbleOther,
                       ]}
-                      linkStyle={
-                        isOwn
-                          ? styles.bubbleLinkOwn
-                          : styles.bubbleLinkOther
-                      }
-                    />
-                  ) : null}
-                  <Text
-                    style={[
-                      styles.bubbleMeta,
+                    >
+                      <LinkifiedText
+                        text={item.body}
+                        style={[
+                          styles.bubbleText,
+                          isOwn
+                            ? styles.bubbleTextOwn
+                            : styles.bubbleTextOther,
+                        ]}
+                        linkStyle={
+                          isOwn
+                            ? styles.bubbleLinkOwn
+                            : styles.bubbleLinkOther
+                        }
+                      />
+                      <Text
+                        style={[
+                          styles.bubbleMeta,
+                          isOwn
+                            ? styles.bubbleMetaOwn
+                            : styles.bubbleMetaOther,
+                        ]}
+                      >
+                        {formatTime(item.createdAt)}
+                        {item.editedAt ? " (edited)" : ""}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <TouchableOpacity
+                    onLongPress={() => setActiveMessage(item)}
+                    activeOpacity={0.7}
+                    style={
                       imageOnly
-                        ? styles.imageMetaText
-                        : isOwn
-                          ? styles.bubbleMetaOwn
-                          : styles.bubbleMetaOther,
-                    ]}
+                        ? styles.imageMessage
+                        : [
+                            styles.bubble,
+                            isOwn ? styles.bubbleOwn : styles.bubbleOther,
+                          ]
+                    }
                   >
-                    {formatTime(item.createdAt)}
-                    {item.editedAt ? " (edited)" : ""}
-                  </Text>
-                </TouchableOpacity>
+                    {item.attachments?.map(
+                      (att: { id: string; url: string }) => (
+                        <TouchableOpacity
+                          key={att.id}
+                          activeOpacity={0.8}
+                          onPress={() =>
+                            setViewingImageUrl(resolveUrl(att.url))
+                          }
+                          onLongPress={() => setActiveMessage(item)}
+                        >
+                          <Image
+                            source={{ uri: resolveUrl(att.url) }}
+                            style={styles.standaloneImage}
+                            resizeMode="cover"
+                          />
+                        </TouchableOpacity>
+                      )
+                    )}
+                    {item.body ? (
+                      <LinkifiedText
+                        text={item.body}
+                        style={[
+                          styles.bubbleText,
+                          isOwn
+                            ? styles.bubbleTextOwn
+                            : styles.bubbleTextOther,
+                        ]}
+                        linkStyle={
+                          isOwn
+                            ? styles.bubbleLinkOwn
+                            : styles.bubbleLinkOther
+                        }
+                      />
+                    ) : null}
+                    <Text
+                      style={[
+                        styles.bubbleMeta,
+                        imageOnly
+                          ? styles.imageMetaText
+                          : isOwn
+                            ? styles.bubbleMetaOwn
+                            : styles.bubbleMetaOther,
+                      ]}
+                    >
+                      {formatTime(item.createdAt)}
+                      {item.editedAt ? " (edited)" : ""}
+                    </Text>
+                  </TouchableOpacity>
+                )}
                 {item.body
                   ? extractUrls(item.body).map((url) => (
                       <LinkPreview key={url} url={url} />
