@@ -826,12 +826,18 @@ export default function JobDetailScreen() {
       const nextId = job.workingOnJobBikeId === bikeId ? null : bikeId;
       setSavingWorkingOn(true);
       const patch: Record<string, unknown> = { workingOnJobBikeId: nextId };
-      // Advance the stage to WORKING_ON whenever starting work (not already there).
-      // This triggers the API to clear waitingOnPartsAt on all open bikes, not just
-      // the selected one — matching the web behavior.
+      // Advance the stage to WORKING_ON whenever starting work (not already there),
+      // and also send unwaitForPartsJobBikeId to clear any per-bike waiting state —
+      // matching the logic in handleStageChange.
       if (nextId && job.stage !== "WORKING_ON") {
         patch.stage = "WORKING_ON";
         patch.notifyCustomer = false;
+        const waitingBike = job.jobBikes.find(
+          (jb) => !!jb.waitingOnPartsAt && !jb.completedAt
+        );
+        if (waitingBike) {
+          patch.unwaitForPartsJobBikeId = waitingBike.id;
+        }
       }
       patchJob.mutate(
         patch as Partial<Job>,

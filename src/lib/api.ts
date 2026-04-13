@@ -143,10 +143,12 @@ async function apiFetch<T = unknown>(
   }
 
   if (!response.ok) {
+    const raw =
+      typeof data === "object" && data !== null && "error" in data
+        ? (data as Record<string, unknown>).error
+        : undefined;
     const errMsg =
-      typeof data === "object" && data && "error" in data
-        ? (data as { error: string }).error
-        : `Request failed: ${response.status}`;
+      typeof raw === "string" ? raw : `Request failed: ${response.status}`;
     throw new ApiError(errMsg, response.status, data);
   }
 

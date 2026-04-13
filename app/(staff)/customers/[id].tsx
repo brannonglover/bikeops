@@ -241,7 +241,7 @@ export default function CustomerDetailScreen() {
         `/api/customers/${id}/bikes/${bikeId}`,
         {
           make: bikeEdit.make.trim(),
-          model: bikeEdit.model.trim(),
+          model: bikeEdit.model.trim() || null,
           nickname: bikeEdit.nickname.trim() || null,
           bikeType: bikeEdit.bikeType,
         }
