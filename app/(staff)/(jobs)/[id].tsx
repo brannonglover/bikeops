@@ -31,7 +31,7 @@ import { ImageViewer } from "@/components/ui/ImageViewer";
 import { InvoiceTab } from "@/components/jobs/InvoiceTab";
 import {
   customerName,
-  jobBikeLabel,
+  getJobBikeDisplayTitle,
   formatDate,
   formatCurrency,
   jobTotal,
@@ -826,10 +826,12 @@ export default function JobDetailScreen() {
       const nextId = job.workingOnJobBikeId === bikeId ? null : bikeId;
       setSavingWorkingOn(true);
       const patch: Record<string, unknown> = { workingOnJobBikeId: nextId };
-      // If we're starting work on a bike and the job is stuck in WAITING_ON_PARTS,
-      // move the stage forward so only the "Working on" badge appears.
-      if (nextId && job.stage === "WAITING_ON_PARTS") {
+      // Advance the stage to WORKING_ON whenever starting work (not already there).
+      // This triggers the API to clear waitingOnPartsAt on all open bikes, not just
+      // the selected one — matching the web behavior.
+      if (nextId && job.stage !== "WORKING_ON") {
         patch.stage = "WORKING_ON";
+        patch.notifyCustomer = false;
       }
       patchJob.mutate(
         patch as Partial<Job>,
@@ -1089,7 +1091,7 @@ export default function JobDetailScreen() {
     <>
       <Stack.Screen
         options={{
-          title: jobBikeLabel(job),
+          title: getJobBikeDisplayTitle(job),
           headerRight: () => (
             <TouchableOpacity onPress={openActionMenu} style={{ padding: spacing[2] }}>
               <Ionicons name="ellipsis-vertical" size={20} color={theme.text} />

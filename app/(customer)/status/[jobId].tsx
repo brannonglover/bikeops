@@ -12,7 +12,7 @@ import { StageBadge, PaymentBadge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { ImageViewer } from "@/components/ui/ImageViewer";
-import { formatDate, formatCurrency, jobBikeLabel, jobTotal } from "@/lib/format";
+import { formatDate, formatCurrency, jobTotal } from "@/lib/format";
 
 const STAGE_DESCRIPTIONS: Record<string, string> = {
   PENDING_APPROVAL: "Your booking request has been submitted and is awaiting confirmation.",

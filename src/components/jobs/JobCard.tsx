@@ -4,7 +4,7 @@ import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { StageBadge, PaymentBadge } from "@/components/ui/Badge";
 import { type Job, STAGE_LABELS, type Stage } from "@/lib/types";
-import { customerName, jobBikeLabel, formatDate } from "@/lib/format";
+import { customerName, getJobBikeDisplayTitle, formatDate } from "@/lib/format";
 
 interface JobCardProps {
   job: Job;
@@ -33,7 +33,7 @@ export function JobCard({
         <View style={styles.headerLeft}>
           <Ionicons name="bicycle" size={16} color={theme.textMuted} />
           <Text style={[styles.bikeLabel, { color: theme.text }]} numberOfLines={1}>
-            {jobBikeLabel(job)}
+            {getJobBikeDisplayTitle(job)}
           </Text>
         </View>
         <PaymentBadge status={job.paymentStatus} />

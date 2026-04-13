@@ -17,7 +17,7 @@ import { useTheme } from "@/lib/ThemeContext";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
-import { formatCurrency, jobTotal, jobBikeLabel } from "@/lib/format";
+import { formatCurrency, jobTotal, getJobBikeDisplayTitle } from "@/lib/format";
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? "";
 
@@ -172,7 +172,7 @@ export default function PayScreen() {
         contentContainerStyle={styles.content}
       >
         <Card style={styles.section}>
-          <Text style={styles.bikeLabel}>{jobBikeLabel(job)}</Text>
+          <Text style={styles.bikeLabel}>{getJobBikeDisplayTitle(job)}</Text>
 
           {job.jobServices.map((js) => (
             <View key={js.id} style={styles.lineItem}>
