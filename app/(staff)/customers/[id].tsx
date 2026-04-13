@@ -1012,6 +1012,11 @@ const styles = StyleSheet.create({
   section: {
     gap: spacing[3],
   },
+  sectionHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
   sectionTitle: {
     ...fontSize.sm,
     fontWeight: "700",
@@ -1166,5 +1171,14 @@ const styles = StyleSheet.create({
     ...fontSize.sm,
     textAlign: "center",
     paddingVertical: spacing[8],
+  },
+  addBikeEmpty: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing[2],
+    paddingVertical: spacing[2],
+  },
+  addBikeEmptyText: {
+    ...fontSize.sm,
   },
 });
