@@ -144,7 +144,7 @@ export default function NewJobScreen() {
 
   const hasValidBike =
     selectedCustomerBikeIds.length > 0 ||
-    manualBikes.some((b) => b.make.trim() && b.model.trim());
+    manualBikes.some((b) => b.make.trim());
 
   const calDays = useMemo(() => {
     const firstDay = new Date(calYear, calMonth, 1).getDay();
@@ -199,7 +199,7 @@ export default function NewJobScreen() {
       .filter((b) => selectedCustomerBikeIds.includes(b.id))
       .map((b) => ({ make: b.make, model: b.model, bikeId: b.id }));
     const validManual = manualBikes
-      .filter((b) => b.make.trim() && b.model.trim())
+      .filter((b) => b.make.trim())
       .map((b) => ({ make: b.make.trim(), model: b.model.trim() }));
     const allBikes = [...customerBikes, ...validManual];
 
@@ -369,7 +369,7 @@ export default function NewJobScreen() {
                       <Ionicons name="bicycle" size={18} color={theme.icon} />
                       <View style={styles.customerBikeInfo}>
                         <Text style={[styles.customerBikeName, { color: theme.text }]}>
-                          {bike.make} {bike.model}
+                          {[bike.make, bike.model].filter(Boolean).join(" ")}
                         </Text>
                         {bike.nickname ? (
                           <Text
@@ -429,7 +429,7 @@ export default function NewJobScreen() {
                     containerStyle={styles.inputGap}
                   />
                   <Input
-                    label="Model"
+                    label="Model (optional)"
                     placeholder="e.g. Domane, Roubaix"
                     value={bike.model}
                     onChangeText={(v) => updateManualBike(index, "model", v)}

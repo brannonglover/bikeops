@@ -52,6 +52,7 @@ export default function CustomerDetailScreen() {
   const [notes, setNotes] = useState("");
 
   const [editingBikeId, setEditingBikeId] = useState<string | null>(null);
+  const [addingBike, setAddingBike] = useState(false);
   const [bikeEdit, setBikeEdit] = useState<BikeEditState>({
     make: "",
     model: "",
@@ -215,6 +216,25 @@ export default function CustomerDetailScreen() {
       Alert.alert("Error", e instanceof Error ? e.message : "Failed to delete"),
   });
 
+  const createBike = useMutation({
+    mutationFn: async () => {
+      const { data } = await api.post<Bike>(`/api/customers/${id}/bikes`, {
+        make: bikeEdit.make.trim(),
+        model: bikeEdit.model.trim(),
+        nickname: bikeEdit.nickname.trim() || null,
+        bikeType: bikeEdit.bikeType,
+      });
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["customer", id] });
+      setAddingBike(false);
+      setBikeEdit({ make: "", model: "", nickname: "", bikeType: null });
+    },
+    onError: (e) =>
+      Alert.alert("Error", e instanceof Error ? e.message : "Failed to add bike"),
+  });
+
   const updateBike = useMutation({
     mutationFn: async (bikeId: string) => {
       const { data } = await api.patch<Bike>(
@@ -239,6 +259,7 @@ export default function CustomerDetailScreen() {
   });
 
   const startEditingBike = (bike: Bike) => {
+    setAddingBike(false);
     setBikeEdit({
       make: bike.make,
       model: bike.model,
@@ -248,11 +269,17 @@ export default function CustomerDetailScreen() {
     setEditingBikeId(bike.id);
   };
 
+  const startAddingBike = () => {
+    setEditingBikeId(null);
+    setBikeEdit({ make: "", model: "", nickname: "", bikeType: null });
+    setAddingBike(true);
+  };
+
   const handleDeleteBike = useCallback(
     (bike: Bike) => {
       Alert.alert(
         "Remove Bike",
-        `Remove ${bike.make} ${bike.model} from this customer?`,
+        `Remove ${[bike.make, bike.model].filter(Boolean).join(" ")} from this customer?`,
         [
           { text: "Cancel", style: "cancel" },
           {
@@ -508,7 +535,7 @@ export default function CustomerDetailScreen() {
                           containerStyle={styles.inputGap}
                         />
                         <Input
-                          label="Model"
+                          label="Model (optional)"
                           value={bikeEdit.model}
                           onChangeText={(v) =>
                             setBikeEdit((s) => ({ ...s, model: v }))
@@ -588,9 +615,7 @@ export default function CustomerDetailScreen() {
                             title="Save"
                             onPress={() => updateBike.mutate(bike.id)}
                             loading={updateBike.isPending}
-                            disabled={
-                              !bikeEdit.make.trim() || !bikeEdit.model.trim()
-                            }
+                            disabled={!bikeEdit.make.trim()}
                             size="sm"
                             style={styles.bikeEditSaveBtn}
                           />
@@ -633,7 +658,7 @@ export default function CustomerDetailScreen() {
                         )}
                         <View style={{ flex: 1 }}>
                           <Text style={[styles.bikeName, { color: theme.text }]}>
-                            {bike.make} {bike.model}
+                            {[bike.make, bike.model].filter(Boolean).join(" ")}
                           </Text>
                           {bike.nickname ? (
                             <Text

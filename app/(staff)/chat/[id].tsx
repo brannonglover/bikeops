@@ -65,6 +65,11 @@ export default function ConversationScreen() {
   const [activeMessage, setActiveMessage] = useState<ChatMessage | null>(null);
   const [viewingImageUrl, setViewingImageUrl] = useState<string | null>(null);
 
+  type InviteStatus = "idle" | "pending" | "active";
+  const [inviteStatus, setInviteStatus] = useState<InviteStatus>("idle");
+  const [inviteDaysLeft, setInviteDaysLeft] = useState<number | null>(null);
+  const [sendingInvite, setSendingInvite] = useState(false);
+
   const styles = useMemo(
     () =>
       StyleSheet.create({
@@ -414,6 +419,72 @@ export default function ConversationScreen() {
     return () => sub.remove();
   }, []);
 
+  useEffect(() => {
+    if (!conversation?.customer?.email) return;
+    const fetchInviteStatus = async () => {
+      try {
+        const { data } = await api.get<{
+          expiresAt: string | null;
+          pendingInvite: boolean;
+        }>(`/api/chat/session-status?customerId=${encodeURIComponent(conversation.customer.id)}`);
+        if (data.expiresAt) {
+          const ms = new Date(data.expiresAt).getTime() - Date.now();
+          setInviteDaysLeft(Math.max(0, Math.ceil(ms / (24 * 60 * 60 * 1000))));
+          setInviteStatus("active");
+        } else if (data.pendingInvite) {
+          setInviteDaysLeft(null);
+          setInviteStatus("pending");
+        } else {
+          setInviteStatus("idle");
+        }
+      } catch {
+        // ignore
+      }
+    };
+    fetchInviteStatus();
+  }, [conversation?.customer?.email, conversation?.customer?.id]);
+
+  const handleSendInvite = useCallback(async () => {
+    if (!conversation?.customer) return;
+    setSendingInvite(true);
+    try {
+      const { data } = await api.post<{ message?: string; error?: string }>(
+        "/api/chat/send-invite",
+        { customerId: conversation.customer.id }
+      );
+      Alert.alert("Invite Sent", data.message ?? "Sign-in link sent!");
+      setInviteStatus("pending");
+    } catch (e) {
+      Alert.alert("Error", e instanceof Error ? e.message : "Failed to send invite");
+    } finally {
+      setSendingInvite(false);
+    }
+  }, [conversation?.customer]);
+
+  const handleInvitePress = useCallback(() => {
+    const customer = conversation?.customer;
+    if (!customer?.email) {
+      Alert.alert("No Email", "This customer doesn't have an email address on file.");
+      return;
+    }
+    let title: string;
+    let message: string;
+    if (inviteStatus === "active") {
+      title = "Chat Access Active";
+      message = `${customer.email} has an active session${inviteDaysLeft ? ` (${inviteDaysLeft} day${inviteDaysLeft === 1 ? "" : "s"} left)` : ""}.\n\nSend a new sign-in link?`;
+    } else if (inviteStatus === "pending") {
+      title = "Invite Pending";
+      message = `An invite was already sent to ${customer.email}.\n\nSend another?`;
+    } else {
+      title = "Invite to Chat";
+      message = `Send a sign-in link to ${customer.email}?`;
+    }
+    Alert.alert(title, message, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Send", onPress: handleSendInvite },
+    ]);
+  }, [conversation?.customer, inviteStatus, inviteDaysLeft, handleSendInvite]);
+
   const handleScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       const { contentOffset, contentSize, layoutMeasurement } =
@@ -603,6 +674,26 @@ export default function ConversationScreen() {
           title: conversation
             ? customerName(conversation.customer)
             : "Conversation",
+          headerRight: conversation?.customer?.email
+            ? () => {
+                const iconColor =
+                  inviteStatus === "active"
+                    ? colors.emerald[500]
+                    : inviteStatus === "pending"
+                      ? colors.amber[500]
+                      : theme.icon;
+                return (
+                  <TouchableOpacity
+                    onPress={handleInvitePress}
+                    disabled={sendingInvite}
+                    style={{ padding: spacing[2], opacity: sendingInvite ? 0.5 : 1 }}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Ionicons name="mail-outline" size={20} color={iconColor} />
+                  </TouchableOpacity>
+                );
+              }
+            : undefined,
         }}
       />
       <KeyboardAvoidingView
