@@ -509,12 +509,21 @@ export default function CustomerDetailScreen() {
               ) : null}
             </Card>
 
-            {customer.bikes && customer.bikes.length > 0 ? (
-              <Card style={styles.section}>
-                <Text style={[styles.sectionTitle, { color: theme.textHeading }]}>
-                  Bikes ({customer.bikes.length})
-                </Text>
-                {customer.bikes.map((bike, index) => (
+            <Card style={styles.section}>
+                <View style={styles.sectionHeader}>
+                  <Text style={[styles.sectionTitle, { color: theme.textHeading }]}>
+                    Bikes{customer.bikes?.length ? ` (${customer.bikes.length})` : ""}
+                  </Text>
+                  {!addingBike ? (
+                    <TouchableOpacity
+                      onPress={startAddingBike}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Ionicons name="add" size={22} color={theme.icon} />
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
+                {customer.bikes?.map((bike, index) => (
                   <View key={bike.id}>
                     {index > 0 ? (
                       <View
@@ -711,8 +720,143 @@ export default function CustomerDetailScreen() {
                     )}
                   </View>
                 ))}
+                {addingBike ? (
+                  <View>
+                    {customer.bikes?.length ? (
+                      <View
+                        style={[
+                          styles.bikeDivider,
+                          { backgroundColor: theme.surfaceBorderSubtle },
+                        ]}
+                      />
+                    ) : null}
+                    <View style={styles.bikeEditForm}>
+                      <Input
+                        label="Make"
+                        value={bikeEdit.make}
+                        onChangeText={(v) =>
+                          setBikeEdit((s) => ({ ...s, make: v }))
+                        }
+                        containerStyle={styles.inputGap}
+                        autoFocus
+                      />
+                      <Input
+                        label="Model"
+                        value={bikeEdit.model}
+                        onChangeText={(v) =>
+                          setBikeEdit((s) => ({ ...s, model: v }))
+                        }
+                        containerStyle={styles.inputGap}
+                      />
+                      <Input
+                        label="Nickname (optional)"
+                        value={bikeEdit.nickname}
+                        onChangeText={(v) =>
+                          setBikeEdit((s) => ({ ...s, nickname: v }))
+                        }
+                        containerStyle={styles.inputGap}
+                      />
+                      <View style={styles.inputGap}>
+                        <Text
+                          style={{
+                            ...fontSize.sm,
+                            fontWeight: "500",
+                            color: theme.textTertiary,
+                            marginBottom: spacing[1],
+                          }}
+                        >
+                          Bike Type
+                        </Text>
+                        <View style={styles.bikeTypeRow}>
+                          {(
+                            [
+                              { value: null, label: "Auto" },
+                              { value: "REGULAR", label: "Standard" },
+                              { value: "E_BIKE", label: "E-Bike" },
+                            ] as { value: BikeTypeOption; label: string }[]
+                          ).map(({ value, label }) => {
+                            const active = bikeEdit.bikeType === value;
+                            return (
+                              <TouchableOpacity
+                                key={String(value)}
+                                onPress={() =>
+                                  setBikeEdit((s) => ({
+                                    ...s,
+                                    bikeType: value,
+                                  }))
+                                }
+                                style={[
+                                  styles.bikeTypeBtn,
+                                  {
+                                    backgroundColor: active
+                                      ? theme.dark
+                                        ? colors.amber[600]
+                                        : colors.amber[500]
+                                      : theme.subtleBg,
+                                    borderColor: active
+                                      ? colors.amber[500]
+                                      : theme.inputBorder,
+                                  },
+                                ]}
+                              >
+                                <Text
+                                  style={[
+                                    styles.bikeTypeBtnText,
+                                    {
+                                      color: active
+                                        ? colors.white
+                                        : theme.textSecondary,
+                                    },
+                                  ]}
+                                >
+                                  {label}
+                                </Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+                      </View>
+                      <View style={styles.bikeEditActions}>
+                        <Button
+                          title="Add Bike"
+                          onPress={() => createBike.mutate()}
+                          loading={createBike.isPending}
+                          disabled={
+                            !bikeEdit.make.trim() || !bikeEdit.model.trim()
+                          }
+                          size="sm"
+                          style={styles.bikeEditSaveBtn}
+                        />
+                        <Button
+                          title="Cancel"
+                          onPress={() => setAddingBike(false)}
+                          variant="secondary"
+                          size="sm"
+                        />
+                      </View>
+                    </View>
+                  </View>
+                ) : !customer.bikes?.length ? (
+                  <TouchableOpacity
+                    onPress={startAddingBike}
+                    style={styles.addBikeEmpty}
+                  >
+                    <Ionicons
+                      name="add-circle-outline"
+                      size={16}
+                      color={theme.iconMuted}
+                    />
+                    <Text
+                      style={[
+                        styles.addBikeEmptyText,
+                        { color: theme.textMuted },
+                      ]}
+                    >
+                      Add a bike
+                    </Text>
+                  </TouchableOpacity>
+                ) : null}
               </Card>
-            ) : null}
 
             <Button
               title="Open Chat"
