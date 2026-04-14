@@ -45,6 +45,18 @@ export function JobCard({
         </Text>
       ) : null}
 
+      {job.stage !== "COMPLETED" && job.stage !== "CANCELLED" && (() => {
+        const hasWaitingBike = job.jobBikes.some(
+          (b) => b.waitingOnPartsAt && !b.completedAt && b.id !== job.workingOnJobBikeId
+        );
+        if (job.stage !== "WAITING_ON_PARTS" && !hasWaitingBike) return null;
+        return (
+          <Text style={styles.waitingLabel}>
+            <Ionicons name="time-outline" size={11} /> Waiting on parts
+          </Text>
+        );
+      })()}
+
       {job.jobBikes.length > 1 ? (
         <Text style={[styles.meta, { color: theme.textSecondary }]}>
           {job.jobBikes.length} bikes
@@ -133,6 +145,11 @@ const styles = StyleSheet.create({
   },
   meta: {
     ...fontSize.xs,
+  },
+  waitingLabel: {
+    ...fontSize.xs,
+    fontWeight: "600",
+    color: colors.red[700],
   },
   footer: {
     flexDirection: "row",
