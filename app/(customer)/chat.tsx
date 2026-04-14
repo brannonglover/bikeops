@@ -60,6 +60,7 @@ export default function CustomerChatScreen() {
   const [verifying, setVerifying] = useState(false);
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [staffLastReadAt, setStaffLastReadAt] = useState<string | null>(null);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [pendingImages, setPendingImages] = useState<
@@ -111,10 +112,15 @@ export default function CustomerChatScreen() {
     if (authState !== "authenticated") return;
     try {
       const { data } = await api.get<
-        ChatMessage[] | { messages: ChatMessage[] }
+        | ChatMessage[]
+        | { messages: ChatMessage[]; staffLastReadAt: string | null }
       >("/api/chat/conversation/messages", { role: "customer" });
-      const msgs = Array.isArray(data) ? data : data.messages ?? [];
-      setMessages(msgs);
+      if (Array.isArray(data)) {
+        setMessages(data);
+      } else {
+        setMessages(data.messages ?? []);
+        setStaffLastReadAt(data.staffLastReadAt ?? null);
+      }
     } catch {
       // ignore
     }
@@ -192,28 +198,53 @@ export default function CustomerChatScreen() {
   };
 
   const handleSend = useCallback(async () => {
-    if (!text.trim() && pendingImages.length === 0) return;
+    const textToSend = text.trim();
+    const imagesToSend = [...pendingImages];
+    if (!textToSend && imagesToSend.length === 0) return;
+
+    const tempId = `temp-${Date.now()}`;
+    const optimisticMsg: ChatMessage = {
+      id: tempId,
+      conversationId: "",
+      sender: "CUSTOMER",
+      body: textToSend || null,
+      attachments: imagesToSend.map((img) => ({
+        id: img.id,
+        url: img.url,
+        filename: img.filename,
+        mimeType: "",
+        messageId: null,
+        createdAt: new Date().toISOString(),
+      })),
+      reactions: [],
+      createdAt: new Date().toISOString(),
+      editedAt: null,
+    };
+
+    setMessages((prev) => [...prev, optimisticMsg]);
+    setText("");
+    setPendingImages([]);
+    isAtBottomRef.current = true;
+    setShowScrollButton(false);
     setSending(true);
+
     try {
-      await api.post(
+      const { data: newMsg } = await api.post<ChatMessage>(
         "/api/chat/conversation/messages",
         {
-          body: text.trim() || null,
-          attachmentIds: pendingImages.map((p) => p.id),
+          body: textToSend || null,
+          attachmentIds: imagesToSend.map((p) => p.id),
         },
         { role: "customer" }
       );
-      setText("");
-      setPendingImages([]);
-      isAtBottomRef.current = true;
-      setShowScrollButton(false);
-      fetchMessages();
+      setMessages((prev) => prev.map((m) => (m.id === tempId ? newMsg : m)));
     } catch {
+      setMessages((prev) => prev.filter((m) => m.id !== tempId));
       Alert.alert("Error", "Failed to send message");
     } finally {
       setSending(false);
     }
-  }, [text, pendingImages, fetchMessages]);
+  }, [text, pendingImages]);
 
   const handlePickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -513,6 +544,12 @@ export default function CustomerChatScreen() {
           alignItems: "center",
         },
         sendDisabled: { opacity: 0.5 },
+        viewed: {
+          ...fontSize.xs,
+          color: theme.textMuted,
+          alignSelf: "flex-end",
+          marginTop: 2,
+        },
         reactionRow: {
           position: "absolute",
           bottom: -12,
@@ -678,6 +715,18 @@ export default function CustomerChatScreen() {
       </>
     );
   }
+
+  const lastViewedOwnMsgId = useMemo(() => {
+    if (!staffLastReadAt) return null;
+    const readTime = new Date(staffLastReadAt).getTime();
+    let lastId: string | null = null;
+    for (const msg of messages) {
+      if (msg.sender === "CUSTOMER" && new Date(msg.createdAt).getTime() <= readTime) {
+        lastId = msg.id;
+      }
+    }
+    return lastId;
+  }, [messages, staffLastReadAt]);
 
   return (
     <>
@@ -883,6 +932,9 @@ export default function CustomerChatScreen() {
                       );
                     })}
                   </View>
+                ) : null}
+                {isOwn && item.id === lastViewedOwnMsgId ? (
+                  <Text style={styles.viewed}>Viewed</Text>
                 ) : null}
               </View>
             );

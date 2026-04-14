@@ -147,6 +147,12 @@ export default function ConversationScreen() {
           color: theme.textMuted,
           alignSelf: "flex-end",
         },
+        viewed: {
+          ...fontSize.xs,
+          color: theme.textMuted,
+          alignSelf: "flex-end",
+          marginTop: 2,
+        },
         typing: {
           ...fontSize.sm,
           color: theme.textSecondary,
@@ -404,6 +410,22 @@ export default function ConversationScreen() {
     customerTypingAt &&
     Date.now() - new Date(customerTypingAt).getTime() < 8000;
 
+  const customerLastReadAt = !Array.isArray(messagesData)
+    ? messagesData?.customerLastReadAt ?? null
+    : null;
+
+  const lastViewedOwnMsgId = useMemo(() => {
+    if (!customerLastReadAt) return null;
+    const readTime = new Date(customerLastReadAt).getTime();
+    let lastId: string | null = null;
+    for (const msg of messages) {
+      if (msg.sender === "STAFF" && new Date(msg.createdAt).getTime() <= readTime) {
+        lastId = msg.id;
+      }
+    }
+    return lastId;
+  }, [messages, customerLastReadAt]);
+
   useEffect(() => {
     if (messages.length > 0 && isAtBottomRef.current) {
       setTimeout(() => flatListRef.current?.scrollToEnd({ animated: false }), 100);
@@ -505,21 +527,65 @@ export default function ConversationScreen() {
   }, []);
 
   const handleSend = useCallback(async () => {
-    if (!text.trim() && pendingImages.length === 0) return;
+    const textToSend = text.trim();
+    const imagesToSend = [...pendingImages];
+    if (!textToSend && imagesToSend.length === 0) return;
+
+    const tempId = `temp-${Date.now()}`;
+    const optimisticMsg: ChatMessage = {
+      id: tempId,
+      conversationId: id as string,
+      sender: "STAFF",
+      body: textToSend || null,
+      attachments: imagesToSend.map((img) => ({
+        id: img.id,
+        url: img.url,
+        filename: img.filename,
+        mimeType: "",
+        messageId: null,
+        createdAt: new Date().toISOString(),
+      })),
+      reactions: [],
+      createdAt: new Date().toISOString(),
+      editedAt: null,
+    };
+
+    type MessagesData =
+      | ChatMessage[]
+      | {
+          messages: ChatMessage[];
+          customerTypingAt: string | null;
+          customerLastReadAt: string | null;
+          staffLastReadAt: string | null;
+        }
+      | undefined;
+
+    queryClient.setQueryData<MessagesData>(["messages", id], (old) => {
+      if (!old) return old;
+      if (Array.isArray(old)) return [...old, optimisticMsg];
+      return { ...old, messages: [...old.messages, optimisticMsg] };
+    });
+
+    setText("");
+    setPendingImages([]);
+    isAtBottomRef.current = true;
+    setShowScrollButton(false);
     setSending(true);
+
     try {
       await api.post(`/api/conversations/${id}/messages`, {
         sender: "STAFF",
-        body: text.trim() || null,
-        attachmentIds: pendingImages.map((p) => p.id),
+        body: textToSend || null,
+        attachmentIds: imagesToSend.map((p) => p.id),
       });
-      setText("");
-      setPendingImages([]);
-      isAtBottomRef.current = true;
-      setShowScrollButton(false);
       queryClient.invalidateQueries({ queryKey: ["messages", id] });
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
     } catch {
+      queryClient.setQueryData<MessagesData>(["messages", id], (old) => {
+        if (!old) return old;
+        if (Array.isArray(old)) return old.filter((m) => m.id !== tempId);
+        return { ...old, messages: old.messages.filter((m) => m.id !== tempId) };
+      });
       Alert.alert("Error", "Failed to send message");
     } finally {
       setSending(false);
@@ -887,6 +953,9 @@ export default function ConversationScreen() {
                       );
                     })}
                   </View>
+                ) : null}
+                {isOwn && item.id === lastViewedOwnMsgId ? (
+                  <Text style={styles.viewed}>Viewed</Text>
                 ) : null}
               </View>
             );
