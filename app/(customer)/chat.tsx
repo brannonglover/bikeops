@@ -596,9 +596,9 @@ export default function CustomerChatScreen() {
           alignItems: "center",
         },
         popupCard: {
-          backgroundColor: colors.white,
+          backgroundColor: theme.surface,
           borderWidth: 1,
-          borderColor: colors.slate[200],
+          borderColor: theme.surfaceBorder,
           borderRadius: borderRadius["2xl"],
           paddingVertical: spacing[3],
           paddingHorizontal: spacing[2],
@@ -630,7 +630,7 @@ export default function CustomerChatScreen() {
         },
         popupDivider: {
           height: 1,
-          backgroundColor: colors.slate[200],
+          backgroundColor: theme.surfaceBorder,
           marginBottom: spacing[1],
         },
         popupAction: {

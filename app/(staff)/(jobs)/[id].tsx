@@ -826,17 +826,17 @@ export default function JobDetailScreen() {
       const nextId = job.workingOnJobBikeId === bikeId ? null : bikeId;
       setSavingWorkingOn(true);
       const patch: Record<string, unknown> = { workingOnJobBikeId: nextId };
-      // Advance the stage to WORKING_ON whenever starting work (not already there),
-      // and also send unwaitForPartsJobBikeId to clear any per-bike waiting state —
-      // matching the logic in handleStageChange.
       if (nextId && job.stage !== "WORKING_ON") {
         patch.stage = "WORKING_ON";
         patch.notifyCustomer = false;
-        const waitingBike = job.jobBikes.find(
-          (jb) => !!jb.waitingOnPartsAt && !jb.completedAt
-        );
-        if (waitingBike) {
-          patch.unwaitForPartsJobBikeId = waitingBike.id;
+      }
+      // Always clear the waiting state for the clicked bike if it was waiting —
+      // this matters when the job is already WORKING_ON (e.g. switching to a
+      // different bike that still has waitingOnPartsAt set from a prior state).
+      if (nextId) {
+        const clickedBike = job.jobBikes.find((jb) => jb.id === nextId);
+        if (clickedBike?.waitingOnPartsAt && !clickedBike.completedAt) {
+          patch.unwaitForPartsJobBikeId = nextId;
         }
       }
       patchJob.mutate(

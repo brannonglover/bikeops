@@ -69,6 +69,7 @@ export default function ConversationScreen() {
   const [inviteStatus, setInviteStatus] = useState<InviteStatus>("idle");
   const [inviteDaysLeft, setInviteDaysLeft] = useState<number | null>(null);
   const [sendingInvite, setSendingInvite] = useState(false);
+  const [showInviteModal, setShowInviteModal] = useState(false);
 
   const styles = useMemo(
     () =>
@@ -287,9 +288,9 @@ export default function ConversationScreen() {
           alignItems: "center",
         },
         popupCard: {
-          backgroundColor: colors.white,
+          backgroundColor: theme.surface,
           borderWidth: 1,
-          borderColor: colors.slate[200],
+          borderColor: theme.surfaceBorder,
           borderRadius: borderRadius["2xl"],
           paddingVertical: spacing[3],
           paddingHorizontal: spacing[2],
@@ -299,6 +300,105 @@ export default function ConversationScreen() {
           shadowOpacity: 0.15,
           shadowRadius: 12,
           elevation: 8,
+        },
+        inviteModalCard: {
+          backgroundColor: theme.surface,
+          borderWidth: 1,
+          borderColor: theme.surfaceBorder,
+          borderRadius: borderRadius["2xl"],
+          width: 300,
+          overflow: "hidden",
+          shadowColor: colors.black,
+          shadowOffset: { width: 0, height: 4 },
+          shadowOpacity: 0.15,
+          shadowRadius: 12,
+          elevation: 8,
+        },
+        inviteModalHeader: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: spacing[3],
+          paddingHorizontal: spacing[4],
+          paddingVertical: spacing[4],
+        },
+        inviteModalIconWrap: {
+          width: 40,
+          height: 40,
+          borderRadius: 20,
+          justifyContent: "center",
+          alignItems: "center",
+        },
+        inviteModalIconWrapActive: {
+          backgroundColor: colors.emerald[100],
+        },
+        inviteModalIconWrapPending: {
+          backgroundColor: colors.amber[100],
+        },
+        inviteModalIconWrapIdle: {
+          backgroundColor: theme.subtleBg,
+        },
+        inviteModalTitle: {
+          ...fontSize.base,
+          fontWeight: "600",
+          color: theme.text,
+          flex: 1,
+        },
+        inviteModalDivider: {
+          height: 1,
+          backgroundColor: theme.surfaceBorder,
+        },
+        inviteModalRows: {
+          paddingHorizontal: spacing[4],
+          paddingVertical: spacing[3],
+          gap: spacing[2.5],
+        },
+        inviteModalRow: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: spacing[2],
+        },
+        inviteModalRowLabel: {
+          ...fontSize.sm,
+          color: theme.textMuted,
+          flex: 1,
+        },
+        inviteModalRowValue: {
+          ...fontSize.sm,
+          fontWeight: "500",
+          color: theme.text,
+          flexShrink: 1,
+        },
+        inviteModalBody: {
+          ...fontSize.sm,
+          color: theme.textSecondary,
+          lineHeight: 20,
+          paddingHorizontal: spacing[4],
+          paddingVertical: spacing[3],
+        },
+        inviteModalActions: {
+          flexDirection: "row",
+        },
+        inviteModalCancel: {
+          flex: 1,
+          paddingVertical: spacing[3.5],
+          alignItems: "center",
+          borderRightWidth: 1,
+          borderRightColor: theme.surfaceBorder,
+        },
+        inviteModalCancelText: {
+          ...fontSize.sm,
+          fontWeight: "500",
+          color: theme.textSecondary,
+        },
+        inviteModalSend: {
+          flex: 1,
+          paddingVertical: spacing[3.5],
+          alignItems: "center",
+        },
+        inviteModalSendText: {
+          ...fontSize.sm,
+          fontWeight: "600",
+          color: colors.emerald[600],
         },
         emojiRow: {
           flexDirection: "row",
@@ -321,7 +421,7 @@ export default function ConversationScreen() {
         },
         popupDivider: {
           height: 1,
-          backgroundColor: colors.slate[200],
+          backgroundColor: theme.surfaceBorder,
           marginBottom: spacing[1],
         },
         popupAction: {
@@ -468,44 +568,24 @@ export default function ConversationScreen() {
 
   const handleSendInvite = useCallback(async () => {
     if (!conversation?.customer) return;
+    setShowInviteModal(false);
     setSendingInvite(true);
     try {
-      const { data } = await api.post<{ message?: string; error?: string }>(
+      await api.post<{ message?: string; error?: string }>(
         "/api/chat/send-invite",
         { customerId: conversation.customer.id }
       );
-      Alert.alert("Invite Sent", data.message ?? "Sign-in link sent!");
       setInviteStatus("pending");
-    } catch (e) {
-      Alert.alert("Error", e instanceof Error ? e.message : "Failed to send invite");
+    } catch {
+      // silent — the modal is already closed; user can retry by tapping again
     } finally {
       setSendingInvite(false);
     }
   }, [conversation?.customer]);
 
   const handleInvitePress = useCallback(() => {
-    const customer = conversation?.customer;
-    if (!customer?.email) {
-      Alert.alert("No Email", "This customer doesn't have an email address on file.");
-      return;
-    }
-    let title: string;
-    let message: string;
-    if (inviteStatus === "active") {
-      title = "Chat Access Active";
-      message = `${customer.email} has an active session${inviteDaysLeft ? ` (${inviteDaysLeft} day${inviteDaysLeft === 1 ? "" : "s"} left)` : ""}.\n\nSend a new sign-in link?`;
-    } else if (inviteStatus === "pending") {
-      title = "Invite Pending";
-      message = `An invite was already sent to ${customer.email}.\n\nSend another?`;
-    } else {
-      title = "Invite to Chat";
-      message = `Send a sign-in link to ${customer.email}?`;
-    }
-    Alert.alert(title, message, [
-      { text: "Cancel", style: "cancel" },
-      { text: "Send", onPress: handleSendInvite },
-    ]);
-  }, [conversation?.customer, inviteStatus, inviteDaysLeft, handleSendInvite]);
+    setShowInviteModal(true);
+  }, []);
 
   const handleScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -1111,6 +1191,122 @@ export default function ConversationScreen() {
                 Delete
               </Text>
             </TouchableOpacity>
+          </View>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={showInviteModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowInviteModal(false)}
+      >
+        <Pressable
+          style={styles.popupBackdrop}
+          onPress={() => setShowInviteModal(false)}
+        >
+          <View
+            style={styles.inviteModalCard}
+            onStartShouldSetResponder={() => true}
+          >
+            <View style={styles.inviteModalHeader}>
+              <View
+                style={[
+                  styles.inviteModalIconWrap,
+                  inviteStatus === "active"
+                    ? styles.inviteModalIconWrapActive
+                    : inviteStatus === "pending"
+                      ? styles.inviteModalIconWrapPending
+                      : styles.inviteModalIconWrapIdle,
+                ]}
+              >
+                <Ionicons
+                  name={inviteStatus === "active" ? "mail-open-outline" : "mail-outline"}
+                  size={22}
+                  color={
+                    inviteStatus === "active"
+                      ? colors.emerald[600]
+                      : inviteStatus === "pending"
+                        ? colors.amber[600]
+                        : theme.icon
+                  }
+                />
+              </View>
+              <Text style={styles.inviteModalTitle}>
+                {inviteStatus === "active"
+                  ? "Chat Access Active"
+                  : inviteStatus === "pending"
+                    ? "Invite Pending"
+                    : "Invite to Chat"}
+              </Text>
+            </View>
+
+            <View style={styles.inviteModalDivider} />
+
+            {inviteStatus === "active" ? (
+              <View style={styles.inviteModalRows}>
+                <View style={styles.inviteModalRow}>
+                  <Ionicons name="checkmark-circle-outline" size={15} color={colors.emerald[500]} />
+                  <Text style={styles.inviteModalRowLabel}>Status</Text>
+                  <Text style={[styles.inviteModalRowValue, { color: colors.emerald[600] }]}>Accepted</Text>
+                </View>
+                {inviteDaysLeft !== null ? (
+                  <View style={styles.inviteModalRow}>
+                    <Ionicons name="time-outline" size={15} color={theme.textMuted} />
+                    <Text style={styles.inviteModalRowLabel}>Expires in</Text>
+                    <Text style={styles.inviteModalRowValue}>
+                      {inviteDaysLeft} day{inviteDaysLeft === 1 ? "" : "s"}
+                    </Text>
+                  </View>
+                ) : null}
+                <View style={styles.inviteModalRow}>
+                  <Ionicons name="mail-outline" size={15} color={theme.textMuted} />
+                  <Text style={styles.inviteModalRowLabel}>Email</Text>
+                  <Text style={styles.inviteModalRowValue} numberOfLines={1}>
+                    {conversation?.customer?.email}
+                  </Text>
+                </View>
+              </View>
+            ) : inviteStatus === "pending" ? (
+              <View style={styles.inviteModalRows}>
+                <View style={styles.inviteModalRow}>
+                  <Ionicons name="time-outline" size={15} color={colors.amber[500]} />
+                  <Text style={styles.inviteModalRowLabel}>Status</Text>
+                  <Text style={[styles.inviteModalRowValue, { color: colors.amber[600] }]}>Sent · awaiting sign-in</Text>
+                </View>
+                <View style={styles.inviteModalRow}>
+                  <Ionicons name="mail-outline" size={15} color={theme.textMuted} />
+                  <Text style={styles.inviteModalRowLabel}>Email</Text>
+                  <Text style={styles.inviteModalRowValue} numberOfLines={1}>
+                    {conversation?.customer?.email}
+                  </Text>
+                </View>
+              </View>
+            ) : (
+              <Text style={styles.inviteModalBody}>
+                Send a sign-in link to {conversation?.customer?.email} so they can join the conversation.
+              </Text>
+            )}
+
+            <View style={styles.inviteModalDivider} />
+
+            <View style={styles.inviteModalActions}>
+              <TouchableOpacity
+                style={styles.inviteModalCancel}
+                onPress={() => setShowInviteModal(false)}
+              >
+                <Text style={styles.inviteModalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.inviteModalSend, sendingInvite && { opacity: 0.5 }]}
+                onPress={handleSendInvite}
+                disabled={sendingInvite}
+              >
+                <Text style={styles.inviteModalSendText}>
+                  {inviteStatus === "idle" ? "Send invite" : "Resend"}
+                </Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </Pressable>
       </Modal>
