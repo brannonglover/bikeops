@@ -407,13 +407,13 @@ export default function JobDetailScreen() {
           paddingHorizontal: spacing[2.5],
           paddingVertical: spacing[1.5],
           borderRadius: borderRadius.lg,
-          backgroundColor: theme.dark ? colors.red[800] : colors.red[100],
+          backgroundColor: theme.dark ? colors.slate[600] : colors.slate[200],
           minHeight: 32,
         },
         waitForPartsText: {
           ...fontSize.xs,
           fontWeight: "600",
-          color: theme.dark ? colors.red[300] : colors.red[700],
+          color: theme.dark ? colors.slate[100] : colors.slate[700],
         },
         resumeWorkButton: {
           flexDirection: "row",
@@ -1440,8 +1440,8 @@ export default function JobDetailScreen() {
                           disabled={!!savingWaiting}
                           style={[styles.waitForPartsButton, !!savingWaiting && styles.buttonDisabled]}
                         >
-                          <Ionicons name="time" size={13} color={colors.red[700]} />
-                          <Text style={styles.waitForPartsText}>Waiting on parts</Text>
+                          <Ionicons name="time" size={13} color={theme.dark ? colors.slate[100] : colors.slate[700]} />
+                          <Text style={styles.waitForPartsText}>Need parts</Text>
                         </TouchableOpacity>
                       </View>
                     ) : (
