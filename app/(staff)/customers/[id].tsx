@@ -741,7 +741,7 @@ export default function CustomerDetailScreen() {
                         autoFocus
                       />
                       <Input
-                        label="Model"
+                        label="Model (optional)"
                         value={bikeEdit.model}
                         onChangeText={(v) =>
                           setBikeEdit((s) => ({ ...s, model: v }))
@@ -821,9 +821,7 @@ export default function CustomerDetailScreen() {
                           title="Add Bike"
                           onPress={() => createBike.mutate()}
                           loading={createBike.isPending}
-                          disabled={
-                            !bikeEdit.make.trim() || !bikeEdit.model.trim()
-                          }
+                          disabled={!bikeEdit.make.trim()}
                           size="sm"
                           style={styles.bikeEditSaveBtn}
                         />
