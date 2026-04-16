@@ -138,6 +138,9 @@ export default function ConversationScreen() {
         imageMessage: {
           gap: spacing[1],
         },
+        imageMessageOwn: {
+          alignItems: "flex-end",
+        },
         standaloneImage: {
           width: 220,
           height: 220,
@@ -258,9 +261,9 @@ export default function ConversationScreen() {
           flexDirection: "row",
           alignItems: "center",
           gap: 2,
-          backgroundColor: colors.white,
+          backgroundColor: theme.surface,
           borderWidth: 1,
-          borderColor: colors.slate[200],
+          borderColor: theme.surfaceBorder,
           borderRadius: borderRadius.full,
           paddingHorizontal: spacing[1],
           paddingVertical: 2,
@@ -271,8 +274,8 @@ export default function ConversationScreen() {
           elevation: 3,
         },
         reactionPillMine: {
-          backgroundColor: colors.emerald[50],
-          borderColor: colors.emerald[300],
+          backgroundColor: theme.dark ? colors.emerald[900] : colors.emerald[50],
+          borderColor: theme.dark ? colors.emerald[700] : colors.emerald[300],
         },
         reactionPillEmoji: {
           fontSize: 14,
@@ -414,7 +417,7 @@ export default function ConversationScreen() {
           alignItems: "center",
         },
         emojiButtonSelected: {
-          backgroundColor: colors.emerald[100],
+          backgroundColor: theme.dark ? colors.emerald[900] : colors.emerald[100],
         },
         emojiText: {
           fontSize: 24,
@@ -735,16 +738,47 @@ export default function ConversationScreen() {
 
   const handleEdit = useCallback(async () => {
     if (!editingMessage || !text.trim()) return;
+
+    const newBody = text.trim();
+    const editedMsgId = editingMessage.id;
+
+    type MessagesData =
+      | ChatMessage[]
+      | {
+          messages: ChatMessage[];
+          customerTypingAt: string | null;
+          customerLastReadAt: string | null;
+          staffLastReadAt: string | null;
+        }
+      | undefined;
+
+    const previousData = queryClient.getQueryData<MessagesData>(["messages", id]);
+
+    const applyEdit = (msgs: ChatMessage[]) =>
+      msgs.map((m) =>
+        m.id === editedMsgId
+          ? { ...m, body: newBody, editedAt: new Date().toISOString() }
+          : m
+      );
+
+    queryClient.setQueryData<MessagesData>(["messages", id], (old) => {
+      if (!old) return old;
+      if (Array.isArray(old)) return applyEdit(old);
+      return { ...old, messages: applyEdit(old.messages) };
+    });
+
+    setEditingMessage(null);
+    setText("");
     setSending(true);
+
     try {
       await api.patch(
-        `/api/conversations/${id}/messages/${editingMessage.id}`,
-        { body: text.trim() }
+        `/api/conversations/${id}/messages/${editedMsgId}`,
+        { body: newBody }
       );
-      setEditingMessage(null);
-      setText("");
       queryClient.invalidateQueries({ queryKey: ["messages", id] });
     } catch {
+      queryClient.setQueryData(["messages", id], previousData);
       Alert.alert("Error", "Failed to edit message");
     } finally {
       setSending(false);
@@ -757,8 +791,49 @@ export default function ConversationScreen() {
       const myReaction = (msg?.reactions ?? []).find(
         (r) => r.reactorType === "STAFF"
       );
+      const isRemoving = myReaction?.emoji === emoji;
+
+      type MessagesData =
+        | ChatMessage[]
+        | {
+            messages: ChatMessage[];
+            customerTypingAt: string | null;
+            customerLastReadAt: string | null;
+            staffLastReadAt: string | null;
+          }
+        | undefined;
+
+      const previousData = queryClient.getQueryData<MessagesData>(["messages", id]);
+
+      const applyReaction = (msgs: ChatMessage[]) =>
+        msgs.map((m) => {
+          if (m.id !== messageId) return m;
+          const withoutMine = (m.reactions ?? []).filter(
+            (r) => r.reactorType !== "STAFF"
+          );
+          const reactions = isRemoving
+            ? withoutMine
+            : [
+                ...withoutMine,
+                {
+                  id: `temp-${Date.now()}`,
+                  messageId,
+                  emoji,
+                  reactorType: "STAFF" as const,
+                  createdAt: new Date().toISOString(),
+                },
+              ];
+          return { ...m, reactions };
+        });
+
+      queryClient.setQueryData<MessagesData>(["messages", id], (old) => {
+        if (!old) return old;
+        if (Array.isArray(old)) return applyReaction(old);
+        return { ...old, messages: applyReaction(old.messages) };
+      });
+
       try {
-        if (myReaction?.emoji === emoji) {
+        if (isRemoving) {
           await api.delete(
             `/api/conversations/${id}/messages/${messageId}/reactions`
           );
@@ -770,7 +845,7 @@ export default function ConversationScreen() {
         }
         queryClient.invalidateQueries({ queryKey: ["messages", id] });
       } catch {
-        // silently fail
+        queryClient.setQueryData(["messages", id], previousData);
       }
     },
     [id, messages, queryClient]
@@ -878,7 +953,7 @@ export default function ConversationScreen() {
                 ]}
               >
                 {splitBubble ? (
-                  <View style={styles.imageMessage}>
+                  <View style={[styles.imageMessage, isOwn && styles.imageMessageOwn]}>
                     {item.attachments?.map(
                       (att: { id: string; url: string }) => (
                         <TouchableOpacity
@@ -938,7 +1013,7 @@ export default function ConversationScreen() {
                     activeOpacity={0.7}
                     style={
                       imageOnly
-                        ? styles.imageMessage
+                        ? [styles.imageMessage, isOwn && styles.imageMessageOwn]
                         : [
                             styles.bubble,
                             isOwn ? styles.bubbleOwn : styles.bubbleOther,
