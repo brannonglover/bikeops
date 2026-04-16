@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useRef } from "react";
 import {
   View,
   Text,
@@ -8,7 +8,7 @@ import {
   Alert,
   StyleSheet,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/lib/api";
@@ -23,6 +23,13 @@ export default function JobBoardScreen() {
   const { theme } = useTheme();
   const router = useRouter();
   const queryClient = useQueryClient();
+  const navigatingRef = useRef(false);
+
+  useFocusEffect(
+    useCallback(() => {
+      navigatingRef.current = false;
+    }, [])
+  );
   const [cancelledExpanded, setCancelledExpanded] = useState(false);
 
   const { data: jobs = [], isLoading, refetch } = useQuery({
@@ -139,7 +146,12 @@ export default function JobBoardScreen() {
       <View style={styles.cardWrapper}>
         <JobCard
           job={item}
-          onPress={() => router.push(`/(staff)/(jobs)/${item.id}`)}
+          onPress={() => {
+            if (navigatingRef.current) return;
+            navigatingRef.current = true;
+            queryClient.setQueryData(["job", item.id], item);
+            router.push(`/(staff)/(jobs)/${item.id}`);
+          }}
           onAccept={
             item.stage === "PENDING_APPROVAL" ? () => handleAccept(item.id) : undefined
           }

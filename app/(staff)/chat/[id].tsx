@@ -262,8 +262,6 @@ export default function ConversationScreen() {
           alignItems: "center",
           gap: 2,
           backgroundColor: theme.surface,
-          borderWidth: 1,
-          borderColor: theme.surfaceBorder,
           borderRadius: borderRadius.full,
           paddingHorizontal: spacing[1],
           paddingVertical: 2,
@@ -275,7 +273,6 @@ export default function ConversationScreen() {
         },
         reactionPillMine: {
           backgroundColor: theme.dark ? colors.emerald[900] : colors.emerald[50],
-          borderColor: theme.dark ? colors.emerald[700] : colors.emerald[300],
         },
         reactionPillEmoji: {
           fontSize: 14,
