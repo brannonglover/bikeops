@@ -679,11 +679,17 @@ export default function ConversationScreen() {
     });
     if (result.canceled || !result.assets[0]) return;
     const asset = result.assets[0];
+    const isHeic =
+      asset.mimeType === "image/heic" || asset.mimeType === "image/heif";
+    const mimeType = isHeic ? "image/jpeg" : (asset.mimeType ?? "image/jpeg");
+    const fileName = isHeic
+      ? (asset.fileName?.replace(/\.heic$/i, ".jpg").replace(/\.heif$/i, ".jpg") ?? "photo.jpg")
+      : (asset.fileName ?? "photo.jpg");
     const formData = new FormData();
     formData.append("file", {
       uri: asset.uri,
-      type: asset.mimeType ?? "image/jpeg",
-      name: asset.fileName ?? "photo.jpg",
+      type: mimeType,
+      name: fileName,
     } as unknown as Blob);
     try {
       const { data } = await api.postForm<{
