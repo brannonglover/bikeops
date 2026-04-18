@@ -125,6 +125,8 @@ export default function PayScreen() {
 
   const total = jobTotal(job.jobServices, job.jobProducts);
 
+  const PAYABLE_STAGES: string[] = ["RECEIVED", "WORKING_ON", "WAITING_ON_PARTS", "BIKE_READY", "COMPLETED"];
+
   if (job.paymentStatus === "PAID") {
     return (
       <View style={styles.paidContainer}>
@@ -136,6 +138,27 @@ export default function PayScreen() {
         <Text style={styles.paidTitle}>Already Paid</Text>
         <Text style={styles.paidMessage}>
           This job has already been paid. Thank you!
+        </Text>
+        <Button
+          title="View Status"
+          onPress={() => router.replace(`/(customer)/status/${jobId}`)}
+          variant="secondary"
+        />
+      </View>
+    );
+  }
+
+  if (!PAYABLE_STAGES.includes(job.stage)) {
+    return (
+      <View style={styles.paidContainer}>
+        <Ionicons
+          name="time-outline"
+          size={64}
+          color={colors.amber[500]}
+        />
+        <Text style={styles.paidTitle}>Not Yet Available</Text>
+        <Text style={styles.paidMessage}>
+          Payment will be available once the shop has confirmed your booking and received your bike.
         </Text>
         <Button
           title="View Status"

@@ -196,8 +196,9 @@ export default function JobStatusScreen() {
 
   const total = jobTotal(job.jobServices, job.jobProducts);
   const stageColor = STAGE_COLORS[job.stage];
+  const PAYABLE_STAGES: string[] = ["RECEIVED", "WORKING_ON", "WAITING_ON_PARTS", "BIKE_READY", "COMPLETED"];
   const canPay =
-    job.paymentStatus !== "PAID" && total > 0 && job.stage !== "CANCELLED";
+    job.paymentStatus !== "PAID" && total > 0 && PAYABLE_STAGES.includes(job.stage);
 
   return (
     <>

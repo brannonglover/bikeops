@@ -13,6 +13,7 @@ import {
   Linking,
   Modal,
   Pressable,
+  KeyboardAvoidingView,
   TextInput,
 } from "react-native";
 import { useLocalSearchParams, useRouter, Stack } from "expo-router";
@@ -2018,53 +2019,60 @@ export default function JobDetailScreen() {
         statusBarTranslucent
         onRequestClose={() => setShowRejectModal(false)}
       >
-        <Pressable
-          style={cancelModalStyles.backdrop}
-          onPress={() => setShowRejectModal(false)}
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          keyboardVerticalOffset={Platform.OS === "ios" ? 64 : 0}
+          style={{ flex: 1 }}
         >
           <Pressable
-            style={[cancelModalStyles.sheet, { backgroundColor: theme.surface }]}
-            onPress={(e) => e.stopPropagation()}
+            style={[cancelModalStyles.backdrop, { justifyContent: "flex-end" }]}
+            onPress={() => setShowRejectModal(false)}
           >
-            <Text style={[cancelModalStyles.title, { color: theme.textHeading }]}>
-              Reject Booking
-            </Text>
-            <Text style={[cancelModalStyles.subtitle, { color: theme.textSecondary }]}>
-              The customer will see this reason on the status page and by email.
-            </Text>
-            <TextInput
-              style={[
-                cancelModalStyles.textInput,
-                {
-                  color: theme.text,
-                  backgroundColor: theme.inputBg,
-                  borderColor: theme.inputBorder,
-                },
-              ]}
-              placeholder="Reason for rejection..."
-              placeholderTextColor={theme.textMuted}
-              value={rejectReasonText}
-              onChangeText={setRejectReasonText}
-              multiline
-              autoFocus
-            />
-            <View style={cancelModalStyles.actions}>
-              <Button
-                title="Go Back"
-                onPress={() => setShowRejectModal(false)}
-                variant="ghost"
-                size="md"
+            <Pressable
+              style={[cancelModalStyles.sheet, { backgroundColor: theme.surface }]}
+              onPress={(e) => e.stopPropagation()}
+            >
+              <Text style={[cancelModalStyles.title, { color: theme.textHeading }]}>
+                Reject Booking
+              </Text>
+              <Text style={[cancelModalStyles.subtitle, { color: theme.textSecondary }]}>
+                The customer will see this reason on the status page and by email.
+              </Text>
+              <TextInput
+                style={[
+                  cancelModalStyles.textInput,
+                  {
+                    color: theme.text,
+                    backgroundColor: theme.inputBg,
+                    borderColor: theme.inputBorder,
+                  },
+                ]}
+                placeholder="Reason for rejection..."
+                placeholderTextColor={theme.textMuted}
+                value={rejectReasonText}
+                onChangeText={setRejectReasonText}
+                multiline
+                scrollEnabled
+                autoFocus
               />
-              <Button
-                title={patchJob.isPending ? "Rejecting…" : "Reject"}
-                onPress={handleRejectBooking}
-                variant="danger"
-                size="md"
-                disabled={!rejectReasonText.trim() || patchJob.isPending}
-              />
-            </View>
+              <View style={cancelModalStyles.actions}>
+                <Button
+                  title="Go Back"
+                  onPress={() => setShowRejectModal(false)}
+                  variant="ghost"
+                  size="md"
+                />
+                <Button
+                  title={patchJob.isPending ? "Rejecting…" : "Reject"}
+                  onPress={handleRejectBooking}
+                  variant="danger"
+                  size="md"
+                  disabled={!rejectReasonText.trim() || patchJob.isPending}
+                />
+              </View>
+            </Pressable>
           </Pressable>
-        </Pressable>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Cancel job modal */}
@@ -2075,117 +2083,124 @@ export default function JobDetailScreen() {
         statusBarTranslucent
         onRequestClose={() => setShowCancelModal(false)}
       >
-        <Pressable
-          style={cancelModalStyles.backdrop}
-          onPress={() => setShowCancelModal(false)}
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          keyboardVerticalOffset={Platform.OS === "ios" ? 64 : 0}
+          style={{ flex: 1 }}
         >
           <Pressable
-            style={[cancelModalStyles.sheet, { backgroundColor: theme.surface }]}
-            onPress={(e) => e.stopPropagation()}
+            style={cancelModalStyles.backdrop}
+            onPress={() => setShowCancelModal(false)}
           >
-            <Text style={[cancelModalStyles.title, { color: theme.textHeading }]}>
-              Cancel Job
-            </Text>
-            <Text style={[cancelModalStyles.subtitle, { color: theme.textSecondary }]}>
-              Why is this job being cancelled?
-            </Text>
+            <Pressable
+              style={[cancelModalStyles.sheet, { backgroundColor: theme.surface }]}
+              onPress={(e) => e.stopPropagation()}
+            >
+              <Text style={[cancelModalStyles.title, { color: theme.textHeading }]}>
+                Cancel Job
+              </Text>
+              <Text style={[cancelModalStyles.subtitle, { color: theme.textSecondary }]}>
+                Why is this job being cancelled?
+              </Text>
 
-            <View style={cancelModalStyles.options}>
-              {CANCEL_REASONS.map((reason) => (
+              <View style={cancelModalStyles.options}>
+                {CANCEL_REASONS.map((reason) => (
+                  <TouchableOpacity
+                    key={reason}
+                    onPress={() => setCancelReason(reason)}
+                    style={[
+                      cancelModalStyles.option,
+                      {
+                        backgroundColor:
+                          cancelReason === reason ? colors.amber[50] : theme.subtleBg,
+                        borderColor:
+                          cancelReason === reason ? colors.amber[400] : theme.surfaceBorder,
+                      },
+                    ]}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons
+                      name={cancelReason === reason ? "radio-button-on" : "radio-button-off"}
+                      size={18}
+                      color={cancelReason === reason ? colors.amber[500] : theme.textMuted}
+                    />
+                    <Text
+                      style={[
+                        cancelModalStyles.optionText,
+                        { color: cancelReason === reason ? theme.text : theme.textTertiary },
+                      ]}
+                    >
+                      {reason}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
                 <TouchableOpacity
-                  key={reason}
-                  onPress={() => setCancelReason(reason)}
+                  onPress={() => setCancelReason("Other")}
                   style={[
                     cancelModalStyles.option,
                     {
                       backgroundColor:
-                        cancelReason === reason ? colors.amber[50] : theme.subtleBg,
+                        cancelReason === "Other" ? colors.amber[50] : theme.subtleBg,
                       borderColor:
-                        cancelReason === reason ? colors.amber[400] : theme.surfaceBorder,
+                        cancelReason === "Other" ? colors.amber[400] : theme.surfaceBorder,
                     },
                   ]}
                   activeOpacity={0.7}
                 >
                   <Ionicons
-                    name={cancelReason === reason ? "radio-button-on" : "radio-button-off"}
+                    name={cancelReason === "Other" ? "radio-button-on" : "radio-button-off"}
                     size={18}
-                    color={cancelReason === reason ? colors.amber[500] : theme.textMuted}
+                    color={cancelReason === "Other" ? colors.amber[500] : theme.textMuted}
                   />
                   <Text
                     style={[
                       cancelModalStyles.optionText,
-                      { color: cancelReason === reason ? theme.text : theme.textTertiary },
+                      { color: cancelReason === "Other" ? theme.text : theme.textTertiary },
                     ]}
                   >
-                    {reason}
+                    Other
                   </Text>
                 </TouchableOpacity>
-              ))}
-              <TouchableOpacity
-                onPress={() => setCancelReason("Other")}
-                style={[
-                  cancelModalStyles.option,
-                  {
-                    backgroundColor:
-                      cancelReason === "Other" ? colors.amber[50] : theme.subtleBg,
-                    borderColor:
-                      cancelReason === "Other" ? colors.amber[400] : theme.surfaceBorder,
-                  },
-                ]}
-                activeOpacity={0.7}
-              >
-                <Ionicons
-                  name={cancelReason === "Other" ? "radio-button-on" : "radio-button-off"}
-                  size={18}
-                  color={cancelReason === "Other" ? colors.amber[500] : theme.textMuted}
-                />
-                <Text
+              </View>
+
+              {cancelReason === "Other" ? (
+                <TextInput
                   style={[
-                    cancelModalStyles.optionText,
-                    { color: cancelReason === "Other" ? theme.text : theme.textTertiary },
+                    cancelModalStyles.textInput,
+                    {
+                      color: theme.text,
+                      backgroundColor: theme.inputBg,
+                      borderColor: theme.inputBorder,
+                    },
                   ]}
-                >
-                  Other
-                </Text>
-              </TouchableOpacity>
-            </View>
+                  placeholder="Describe the reason..."
+                  placeholderTextColor={theme.textMuted}
+                  value={cancelReasonText}
+                  onChangeText={setCancelReasonText}
+                  multiline
+                  scrollEnabled
+                  autoFocus
+                />
+              ) : null}
 
-            {cancelReason === "Other" ? (
-              <TextInput
-                style={[
-                  cancelModalStyles.textInput,
-                  {
-                    color: theme.text,
-                    backgroundColor: theme.inputBg,
-                    borderColor: theme.inputBorder,
-                  },
-                ]}
-                placeholder="Describe the reason..."
-                placeholderTextColor={theme.textMuted}
-                value={cancelReasonText}
-                onChangeText={setCancelReasonText}
-                multiline
-                autoFocus
-              />
-            ) : null}
-
-            <View style={cancelModalStyles.actions}>
-              <Button
-                title="Go Back"
-                onPress={() => setShowCancelModal(false)}
-                variant="ghost"
-                size="md"
-              />
-              <Button
-                title="Cancel Job"
-                onPress={handleCancelJob}
-                variant="danger"
-                size="md"
-                disabled={!cancelReason}
-              />
-            </View>
+              <View style={cancelModalStyles.actions}>
+                <Button
+                  title="Go Back"
+                  onPress={() => setShowCancelModal(false)}
+                  variant="ghost"
+                  size="md"
+                />
+                <Button
+                  title="Cancel Job"
+                  onPress={handleCancelJob}
+                  variant="danger"
+                  size="md"
+                  disabled={!cancelReason}
+                />
+              </View>
+            </Pressable>
           </Pressable>
-        </Pressable>
+        </KeyboardAvoidingView>
       </Modal>
     </>
   );
@@ -2346,6 +2361,7 @@ const cancelModalStyles = StyleSheet.create({
     borderRadius: borderRadius.lg,
     padding: spacing[3],
     minHeight: 80,
+    maxHeight: 180,
     textAlignVertical: "top",
   },
   actions: {
