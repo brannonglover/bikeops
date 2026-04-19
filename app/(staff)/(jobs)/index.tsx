@@ -70,7 +70,47 @@ export default function JobBoardScreen() {
       });
       return data;
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["jobs"] }),
+    onMutate: async ({ jobId, stage, notifyCustomer, completedAt }) => {
+      await queryClient.cancelQueries({ queryKey: ["jobs"] });
+      await queryClient.cancelQueries({ queryKey: ["job", jobId] });
+
+      const prevJobs = queryClient.getQueryData<Job[]>(["jobs"]);
+      const prevJob = queryClient.getQueryData<Job>(["job", jobId]);
+
+      const apply = (j: Job): Job => ({
+        ...j,
+        stage,
+        ...(typeof notifyCustomer === "boolean" ? { notifyCustomer } : {}),
+        ...(typeof completedAt !== "undefined" ? { completedAt } : {}),
+      });
+
+      if (prevJobs && Array.isArray(prevJobs)) {
+        queryClient.setQueryData(
+          ["jobs"],
+          prevJobs.map((j) => (j.id === jobId ? apply(j) : j))
+        );
+      }
+      if (prevJob && prevJob.id === jobId) {
+        queryClient.setQueryData(["job", jobId], apply(prevJob));
+      }
+
+      return { prevJobs, prevJob };
+    },
+    onError: (_err, vars, ctx) => {
+      if (!ctx) return;
+      if (ctx.prevJobs) queryClient.setQueryData(["jobs"], ctx.prevJobs);
+      if (ctx.prevJob) queryClient.setQueryData(["job", vars.jobId], ctx.prevJob);
+    },
+    onSuccess: (updated) => {
+      const prevJobs = queryClient.getQueryData<Job[]>(["jobs"]);
+      if (prevJobs && Array.isArray(prevJobs)) {
+        queryClient.setQueryData(
+          ["jobs"],
+          prevJobs.map((j) => (j.id === updated.id ? updated : j))
+        );
+      }
+      queryClient.setQueryData(["job", updated.id], updated);
+    },
   });
 
   const archiveMutation = useMutation({

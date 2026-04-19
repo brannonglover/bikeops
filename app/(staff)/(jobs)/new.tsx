@@ -197,10 +197,10 @@ export default function NewJobScreen() {
   const handleSubmit = async () => {
     const customerBikes = (selectedCustomer?.bikes ?? [])
       .filter((b) => selectedCustomerBikeIds.includes(b.id))
-      .map((b) => ({ make: b.make, model: b.model, bikeId: b.id }));
+      .map((b) => ({ make: b.make, model: b.model ?? null, bikeId: b.id }));
     const validManual = manualBikes
       .filter((b) => b.make.trim())
-      .map((b) => ({ make: b.make.trim(), model: b.model.trim() }));
+      .map((b) => ({ make: b.make.trim(), model: b.model.trim() || null }));
     const allBikes = [...customerBikes, ...validManual];
 
     if (allBikes.length === 0) {
@@ -211,7 +211,7 @@ export default function NewJobScreen() {
     try {
       await api.post("/api/jobs", {
         bikeMake: allBikes[0].make,
-        bikeModel: allBikes[0].model,
+        bikeModel: allBikes[0].model ?? null,
         customerId: selectedCustomer?.id ?? null,
         notes: notes.trim() || null,
         serviceIds: selectedServiceIds,

@@ -73,8 +73,40 @@ export default function ChatListScreen() {
       const { data } = await api.get<Conversation[]>("/api/conversations");
       return data;
     },
-    refetchInterval: 5_000,
+    refetchInterval: 15_000,
+    staleTime: 10_000,
   });
+
+  useEffect(() => {
+    if (!customerId || hasNavigatedRef.current) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        type CustomerConvPreview = { conversation: { id: string } | null };
+        const { data: preview } = await api.get<CustomerConvPreview>(
+          `/api/conversations/by-customer/${customerId}`
+        );
+        if (cancelled || hasNavigatedRef.current) return;
+        if (preview?.conversation?.id) {
+          hasNavigatedRef.current = true;
+          router.push(`/(staff)/chat/${preview.conversation.id}`);
+          return;
+        }
+        const { data: newConv } = await api.post<Conversation>(
+          "/api/conversations",
+          { customerId, jobId: null }
+        );
+        if (cancelled || hasNavigatedRef.current) return;
+        hasNavigatedRef.current = true;
+        router.push(`/(staff)/chat/${newConv.id}`);
+      } catch {
+        // fall back to normal list-based behavior below
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [customerId, router]);
 
   const handleRefresh = useCallback(async () => {
     setIsManualRefresh(true);

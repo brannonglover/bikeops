@@ -220,7 +220,7 @@ export default function CustomerDetailScreen() {
     mutationFn: async () => {
       const { data } = await api.post<Bike>(`/api/customers/${id}/bikes`, {
         make: bikeEdit.make.trim(),
-        model: bikeEdit.model.trim(),
+        model: bikeEdit.model.trim() || null,
         nickname: bikeEdit.nickname.trim() || null,
         bikeType: bikeEdit.bikeType,
       });
@@ -262,7 +262,7 @@ export default function CustomerDetailScreen() {
     setAddingBike(false);
     setBikeEdit({
       make: bike.make,
-      model: bike.model,
+      model: bike.model ?? "",
       nickname: bike.nickname ?? "",
       bikeType: bike.bikeType,
     });

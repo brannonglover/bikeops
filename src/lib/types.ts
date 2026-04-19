@@ -29,7 +29,7 @@ export interface Customer {
 export interface Bike {
   id: string;
   make: string;
-  model: string;
+  model: string | null;
   bikeType: BikeType | null;
   nickname: string | null;
   imageUrl: string | null;
@@ -42,7 +42,7 @@ export interface JobBike {
   id: string;
   jobId: string;
   make: string;
-  model: string;
+  model: string | null;
   bikeType: BikeType | null;
   nickname: string | null;
   imageUrl: string | null;
@@ -117,7 +117,7 @@ export interface Payment {
 export interface Job {
   id: string;
   bikeMake: string;
-  bikeModel: string;
+  bikeModel: string | null;
   jobBikes: JobBike[];
   workingOnJobBikeId: string | null;
   stage: Stage;

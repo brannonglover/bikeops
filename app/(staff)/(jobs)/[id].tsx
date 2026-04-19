@@ -45,6 +45,47 @@ type Tab = "details" | "invoice";
 const MAP_HEIGHT = 150;
 const MAP_ZOOM = 15;
 
+type JobPatchBody = Partial<Job> & {
+  completeJobBikeId?: string;
+  uncompleteJobBikeId?: string;
+  waitForPartsJobBikeId?: string;
+  unwaitForPartsJobBikeId?: string;
+};
+
+function applyJobPatchOptimistically(job: Job, patch: JobPatchBody): Job {
+  const next: Job = { ...job, ...patch };
+  const nowIso = new Date().toISOString();
+
+  if (patch.completeJobBikeId) {
+    next.jobBikes = next.jobBikes.map((jb) =>
+      jb.id === patch.completeJobBikeId
+        ? { ...jb, completedAt: nowIso, waitingOnPartsAt: null }
+        : jb
+    );
+  }
+  if (patch.uncompleteJobBikeId) {
+    next.jobBikes = next.jobBikes.map((jb) =>
+      jb.id === patch.uncompleteJobBikeId ? { ...jb, completedAt: null } : jb
+    );
+  }
+  if (patch.waitForPartsJobBikeId) {
+    next.jobBikes = next.jobBikes.map((jb) =>
+      jb.id === patch.waitForPartsJobBikeId
+        ? { ...jb, waitingOnPartsAt: nowIso }
+        : jb
+    );
+  }
+  if (patch.unwaitForPartsJobBikeId) {
+    next.jobBikes = next.jobBikes.map((jb) =>
+      jb.id === patch.unwaitForPartsJobBikeId
+        ? { ...jb, waitingOnPartsAt: null }
+        : jb
+    );
+  }
+
+  return next;
+}
+
 function getTileInfo(lat: number, lng: number, zoom: number) {
   const n = Math.pow(2, zoom);
   const xFloat = ((lng + 180) / 360) * n;
@@ -107,6 +148,11 @@ export default function JobDetailScreen() {
   const [savingWorkingOn, setSavingWorkingOn] = useState(false);
   const [savingComplete, setSavingComplete] = useState<string | null>(null);
   const [savingWaiting, setSavingWaiting] = useState<string | null>(null);
+  const savingTimersRef = useRef<{
+    workingOn?: ReturnType<typeof setTimeout>;
+    complete?: ReturnType<typeof setTimeout>;
+    waiting?: ReturnType<typeof setTimeout>;
+  }>({});
   const [editAddress, setEditAddress] = useState<string | null>(null);
   const [addressCoords, setAddressCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [mapWidth, setMapWidth] = useState(0);
@@ -124,6 +170,14 @@ export default function JobDetailScreen() {
   const [internalNotesValue, setInternalNotesValue] = useState("");
   const [savingInternalNotes, setSavingInternalNotes] = useState(false);
   const [openingChat, setOpeningChat] = useState(false);
+
+  useEffect(() => {
+    return () => {
+      if (savingTimersRef.current.workingOn) clearTimeout(savingTimersRef.current.workingOn);
+      if (savingTimersRef.current.complete) clearTimeout(savingTimersRef.current.complete);
+      if (savingTimersRef.current.waiting) clearTimeout(savingTimersRef.current.waiting);
+    };
+  }, []);
 
   const styles = useMemo(
     () =>
@@ -667,13 +721,46 @@ export default function JobDetailScreen() {
   }, [refetch]);
 
   const patchJob = useMutation({
-    mutationFn: async (body: Partial<Job>) => {
+    mutationFn: async (body: JobPatchBody) => {
       const { data } = await api.patch<Job>(`/api/jobs/${id}`, body);
       return data;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["job", id] });
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    onMutate: async (body) => {
+      await queryClient.cancelQueries({ queryKey: ["job", id] });
+      await queryClient.cancelQueries({ queryKey: ["jobs"] });
+
+      const prevJob = queryClient.getQueryData<Job>(["job", id]);
+      const prevJobs = queryClient.getQueryData<Job[]>(["jobs"]);
+
+      if (prevJob) {
+        const optimistic = applyJobPatchOptimistically(prevJob, body);
+        queryClient.setQueryData(["job", id], optimistic);
+      }
+      if (prevJobs && Array.isArray(prevJobs)) {
+        queryClient.setQueryData(
+          ["jobs"],
+          prevJobs.map((j) =>
+            j.id === id ? applyJobPatchOptimistically(j, body) : j
+          )
+        );
+      }
+
+      return { prevJob, prevJobs };
+    },
+    onError: (_err, _body, ctx) => {
+      if (!ctx) return;
+      if (ctx.prevJob) queryClient.setQueryData(["job", id], ctx.prevJob);
+      if (ctx.prevJobs) queryClient.setQueryData(["jobs"], ctx.prevJobs);
+    },
+    onSuccess: (updated) => {
+      queryClient.setQueryData(["job", id], updated);
+      const prevJobs = queryClient.getQueryData<Job[]>(["jobs"]);
+      if (prevJobs && Array.isArray(prevJobs)) {
+        queryClient.setQueryData(
+          ["jobs"],
+          prevJobs.map((j) => (j.id === updated.id ? updated : j))
+        );
+      }
     },
   });
 
@@ -709,9 +796,20 @@ export default function JobDetailScreen() {
     if (trimmed === current) return;
     setSavingInternalNotes(true);
     try {
-      await api.patch(`/api/jobs/${job.id}`, { internalNotes: trimmed || null });
-      queryClient.invalidateQueries({ queryKey: ["job", id] });
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      const nextInternalNotes = trimmed || null;
+      await api.patch(`/api/jobs/${job.id}`, { internalNotes: nextInternalNotes });
+
+      const prevJob = queryClient.getQueryData<Job>(["job", id]);
+      if (prevJob) {
+        queryClient.setQueryData(["job", id], { ...prevJob, internalNotes: nextInternalNotes });
+      }
+      const prevJobs = queryClient.getQueryData<Job[]>(["jobs"]);
+      if (prevJobs && Array.isArray(prevJobs)) {
+        queryClient.setQueryData(
+          ["jobs"],
+          prevJobs.map((j) => (j.id === job.id ? { ...j, internalNotes: nextInternalNotes } : j))
+        );
+      }
     } finally {
       setSavingInternalNotes(false);
     }
@@ -847,6 +945,8 @@ export default function JobDetailScreen() {
       if (savingWorkingOn || !job) return;
       const nextId = job.workingOnJobBikeId === bikeId ? null : bikeId;
       setSavingWorkingOn(true);
+      if (savingTimersRef.current.workingOn) clearTimeout(savingTimersRef.current.workingOn);
+      savingTimersRef.current.workingOn = setTimeout(() => setSavingWorkingOn(false), 350);
       const patch: Record<string, unknown> = { workingOnJobBikeId: nextId };
       if (nextId && job.stage !== "WORKING_ON") {
         patch.stage = "WORKING_ON";
@@ -873,6 +973,8 @@ export default function JobDetailScreen() {
     (bikeId: string, isCompleted: boolean) => {
       if (savingComplete || !job) return;
       setSavingComplete(bikeId);
+      if (savingTimersRef.current.complete) clearTimeout(savingTimersRef.current.complete);
+      savingTimersRef.current.complete = setTimeout(() => setSavingComplete(null), 350);
       const patch: Record<string, unknown> = isCompleted
         ? { uncompleteJobBikeId: bikeId }
         : { completeJobBikeId: bikeId };
@@ -904,6 +1006,8 @@ export default function JobDetailScreen() {
     (bikeId: string) => {
       if (savingWaiting) return;
       setSavingWaiting(bikeId);
+      if (savingTimersRef.current.waiting) clearTimeout(savingTimersRef.current.waiting);
+      savingTimersRef.current.waiting = setTimeout(() => setSavingWaiting(null), 350);
       patchJob.mutate(
         { waitForPartsJobBikeId: bikeId } as unknown as Partial<Job>,
         { onSettled: () => setSavingWaiting(null) }
@@ -959,6 +1063,8 @@ export default function JobDetailScreen() {
     (bikeId: string) => {
       if (savingWaiting) return;
       setSavingWaiting(bikeId);
+      if (savingTimersRef.current.waiting) clearTimeout(savingTimersRef.current.waiting);
+      savingTimersRef.current.waiting = setTimeout(() => setSavingWaiting(null), 350);
       patchJob.mutate(
         {
           stage: "WORKING_ON",
@@ -1087,7 +1193,13 @@ export default function JobDetailScreen() {
   const handleInvoiceJobUpdated = useCallback(
     (updated: Job) => {
       queryClient.setQueryData(["job", id], updated);
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      const prevJobs = queryClient.getQueryData<Job[]>(["jobs"]);
+      if (prevJobs && Array.isArray(prevJobs)) {
+        queryClient.setQueryData(
+          ["jobs"],
+          prevJobs.map((j) => (j.id === updated.id ? updated : j))
+        );
+      }
     },
     [queryClient, id]
   );
@@ -1108,18 +1220,19 @@ export default function JobDetailScreen() {
         return;
       }
 
-      const { data: convs } = await api.get<Conversation[]>("/api/conversations");
-      queryClient.setQueryData(["conversations"], convs);
-      const existing = findConv(convs);
-      if (existing) {
-        router.push(`/(staff)/chat/${existing.id}` as never);
+      type CustomerConvPreview = { conversation: { id: string } | null };
+      const { data: preview } = await api.get<CustomerConvPreview>(
+        `/api/conversations/by-customer/${job.customer!.id}`
+      );
+      if (preview?.conversation?.id) {
+        router.push(`/(staff)/chat/${preview.conversation.id}` as never);
         return;
       }
 
       const { data: newConv } = await api.post<Conversation>("/api/conversations", {
         customerId: job.customer!.id,
+        jobId: null,
       });
-      queryClient.invalidateQueries({ queryKey: ["conversations"] });
       router.push(`/(staff)/chat/${newConv.id}` as never);
     } catch {
       Alert.alert("Error", "Failed to open chat");

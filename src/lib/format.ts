@@ -46,8 +46,8 @@ export function customerName(customer: {
     : customer.firstName;
 }
 
-export function jobBikeLabel(job: { bikeMake: string; bikeModel: string }): string {
-  return `${job.bikeMake} ${job.bikeModel}`;
+export function jobBikeLabel(job: { bikeMake: string; bikeModel: string | null }): string {
+  return formatMakeModel(job.bikeMake, job.bikeModel);
 }
 
 function isJobBikeUnlinkedFromProfile(jb: JobBike): boolean {
@@ -57,7 +57,7 @@ function isJobBikeUnlinkedFromProfile(jb: JobBike): boolean {
 function resolveJobBikeMakeModel(
   job: Job,
   jb: JobBike
-): { make: string; model: string } {
+): { make: string; model: string | null } {
   const customerBikes = job.customer?.bikes;
   if (customerBikes?.length === 1 && isJobBikeUnlinkedFromProfile(jb)) {
     return { make: customerBikes[0].make, model: customerBikes[0].model };
@@ -68,12 +68,19 @@ function resolveJobBikeMakeModel(
   return { make: jb.make, model: jb.model };
 }
 
-function resolveLegacyJobMakeModel(job: Job): { make: string; model: string } {
+function resolveLegacyJobMakeModel(job: Job): { make: string; model: string | null } {
   if (job.customer?.bikes?.length === 1) {
     const cb = job.customer.bikes[0];
     return { make: cb.make, model: cb.model };
   }
   return { make: job.bikeMake, model: job.bikeModel };
+}
+
+function formatMakeModel(make: string | null | undefined, model: string | null | undefined): string {
+  const safeMake = (make ?? "").trim();
+  const safeModel = (model ?? "").trim();
+  const joined = [safeMake, safeModel].filter(Boolean).join(" ").trim();
+  return joined || "Bike";
 }
 
 /**
@@ -87,16 +94,16 @@ export function getJobBikeDisplayTitle(job: Job): string {
   );
 
   if (rows.length === 0) {
-    if (job.bikeMake === "Multiple") return job.bikeModel;
+    if (job.bikeMake === "Multiple") return (job.bikeModel ?? "").trim() || "Multiple";
     const leg = resolveLegacyJobMakeModel(job);
-    return `${leg.make} ${leg.model}`.trim();
+    return formatMakeModel(leg.make, leg.model);
   }
   if (rows.length === 1) {
     const dp = resolveJobBikeMakeModel(job, rows[0]);
-    return `${dp.make} ${dp.model}`.trim();
+    return formatMakeModel(dp.make, dp.model);
   }
-  if (job.bikeMake === "Multiple") return job.bikeModel;
-  return `${job.bikeMake} ${job.bikeModel}`.trim();
+  if (job.bikeMake === "Multiple") return (job.bikeModel ?? "").trim() || "Multiple";
+  return formatMakeModel(job.bikeMake, job.bikeModel);
 }
 
 export function formatPhoneNumber(raw: string): string {
