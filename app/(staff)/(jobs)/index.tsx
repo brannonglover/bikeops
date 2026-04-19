@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useRef } from "react";
+import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import {
   View,
   Text,
@@ -52,8 +52,22 @@ export default function JobBoardScreen() {
   }, [refetch]);
 
   const patchStage = useMutation({
-    mutationFn: async ({ jobId, stage }: { jobId: string; stage: Stage }) => {
-      const { data } = await api.patch<Job>(`/api/jobs/${jobId}`, { stage });
+    mutationFn: async ({
+      jobId,
+      stage,
+      notifyCustomer,
+      completedAt,
+    }: {
+      jobId: string;
+      stage: Stage;
+      notifyCustomer?: boolean;
+      completedAt?: string | null;
+    }) => {
+      const { data } = await api.patch<Job>(`/api/jobs/${jobId}`, {
+        stage,
+        ...(typeof notifyCustomer === "boolean" ? { notifyCustomer } : {}),
+        ...(typeof completedAt !== "undefined" ? { completedAt } : {}),
+      });
       return data;
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["jobs"] }),
@@ -108,6 +122,27 @@ export default function JobBoardScreen() {
     },
     [patchStage]
   );
+
+  useEffect(() => {
+    // Guardrail: some payment flows may mark a job as COMPLETED even when bikes
+    // are not actually finished. Keep those jobs in an in-progress stage so the
+    // shop can manually complete later.
+    const needsFix = jobs.filter(
+      (j) =>
+        j.stage === "COMPLETED" &&
+        j.paymentStatus === "PAID" &&
+        j.jobBikes.some((b) => !b.completedAt)
+    );
+    if (needsFix.length === 0) return;
+    for (const j of needsFix) {
+      patchStage.mutate({
+        jobId: j.id,
+        stage: j.workingOnJobBikeId ? "WORKING_ON" : "RECEIVED",
+        notifyCustomer: false,
+        completedAt: null,
+      });
+    }
+  }, [jobs, patchStage]);
 
   const jobsByStage = useMemo(
     () =>

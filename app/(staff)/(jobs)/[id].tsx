@@ -681,6 +681,27 @@ export default function JobDetailScreen() {
     setInternalNotesValue(job?.internalNotes ?? "");
   }, [job?.id]);
 
+  const lastNonCompletedStageRef = useRef<Stage | null>(null);
+  useEffect(() => {
+    if (!job) return;
+    if (job.stage !== "COMPLETED") lastNonCompletedStageRef.current = job.stage;
+  }, [job?.stage, job?.id]);
+
+  useEffect(() => {
+    if (!job) return;
+    if (patchJob.isPending) return;
+    if (job.stage !== "COMPLETED") return;
+    if (job.paymentStatus !== "PAID") return;
+    const hasIncompleteBike = job.jobBikes.some((jb) => !jb.completedAt);
+    if (!hasIncompleteBike) return;
+
+    const restoreStage = lastNonCompletedStageRef.current ?? "RECEIVED";
+    if (restoreStage === "COMPLETED") return;
+    patchJob.mutate(
+      { stage: restoreStage, completedAt: null, notifyCustomer: false } as unknown as Partial<Job>
+    );
+  }, [job?.id, job?.stage, job?.paymentStatus, job?.jobBikes, patchJob.isPending]);
+
   const handleSaveInternalNotes = useCallback(async () => {
     if (!job) return;
     const trimmed = internalNotesValue.trim();
@@ -850,16 +871,33 @@ export default function JobDetailScreen() {
 
   const handleToggleComplete = useCallback(
     (bikeId: string, isCompleted: boolean) => {
-      if (savingComplete) return;
+      if (savingComplete || !job) return;
       setSavingComplete(bikeId);
-      const body = isCompleted
+      const patch: Record<string, unknown> = isCompleted
         ? { uncompleteJobBikeId: bikeId }
         : { completeJobBikeId: bikeId };
-      patchJob.mutate(body as unknown as Partial<Job>, {
+
+      if (!isCompleted) {
+        const allCompletedAfter = job.jobBikes.every(
+          (jb) => !!jb.completedAt || jb.id === bikeId
+        );
+        if (allCompletedAfter) {
+          patch.stage = "BIKE_READY";
+          patch.workingOnJobBikeId = null;
+          patch.completedAt = null;
+        } else if (job.workingOnJobBikeId === bikeId) {
+          const nextActive = job.jobBikes.find(
+            (jb) => jb.id !== bikeId && !jb.completedAt
+          );
+          patch.workingOnJobBikeId = nextActive?.id ?? null;
+        }
+      }
+
+      patchJob.mutate(patch as unknown as Partial<Job>, {
         onSettled: () => setSavingComplete(null),
       });
     },
-    [savingComplete, patchJob]
+    [job, savingComplete, patchJob]
   );
 
   const handleWaitForParts = useCallback(

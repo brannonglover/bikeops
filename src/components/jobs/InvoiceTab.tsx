@@ -1730,8 +1730,8 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
               <View style={{ flex: 1 }}>
                 <Text style={styles.cashModalTitle}>Record cash payment</Text>
                 <Text style={styles.cashModalDesc}>
-                  {formatCurrency(total)} will be marked as paid. The job will
-                  be completed.
+                  {formatCurrency(total)} will be marked as paid. You can mark
+                  the job as completed when you're ready.
                 </Text>
               </View>
             </View>
