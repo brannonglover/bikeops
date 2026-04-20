@@ -4,19 +4,21 @@ import {
   Text,
   ScrollView,
   TouchableOpacity,
+  BackHandler,
   Alert,
   RefreshControl,
   StyleSheet,
   Image,
   Animated,
   Platform,
+  Keyboard,
   Linking,
   Modal,
   Pressable,
   KeyboardAvoidingView,
   TextInput,
 } from "react-native";
-import { useLocalSearchParams, useRouter, Stack } from "expo-router";
+import { useLocalSearchParams, useRouter, Stack, useFocusEffect } from "expo-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/lib/api";
@@ -1245,11 +1247,71 @@ export default function JobDetailScreen() {
 
   const total = jobTotal(job.jobServices, job.jobProducts);
 
+  const handleBack = useCallback(() => {
+    Keyboard.dismiss();
+
+    if (showRejectModal) {
+      setShowRejectModal(false);
+      return;
+    }
+    if (showCancelModal) {
+      setShowCancelModal(false);
+      return;
+    }
+    if (showDatePicker !== null) {
+      setShowDatePicker(null);
+      return;
+    }
+    if (viewingImageUrl) {
+      setViewingImageUrl(null);
+      return;
+    }
+    if (showActionMenu) {
+      closeActionMenu();
+      return;
+    }
+    if (showStageMenu) {
+      setShowStageMenu(false);
+      return;
+    }
+
+    router.back();
+  }, [
+    showRejectModal,
+    showCancelModal,
+    showDatePicker,
+    viewingImageUrl,
+    showActionMenu,
+    showStageMenu,
+    closeActionMenu,
+    router,
+  ]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (Platform.OS !== "android") return;
+      const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+        handleBack();
+        return true;
+      });
+      return () => sub.remove();
+    }, [handleBack])
+  );
+
   return (
     <>
       <Stack.Screen
         options={{
           title: getJobBikeDisplayTitle(job),
+          headerLeft: () => (
+            <TouchableOpacity
+              onPress={handleBack}
+              style={{ padding: spacing[2] }}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Ionicons name="chevron-back" size={22} color={theme.text} />
+            </TouchableOpacity>
+          ),
           headerRight: () => (
             <TouchableOpacity onPress={openActionMenu} style={{ padding: spacing[2] }}>
               <Ionicons name="ellipsis-vertical" size={20} color={theme.text} />
