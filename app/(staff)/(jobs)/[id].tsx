@@ -776,11 +776,20 @@ export default function JobDetailScreen() {
     if (job.stage !== "COMPLETED") lastNonCompletedStageRef.current = job.stage;
   }, [job?.stage, job?.id]);
 
+  const prevPaymentStatusRef = useRef<Job["paymentStatus"] | null>(null);
+  const prevPaymentStatus = prevPaymentStatusRef.current;
+  useEffect(() => {
+    prevPaymentStatusRef.current = job?.paymentStatus ?? null;
+  }, [job?.id, job?.paymentStatus]);
+
   useEffect(() => {
     if (!job) return;
     if (patchJob.isPending) return;
     if (job.stage !== "COMPLETED") return;
     if (job.paymentStatus !== "PAID") return;
+    // Only undo auto-completion that happened due to a payment event. If the
+    // user manually marks the job as completed later, don't fight them.
+    if (prevPaymentStatus === "PAID") return;
     const hasIncompleteBike = job.jobBikes.some((jb) => !jb.completedAt);
     if (!hasIncompleteBike) return;
 
