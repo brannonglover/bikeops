@@ -8,6 +8,45 @@ import {
   type NotificationData,
 } from "@/lib/notifications";
 
+function normalizeNotificationData(raw: unknown): NotificationData | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+
+  let candidate: Record<string, unknown> = obj;
+  if (obj.data && typeof obj.data === "object") candidate = obj.data as Record<string, unknown>;
+  if (obj.data && typeof obj.data === "string") {
+    try {
+      const parsed = JSON.parse(obj.data);
+      if (parsed && typeof parsed === "object") candidate = parsed as Record<string, unknown>;
+    } catch {
+      // ignore
+    }
+  }
+
+  const rawType = candidate.type ?? obj.type;
+  if (typeof rawType !== "string" || rawType.length === 0) return null;
+  const type = rawType.toLowerCase() as NotificationData["type"];
+
+  const jobId =
+    (typeof candidate.jobId === "string" ? candidate.jobId : undefined) ??
+    (typeof (candidate as Record<string, unknown>).job_id === "string"
+      ? ((candidate as Record<string, unknown>).job_id as string)
+      : undefined);
+
+  const conversationId =
+    (typeof candidate.conversationId === "string" ? candidate.conversationId : undefined) ??
+    (typeof (candidate as Record<string, unknown>).conversation_id === "string"
+      ? ((candidate as Record<string, unknown>).conversation_id as string)
+      : undefined);
+
+  return {
+    ...(candidate as Record<string, unknown>),
+    type,
+    ...(jobId ? { jobId } : null),
+    ...(conversationId ? { conversationId } : null),
+  } as NotificationData;
+}
+
 function routeForNotification(
   data: NotificationData,
   role: "staff" | "customer"
@@ -93,11 +132,12 @@ export function useNotifications() {
 
     Notifications.getLastNotificationResponseAsync().then((response) => {
       if (!response) return;
-      const data = response.notification.request.content
-        .data as NotificationData;
-      const route = routeForNotification(data, role);
+      const raw = response.notification.request.content.data;
+      const data = normalizeNotificationData(raw);
+      const route = data ? routeForNotification(data, role) : null;
       if (route) {
-        router.push(route as never);
+        // Use replace so the index Redirect can't "win" and leave you on the job board.
+        setTimeout(() => router.replace(route as never), 0);
       }
     });
   }, [role, router]);
@@ -107,11 +147,11 @@ export function useNotifications() {
 
     const responseSubscription =
       Notifications.addNotificationResponseReceivedListener((response) => {
-        const data = response.notification.request.content
-          .data as NotificationData;
-        const route = routeForNotification(data, role);
+        const raw = response.notification.request.content.data;
+        const data = normalizeNotificationData(raw);
+        const route = data ? routeForNotification(data, role) : null;
         if (route) {
-          router.push(route as never);
+          router.replace(route as never);
         }
       });
 
