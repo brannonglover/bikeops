@@ -14,6 +14,7 @@ import {
   Alert,
   Keyboard,
   Linking,
+  ActivityIndicator,
   type NativeSyntheticEvent,
   type NativeScrollEvent,
 } from "react-native";
@@ -70,6 +71,29 @@ export default function CustomerChatScreen() {
   const [activeMessage, setActiveMessage] = useState<ChatMessage | null>(null);
   const [viewingImageUrl, setViewingImageUrl] = useState<string | null>(null);
 
+  const deliveryTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  useEffect(() => {
+    return () => {
+      for (const timeoutId of Object.values(deliveryTimeoutsRef.current)) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, []);
+
+  const clearClientDeliveryStateLater = useCallback((messageId: string) => {
+    const existing = deliveryTimeoutsRef.current[messageId];
+    if (existing) clearTimeout(existing);
+
+    deliveryTimeoutsRef.current[messageId] = setTimeout(() => {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === messageId ? { ...m, clientDeliveryState: undefined } : m
+        )
+      );
+      delete deliveryTimeoutsRef.current[messageId];
+    }, 2000);
+  }, []);
+
   useEffect(() => {
     isCustomerAuthenticated().then((authed) =>
       setAuthState(authed ? "authenticated" : "needs_login")
@@ -108,6 +132,24 @@ export default function CustomerChatScreen() {
       });
   }, [token, setCustomerAuthenticated]);
 
+  const mergeServerMessages = useCallback((serverMessages: ChatMessage[]) => {
+    setMessages((prev) => {
+      const prevById = new Map(prev.map((m) => [m.id, m]));
+      const merged = serverMessages.map((m) => {
+        const prevMsg = prevById.get(m.id);
+        return prevMsg?.clientDeliveryState
+          ? { ...m, clientDeliveryState: prevMsg.clientDeliveryState }
+          : m;
+      });
+
+      const serverIds = new Set(serverMessages.map((m) => m.id));
+      const optimistic = prev.filter(
+        (m) => m.id.startsWith("temp-") && !serverIds.has(m.id)
+      );
+      return [...merged, ...optimistic];
+    });
+  }, []);
+
   const fetchMessages = useCallback(async () => {
     if (authState !== "authenticated") return;
     try {
@@ -116,15 +158,15 @@ export default function CustomerChatScreen() {
         | { messages: ChatMessage[]; staffLastReadAt: string | null }
       >("/api/chat/conversation/messages", { role: "customer" });
       if (Array.isArray(data)) {
-        setMessages(data);
+        mergeServerMessages(data);
       } else {
-        setMessages(data.messages ?? []);
+        mergeServerMessages(data.messages ?? []);
         setStaffLastReadAt(data.staffLastReadAt ?? null);
       }
     } catch {
       // ignore
     }
-  }, [authState]);
+  }, [authState, mergeServerMessages]);
 
   useEffect(() => {
     fetchMessages();
@@ -219,6 +261,7 @@ export default function CustomerChatScreen() {
       reactions: [],
       createdAt: new Date().toISOString(),
       editedAt: null,
+      clientDeliveryState: "SENDING",
     };
 
     setMessages((prev) => [...prev, optimisticMsg]);
@@ -237,14 +280,18 @@ export default function CustomerChatScreen() {
         },
         { role: "customer" }
       );
-      setMessages((prev) => prev.map((m) => (m.id === tempId ? newMsg : m)));
+      const deliveredMsg: ChatMessage = { ...newMsg, clientDeliveryState: "DELIVERED" };
+      setMessages((prev) =>
+        prev.map((m) => (m.id === tempId ? deliveredMsg : m))
+      );
+      clearClientDeliveryStateLater(deliveredMsg.id);
     } catch {
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
       Alert.alert("Error", "Failed to send message");
     } finally {
       setSending(false);
     }
-  }, [text, pendingImages]);
+  }, [text, pendingImages, clearClientDeliveryStateLater]);
 
   const handlePickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -555,6 +602,23 @@ export default function CustomerChatScreen() {
           color: theme.textMuted,
           alignSelf: "flex-end",
           marginTop: 2,
+        },
+        deliveryRow: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: spacing[1],
+          marginTop: 2,
+        },
+        deliveryRowOwn: {
+          alignSelf: "flex-end",
+        },
+        deliveryText: {
+          ...fontSize.xs,
+          color: theme.textMuted,
+        },
+        deliveryTextError: {
+          ...fontSize.xs,
+          color: colors.red[500],
         },
         reactionRow: {
           position: "absolute",
@@ -892,6 +956,30 @@ export default function CustomerChatScreen() {
                     </Text>
                   </TouchableOpacity>
                 )}
+                {isOwn && item.clientDeliveryState ? (
+                  <View style={[styles.deliveryRow, styles.deliveryRowOwn]}>
+                    {item.clientDeliveryState === "SENDING" ? (
+                      <>
+                        <ActivityIndicator size="small" color={theme.textMuted} />
+                        <Text style={styles.deliveryText}>Sending…</Text>
+                      </>
+                    ) : item.clientDeliveryState === "DELIVERED" ? (
+                      <>
+                        <Ionicons name="checkmark" size={14} color={theme.textMuted} />
+                        <Text style={styles.deliveryText}>Delivered</Text>
+                      </>
+                    ) : (
+                      <>
+                        <Ionicons
+                          name="alert-circle-outline"
+                          size={14}
+                          color={colors.red[500]}
+                        />
+                        <Text style={styles.deliveryTextError}>Not delivered</Text>
+                      </>
+                    )}
+                  </View>
+                ) : null}
                 {item.body
                   ? extractUrls(item.body).map((url) => (
                       <LinkPreview key={url} url={url} />

@@ -13,10 +13,11 @@ import {
   StyleSheet,
   Alert,
   Keyboard,
+  ActivityIndicator,
   type NativeSyntheticEvent,
   type NativeScrollEvent,
 } from "react-native";
-import { useLocalSearchParams, Stack } from "expo-router";
+import { useLocalSearchParams, Stack, useRouter } from "expo-router";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
@@ -44,11 +45,47 @@ function paramToString(v: string | string[] | undefined): string | undefined {
   return s && s.length > 0 ? s : undefined;
 }
 
+function conversationBikeLabel(conversation: Conversation | undefined): string | null {
+  if (!conversation) return null;
+
+  const formatBike = (bike: { make: string; model: string | null; nickname: string | null }) => {
+    const makeModel = [bike.make, bike.model].filter(Boolean).join(" ").trim();
+    const nickname = bike.nickname?.trim();
+    if (makeModel && nickname) return `${makeModel} · ${nickname}`;
+    return makeModel || nickname || "";
+  };
+
+  if (conversation.job) {
+    const jobBikes = conversation.job.jobBikes ?? [];
+    if (jobBikes.length > 0) {
+      const primary = formatBike(jobBikes[0]);
+      if (!primary) return null;
+      return jobBikes.length > 1 ? `${primary} (+${jobBikes.length - 1})` : primary;
+    }
+
+    const jobBike = [conversation.job.bikeMake, conversation.job.bikeModel]
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+    return jobBike || null;
+  }
+
+  const customerBikes = conversation.customer?.bikes ?? [];
+  if (customerBikes.length > 0) {
+    const primary = formatBike(customerBikes[0]);
+    if (!primary) return null;
+    return customerBikes.length > 1 ? `${primary} (+${customerBikes.length - 1})` : primary;
+  }
+
+  return null;
+}
+
 const POLL_MS = 3000;
 const REACTION_EMOJIS = ["\u{1F44D}", "\u{2764}\u{FE0F}", "\u{1F602}", "\u{1F62E}", "\u{1F622}", "\u{1F64F}"];
 
 export default function ConversationScreen() {
   const { theme } = useTheme();
+  const router = useRouter();
   const params = useLocalSearchParams<{ id?: string | string[] }>();
   const id = paramToString(params.id);
   const queryClient = useQueryClient();
@@ -64,6 +101,52 @@ export default function ConversationScreen() {
   const [editingMessage, setEditingMessage] = useState<ChatMessage | null>(null);
   const [activeMessage, setActiveMessage] = useState<ChatMessage | null>(null);
   const [viewingImageUrl, setViewingImageUrl] = useState<string | null>(null);
+
+  type MessagesData =
+    | ChatMessage[]
+    | {
+        messages: ChatMessage[];
+        customerTypingAt: string | null;
+        customerLastReadAt: string | null;
+        staffLastReadAt: string | null;
+      }
+    | undefined;
+
+  const deliveryTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  useEffect(() => {
+    return () => {
+      for (const timeoutId of Object.values(deliveryTimeoutsRef.current)) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, []);
+
+  const clearClientDeliveryStateLater = useCallback(
+    (messageId: string) => {
+      if (!id) return;
+      const existing = deliveryTimeoutsRef.current[messageId];
+      if (existing) clearTimeout(existing);
+
+      deliveryTimeoutsRef.current[messageId] = setTimeout(() => {
+        queryClient.setQueryData<MessagesData>(["messages", id], (old) => {
+          if (!old) return old;
+          if (Array.isArray(old)) {
+            return old.map((m) =>
+              m.id === messageId ? { ...m, clientDeliveryState: undefined } : m
+            );
+          }
+          return {
+            ...old,
+            messages: old.messages.map((m) =>
+              m.id === messageId ? { ...m, clientDeliveryState: undefined } : m
+            ),
+          };
+        });
+        delete deliveryTimeoutsRef.current[messageId];
+      }, 2000);
+    },
+    [id, queryClient]
+  );
 
   type InviteStatus = "idle" | "pending" | "active";
   const [inviteStatus, setInviteStatus] = useState<InviteStatus>("idle");
@@ -156,6 +239,23 @@ export default function ConversationScreen() {
           color: theme.textMuted,
           alignSelf: "flex-end",
           marginTop: 2,
+        },
+        deliveryRow: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: spacing[1],
+          marginTop: 2,
+        },
+        deliveryRowOwn: {
+          alignSelf: "flex-end",
+        },
+        deliveryText: {
+          ...fontSize.xs,
+          color: theme.textMuted,
+        },
+        deliveryTextError: {
+          ...fontSize.xs,
+          color: colors.red[500],
         },
         typing: {
           ...fontSize.sm,
@@ -493,7 +593,33 @@ export default function ConversationScreen() {
             staffLastReadAt: string | null;
           }
       >(`/api/conversations/${id}/messages`);
-      return data;
+      const previous = queryClient.getQueryData<MessagesData>(["messages", id]);
+      const prevMessages: ChatMessage[] = previous
+        ? Array.isArray(previous)
+          ? previous
+          : previous.messages
+        : [];
+
+      const serverMessages: ChatMessage[] = Array.isArray(data)
+        ? data
+        : data.messages ?? [];
+
+      const prevById = new Map(prevMessages.map((m) => [m.id, m]));
+      const merged = serverMessages.map((m) => {
+        const prev = prevById.get(m.id);
+        return prev?.clientDeliveryState
+          ? { ...m, clientDeliveryState: prev.clientDeliveryState }
+          : m;
+      });
+
+      const serverIds = new Set(serverMessages.map((m) => m.id));
+      const optimistic = prevMessages.filter(
+        (m) => m.id.startsWith("temp-") && !serverIds.has(m.id)
+      );
+      const combined = [...merged, ...optimistic];
+
+      if (Array.isArray(data)) return combined;
+      return { ...data, messages: combined };
     },
     enabled: !!id,
     refetchInterval: POLL_MS,
@@ -628,17 +754,8 @@ export default function ConversationScreen() {
       reactions: [],
       createdAt: new Date().toISOString(),
       editedAt: null,
+      clientDeliveryState: "SENDING",
     };
-
-    type MessagesData =
-      | ChatMessage[]
-      | {
-          messages: ChatMessage[];
-          customerTypingAt: string | null;
-          customerLastReadAt: string | null;
-          staffLastReadAt: string | null;
-        }
-      | undefined;
 
     queryClient.setQueryData<MessagesData>(["messages", id], (old) => {
       if (!old) return old;
@@ -653,11 +770,21 @@ export default function ConversationScreen() {
     setSending(true);
 
     try {
-      await api.post(`/api/conversations/${id}/messages`, {
+      const { data: newMsg } = await api.post<ChatMessage>(`/api/conversations/${id}/messages`, {
         sender: "STAFF",
         body: textToSend || null,
         attachmentIds: imagesToSend.map((p) => p.id),
       });
+      const deliveredMsg: ChatMessage = { ...newMsg, clientDeliveryState: "DELIVERED" };
+      queryClient.setQueryData<MessagesData>(["messages", id], (old) => {
+        if (!old) return old;
+        if (Array.isArray(old)) return old.map((m) => (m.id === tempId ? deliveredMsg : m));
+        return {
+          ...old,
+          messages: old.messages.map((m) => (m.id === tempId ? deliveredMsg : m)),
+        };
+      });
+      clearClientDeliveryStateLater(deliveredMsg.id);
       queryClient.invalidateQueries({ queryKey: ["messages", id] });
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
     } catch {
@@ -670,7 +797,7 @@ export default function ConversationScreen() {
     } finally {
       setSending(false);
     }
-  }, [id, text, pendingImages, queryClient]);
+  }, [id, text, pendingImages, queryClient, clearClientDeliveryStateLater]);
 
   const handlePickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -895,9 +1022,56 @@ export default function ConversationScreen() {
     <>
       <Stack.Screen
         options={{
-          title: conversation
-            ? customerName(conversation.customer)
-            : "Conversation",
+          headerTitle: () => {
+            const name = conversation
+              ? customerName(conversation.customer)
+              : "Conversation";
+            const bike = conversationBikeLabel(conversation);
+            const canOpenCustomer = !!conversation?.customer?.id;
+
+            return (
+              <Pressable
+                onPress={() => {
+                  if (!conversation?.customer?.id) return;
+                  router.push(`/(staff)/customers/${conversation.customer.id}`);
+                }}
+                disabled={!canOpenCustomer}
+                accessibilityRole={canOpenCustomer ? "button" : undefined}
+                accessibilityLabel={
+                  canOpenCustomer ? `Open ${name} profile` : undefined
+                }
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                style={({ pressed }) => ({
+                  alignItems: Platform.OS === "android" ? "flex-start" : "center",
+                  opacity: canOpenCustomer && pressed ? 0.6 : 1,
+                })}
+              >
+                <Text
+                  style={{
+                    ...fontSize.base,
+                    lineHeight: 20,
+                    fontWeight: "700",
+                    color: theme.text,
+                  }}
+                  numberOfLines={1}
+                >
+                  {name}
+                </Text>
+                {bike ? (
+                  <Text
+                    style={{
+                      ...fontSize.xs,
+                      fontWeight: "500",
+                      color: theme.textSecondary,
+                    }}
+                    numberOfLines={1}
+                  >
+                    {bike}
+                  </Text>
+                ) : null}
+              </Pressable>
+            );
+          },
           headerRight: conversation?.customer?.email
             ? () => {
                 const iconColor =
@@ -1066,6 +1240,30 @@ export default function ConversationScreen() {
                     </Text>
                   </TouchableOpacity>
                 )}
+                {isOwn && item.clientDeliveryState ? (
+                  <View style={[styles.deliveryRow, styles.deliveryRowOwn]}>
+                    {item.clientDeliveryState === "SENDING" ? (
+                      <>
+                        <ActivityIndicator size="small" color={theme.textMuted} />
+                        <Text style={styles.deliveryText}>Sending…</Text>
+                      </>
+                    ) : item.clientDeliveryState === "DELIVERED" ? (
+                      <>
+                        <Ionicons name="checkmark" size={14} color={theme.textMuted} />
+                        <Text style={styles.deliveryText}>Delivered</Text>
+                      </>
+                    ) : (
+                      <>
+                        <Ionicons
+                          name="alert-circle-outline"
+                          size={14}
+                          color={colors.red[500]}
+                        />
+                        <Text style={styles.deliveryTextError}>Not delivered</Text>
+                      </>
+                    )}
+                  </View>
+                ) : null}
                 {item.body
                   ? extractUrls(item.body).map((url) => (
                       <LinkPreview key={url} url={url} />
