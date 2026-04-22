@@ -23,7 +23,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import { api, resolveUrl } from "@/lib/api";
-import { type ChatMessage, type Conversation } from "@/lib/types";
+import { type Bike, type ChatMessage, type Conversation, type Job } from "@/lib/types";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
@@ -45,7 +45,12 @@ function paramToString(v: string | string[] | undefined): string | undefined {
   return s && s.length > 0 ? s : undefined;
 }
 
-function conversationBikeLabel(conversation: Conversation | undefined): string | null {
+type BikeLike = { make: string; model: string | null; nickname: string | null };
+
+function conversationBikeLabel(
+  conversation: Conversation | undefined,
+  opts?: { customerBikes?: BikeLike[] }
+): string | null {
   if (!conversation) return null;
 
   const formatBike = (bike: { make: string; model: string | null; nickname: string | null }) => {
@@ -58,7 +63,11 @@ function conversationBikeLabel(conversation: Conversation | undefined): string |
   if (conversation.job) {
     const jobBikes = conversation.job.jobBikes ?? [];
     if (jobBikes.length > 0) {
-      const primary = formatBike(jobBikes[0]);
+      const activeId = conversation.job.workingOnJobBikeId;
+      const activeBike =
+        (activeId ? jobBikes.find((jb) => jb.id === activeId) : undefined) ??
+        jobBikes[0];
+      const primary = activeBike ? formatBike(activeBike) : "";
       if (!primary) return null;
       return jobBikes.length > 1 ? `${primary} (+${jobBikes.length - 1})` : primary;
     }
@@ -70,7 +79,10 @@ function conversationBikeLabel(conversation: Conversation | undefined): string |
     return jobBike || null;
   }
 
-  const customerBikes = conversation.customer?.bikes ?? [];
+  const customerBikes =
+    (conversation.customer?.bikes?.length
+      ? conversation.customer.bikes
+      : opts?.customerBikes) ?? [];
   if (customerBikes.length > 0) {
     const primary = formatBike(customerBikes[0]);
     if (!primary) return null;
@@ -576,6 +588,56 @@ export default function ConversationScreen() {
     enabled: !!id,
   });
 
+  const jobId = conversation?.jobId ?? null;
+  const { data: conversationJob } = useQuery({
+    queryKey: ["job", jobId],
+    queryFn: async () => {
+      if (!jobId) return null;
+      const { data } = await api.get<Job>(`/api/jobs/${jobId}`);
+      return data;
+    },
+    enabled: !!jobId && !conversation?.job,
+    staleTime: 30_000,
+  });
+
+  const resolvedConversation = useMemo(() => {
+    if (!conversation) return undefined;
+    if (conversation.job || !conversationJob) return conversation;
+    return { ...conversation, job: conversationJob };
+  }, [conversation, conversationJob]);
+
+  const customerId = resolvedConversation?.customer?.id ?? resolvedConversation?.customerId ?? null;
+  const hasJobContext = !!(resolvedConversation?.job || resolvedConversation?.jobId);
+  const hasCustomerBikesInConversation = (resolvedConversation?.customer?.bikes?.length ?? 0) > 0;
+  const customerBikesQuery = useQuery({
+    queryKey: ["customerBikes", customerId],
+    queryFn: async () => {
+      if (!customerId) return [];
+      try {
+        const { data } = await api.get<Bike[]>(`/api/customers/${customerId}/bikes`);
+        return Array.isArray(data) ? data : [];
+      } catch {
+        return [];
+      }
+    },
+    enabled: !!customerId && !hasJobContext && !hasCustomerBikesInConversation,
+    staleTime: 60_000,
+  });
+
+  const bikeLabel = useMemo(() => {
+    const label = conversationBikeLabel(resolvedConversation, {
+      customerBikes: customerBikesQuery.data ?? [],
+    });
+    if (label) return label;
+    if (!resolvedConversation || hasJobContext || !customerBikesQuery.isFetched) return null;
+    return "No bike on file";
+  }, [
+    resolvedConversation,
+    customerBikesQuery.data,
+    customerBikesQuery.isFetched,
+    hasJobContext,
+  ]);
+
   const {
     data: messagesData,
     isLoading,
@@ -1023,17 +1085,16 @@ export default function ConversationScreen() {
       <Stack.Screen
         options={{
           headerTitle: () => {
-            const name = conversation
-              ? customerName(conversation.customer)
+            const name = resolvedConversation
+              ? customerName(resolvedConversation.customer)
               : "Conversation";
-            const bike = conversationBikeLabel(conversation);
-            const canOpenCustomer = !!conversation?.customer?.id;
+            const canOpenCustomer = !!resolvedConversation?.customer?.id;
 
             return (
               <Pressable
                 onPress={() => {
-                  if (!conversation?.customer?.id) return;
-                  router.push(`/(staff)/customers/${conversation.customer.id}`);
+                  if (!resolvedConversation?.customer?.id) return;
+                  router.push(`/(staff)/customers/${resolvedConversation.customer.id}`);
                 }}
                 disabled={!canOpenCustomer}
                 accessibilityRole={canOpenCustomer ? "button" : undefined}
@@ -1057,7 +1118,7 @@ export default function ConversationScreen() {
                 >
                   {name}
                 </Text>
-                {bike ? (
+                {bikeLabel ? (
                   <Text
                     style={{
                       ...fontSize.xs,
@@ -1066,7 +1127,7 @@ export default function ConversationScreen() {
                     }}
                     numberOfLines={1}
                   >
-                    {bike}
+                    {bikeLabel}
                   </Text>
                 ) : null}
               </Pressable>
