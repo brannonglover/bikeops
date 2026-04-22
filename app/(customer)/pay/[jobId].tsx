@@ -17,7 +17,8 @@ import { useTheme } from "@/lib/ThemeContext";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
-import { formatCurrency, jobTotal, getJobBikeDisplayTitle } from "@/lib/format";
+import { formatCurrency, getJobBikeDisplayTitle } from "@/lib/format";
+import { computeJobSubtotal, getJobPaymentSummary } from "@/lib/job-payments";
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? "";
 
@@ -93,6 +94,27 @@ export default function PayScreen() {
           color: theme.text,
           fontVariant: ["tabular-nums"],
         },
+        summaryRow: {
+          flexDirection: "row",
+          justifyContent: "space-between",
+          alignItems: "center",
+        },
+        summaryLabel: {
+          ...fontSize.sm,
+          color: theme.textSecondary,
+        },
+        summaryValue: {
+          ...fontSize.sm,
+          fontWeight: "600",
+          color: theme.text,
+          fontVariant: ["tabular-nums"],
+        },
+        summaryPaid: {
+          color: colors.emerald[700],
+        },
+        summaryRemaining: {
+          color: colors.amber[700],
+        },
         info: {
           ...fontSize.sm,
           color: theme.textSecondary,
@@ -123,11 +145,30 @@ export default function PayScreen() {
 
   if (isLoading || !job) return <LoadingScreen message="Loading payment..." />;
 
-  const total = jobTotal(job.jobServices, job.jobProducts);
+  const subtotal = computeJobSubtotal({
+    jobServices: job.jobServices,
+    jobProducts: job.jobProducts,
+  });
+  const paymentSummary = getJobPaymentSummary({
+    currentStatus: job.paymentStatus,
+    subtotal,
+    totalPaid:
+      typeof job.totalPaid === "number" && Number.isFinite(job.totalPaid)
+        ? job.totalPaid
+        : 0,
+  });
+  const hasPartialPayment = paymentSummary.totalPaid > 0 && !paymentSummary.isPaidInFull;
 
-  const PAYABLE_STAGES: string[] = ["RECEIVED", "WORKING_ON", "WAITING_ON_PARTS", "BIKE_READY", "COMPLETED"];
+  const PAYABLE_STAGES: string[] = [
+    "RECEIVED",
+    "WORKING_ON",
+    "WAITING_ON_CUSTOMER",
+    "WAITING_ON_PARTS",
+    "BIKE_READY",
+    "COMPLETED",
+  ];
 
-  if (job.paymentStatus === "PAID") {
+  if (paymentSummary.isPaidInFull || paymentSummary.remaining <= 0) {
     return (
       <View style={styles.paidContainer}>
         <Ionicons
@@ -216,8 +257,24 @@ export default function PayScreen() {
 
           <View style={styles.totalRow}>
             <Text style={styles.totalLabel}>Total</Text>
-            <Text style={styles.totalAmount}>{formatCurrency(total)}</Text>
+            <Text style={styles.totalAmount}>{formatCurrency(subtotal)}</Text>
           </View>
+          {hasPartialPayment ? (
+            <>
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>Already paid</Text>
+                <Text style={[styles.summaryValue, styles.summaryPaid]}>
+                  {formatCurrency(paymentSummary.totalPaid)}
+                </Text>
+              </View>
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>Remaining balance</Text>
+                <Text style={[styles.summaryValue, styles.summaryRemaining]}>
+                  {formatCurrency(paymentSummary.remaining)}
+                </Text>
+              </View>
+            </>
+          ) : null}
         </Card>
 
         <Text style={styles.info}>
@@ -226,7 +283,13 @@ export default function PayScreen() {
         </Text>
 
         <Button
-          title={paying ? "Opening..." : `Pay ${formatCurrency(total)}`}
+          title={
+            paying
+              ? "Opening..."
+              : hasPartialPayment
+                ? `Pay ${formatCurrency(paymentSummary.remaining)}`
+                : `Pay ${formatCurrency(subtotal)}`
+          }
           onPress={handlePay}
           loading={paying}
           size="lg"

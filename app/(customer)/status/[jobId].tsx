@@ -12,7 +12,8 @@ import { StageBadge, PaymentBadge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { ImageViewer } from "@/components/ui/ImageViewer";
-import { formatDate, formatCurrency, jobTotal } from "@/lib/format";
+import { formatDate, formatCurrency } from "@/lib/format";
+import { computeJobSubtotal, getJobPaymentSummary } from "@/lib/job-payments";
 
 const STAGE_DESCRIPTIONS: Record<string, string> = {
   PENDING_APPROVAL: "Your booking request has been submitted and is awaiting confirmation.",
@@ -194,11 +195,29 @@ export default function JobStatusScreen() {
 
   if (isLoading || !job) return <LoadingScreen message="Loading status..." />;
 
-  const total = jobTotal(job.jobServices, job.jobProducts);
+  const total = computeJobSubtotal({
+    jobServices: job.jobServices,
+    jobProducts: job.jobProducts,
+  });
+  const paymentSummary = getJobPaymentSummary({
+    currentStatus: job.paymentStatus,
+    subtotal: total,
+    totalPaid:
+      typeof job.totalPaid === "number" && Number.isFinite(job.totalPaid)
+        ? job.totalPaid
+        : 0,
+  });
   const stageColor = STAGE_COLORS[job.stage];
-  const PAYABLE_STAGES: string[] = ["RECEIVED", "WORKING_ON", "WAITING_ON_PARTS", "BIKE_READY", "COMPLETED"];
+  const PAYABLE_STAGES: string[] = [
+    "RECEIVED",
+    "WORKING_ON",
+    "WAITING_ON_CUSTOMER",
+    "WAITING_ON_PARTS",
+    "BIKE_READY",
+    "COMPLETED",
+  ];
   const canPay =
-    job.paymentStatus !== "PAID" && total > 0 && PAYABLE_STAGES.includes(job.stage);
+    !paymentSummary.isPaidInFull && total > 0 && PAYABLE_STAGES.includes(job.stage);
 
   return (
     <>
@@ -320,13 +339,13 @@ export default function JobStatusScreen() {
               <Text style={styles.totalLabel}>Total</Text>
               <Text style={styles.totalAmount}>{formatCurrency(total)}</Text>
             </View>
-            <PaymentBadge status={job.paymentStatus} />
+            <PaymentBadge status={paymentSummary.paymentStatus} />
           </Card>
         ) : null}
 
         {canPay ? (
           <Button
-            title="Pay Online"
+            title={paymentSummary.totalPaid > 0 ? "Pay Remaining Balance" : "Pay Online"}
             onPress={() => router.push(`/(customer)/pay/${job.id}`)}
             size="lg"
           />

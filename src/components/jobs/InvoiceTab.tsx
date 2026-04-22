@@ -30,7 +30,8 @@ import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
-import { formatCurrency, jobTotal } from "@/lib/format";
+import { formatCurrency } from "@/lib/format";
+import { computeJobSubtotal, getJobPaymentSummary } from "@/lib/job-payments";
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:3000";
 
@@ -154,19 +155,21 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
       : availableProducts;
   }, [availableProducts, productSearch]);
 
-  const total = jobTotal(jobServices, jobProductsList);
-
+  const total = computeJobSubtotal({
+    jobServices,
+    jobProducts: jobProductsList,
+  });
   const grossPaid =
     typeof job.totalPaid === "number" && Number.isFinite(job.totalPaid)
       ? job.totalPaid
-      : job.paymentStatus === "PAID"
-        ? total
-        : 0;
-  const paidTowardTotal = Math.min(grossPaid, total);
-  const remaining = Math.max(
-    0,
-    Math.round((total - paidTowardTotal) * 100) / 100
-  );
+      : 0;
+  const paymentSummary = getJobPaymentSummary({
+    currentStatus: job.paymentStatus,
+    subtotal: total,
+    totalPaid: grossPaid,
+  });
+  const paidTowardTotal = Math.min(paymentSummary.totalPaid, total);
+  const remaining = paymentSummary.remaining;
 
   interface BikeGroup {
     key: string;
@@ -1562,7 +1565,7 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
       </View>
 
       {/* Payment area */}
-      {job.paymentStatus === "PAID" ? (
+      {paymentSummary.isPaidInFull ? (
         <View>
           <View style={styles.paidBlock}>
             <Ionicons
@@ -1610,7 +1613,9 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
               activeOpacity={0.7}
             >
               <Ionicons name="card" size={16} color={colors.white} />
-              <Text style={styles.payOnlineText}>Pay online</Text>
+              <Text style={styles.payOnlineText}>
+                {paymentSummary.totalPaid > 0 ? "Pay remaining balance" : "Pay online"}
+              </Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.cashButton}
@@ -1774,7 +1779,7 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
       <TapToPaySheet
         visible={showTapToPay}
         jobId={job.id}
-        total={total}
+        total={remaining}
         onClose={() => setShowTapToPay(false)}
         onJobPaid={async () => {
           setShowTapToPay(false);
@@ -1805,7 +1810,7 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
               <View style={{ flex: 1 }}>
                 <Text style={styles.cashModalTitle}>Record cash payment</Text>
                 <Text style={styles.cashModalDesc}>
-                  {formatCurrency(total)} will be marked as paid. You can mark
+                  {formatCurrency(remaining)} will be marked as paid. You can mark
                   the job as completed when you're ready.
                 </Text>
               </View>
@@ -1822,7 +1827,7 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
                 title={
                   recordingCash
                     ? "Recording…"
-                    : `Record ${formatCurrency(total)}`
+                    : `Record ${formatCurrency(remaining)}`
                 }
                 onPress={handleRecordCash}
                 variant="primary"

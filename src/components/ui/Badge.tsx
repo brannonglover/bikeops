@@ -12,7 +12,9 @@ interface BadgeProps {
 export function Badge({ label, color, backgroundColor, style }: BadgeProps) {
   return (
     <View style={[styles.badge, { backgroundColor }, style]}>
-      <Text style={[styles.text, { color }]}>{label}</Text>
+      <Text numberOfLines={1} style={[styles.text, { color }]}>
+        {label}
+      </Text>
     </View>
   );
 }
@@ -38,7 +40,7 @@ export function PaymentBadge({
 }) {
   const config: Record<string, { color: string; bg: string; label: string }> = {
     PAID: { color: colors.emerald[700], bg: colors.emerald[50], label: "Paid" },
-    PENDING: { color: colors.amber[700], bg: colors.amber[50], label: "Pending" },
+    PENDING: { color: colors.amber[700], bg: colors.amber[50], label: "Partially paid" },
     UNPAID: { color: colors.slate[600], bg: colors.slate[100], label: "Unpaid" },
     REFUNDED: { color: colors.red[700], bg: colors.red[50], label: "Refunded" },
   };
@@ -52,6 +54,7 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: borderRadius.md,
     alignSelf: "flex-start",
+    flexShrink: 0,
   },
   text: {
     ...fontSize.xs,
