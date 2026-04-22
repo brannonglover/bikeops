@@ -79,7 +79,7 @@ export default function StatsScreen() {
       {stats.lastYear ? (
         <Card style={styles.lastYear}>
           <Text style={[styles.periodLabel, { color: theme.textSecondary }]}>
-            {stats.lastYear.calendarYear} (full year)
+            Last Year ({stats.lastYear.calendarYear})
           </Text>
           <Text style={[styles.bigNumber, { color: theme.text }]}>
             {formatCurrency(stats.lastYear.revenue)}

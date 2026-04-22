@@ -156,6 +156,18 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
 
   const total = jobTotal(jobServices, jobProductsList);
 
+  const totalPaid =
+    typeof job.totalPaid === "number" && Number.isFinite(job.totalPaid)
+      ? job.totalPaid
+      : job.paymentStatus === "PAID"
+        ? total
+        : 0;
+  const processingFee = Math.max(0, Math.round((totalPaid - total) * 100) / 100);
+  const remaining = Math.max(
+    0,
+    Math.round((total - Math.min(totalPaid, total)) * 100) / 100
+  );
+
   interface BikeGroup {
     key: string;
     bike: JobBike | null;
@@ -692,6 +704,60 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
           fontWeight: "700",
           color: theme.text,
           fontVariant: ["tabular-nums"],
+        },
+        paymentSummary: {
+          marginTop: spacing[2],
+          gap: spacing[1.5],
+        },
+        paymentSummaryRow: {
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: spacing[3],
+        },
+        paymentSummaryLabel: {
+          ...fontSize.sm,
+          fontWeight: "600",
+          color: theme.textSecondary,
+        },
+        paymentSummaryValue: {
+          ...fontSize.sm,
+          fontWeight: "600",
+          color: theme.text,
+          fontVariant: ["tabular-nums"],
+        },
+        processingFeeLabel: {
+          ...fontSize.xs,
+          color: theme.textMuted,
+        },
+        processingFeeValue: {
+          ...fontSize.xs,
+          color: theme.textMuted,
+          fontVariant: ["tabular-nums"],
+        },
+        remainingRow: {
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: spacing[3],
+          paddingTop: spacing[2],
+          marginTop: spacing[1],
+          borderTopWidth: 1,
+          borderTopColor: theme.surfaceBorder,
+        },
+        remainingLabel: {
+          ...fontSize.sm,
+          fontWeight: "700",
+          color: theme.text,
+        },
+        remainingValue: {
+          ...fontSize.sm,
+          fontWeight: "700",
+          color: theme.text,
+          fontVariant: ["tabular-nums"],
+        },
+        remainingValueDue: {
+          color: colors.amber[700],
         },
         paidBlock: {
           flexDirection: "row",
@@ -1484,6 +1550,30 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
       <View style={styles.totalRow}>
         <Text style={styles.totalLabel}>Total</Text>
         <Text style={styles.totalAmount}>{formatCurrency(total)}</Text>
+      </View>
+
+      <View style={styles.paymentSummary}>
+        <View style={styles.paymentSummaryRow}>
+          <Text style={styles.paymentSummaryLabel}>Paid</Text>
+          <Text style={styles.paymentSummaryValue}>{formatCurrency(totalPaid)}</Text>
+        </View>
+        {processingFee > 0 ? (
+          <View style={styles.paymentSummaryRow}>
+            <Text style={styles.processingFeeLabel}>Includes card processing fee</Text>
+            <Text style={styles.processingFeeValue}>{formatCurrency(processingFee)}</Text>
+          </View>
+        ) : null}
+        <View style={styles.remainingRow}>
+          <Text style={styles.remainingLabel}>Remaining</Text>
+          <Text
+            style={[
+              styles.remainingValue,
+              remaining > 0 && styles.remainingValueDue,
+            ]}
+          >
+            {formatCurrency(remaining)}
+          </Text>
+        </View>
       </View>
 
       {/* Payment area */}

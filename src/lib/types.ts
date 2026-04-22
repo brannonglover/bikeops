@@ -134,9 +134,10 @@ export interface Job {
   completedAt: string | null;
   archivedAt: string | null;
   paymentStatus: PaymentStatus;
+  /** Sum of successful payments recorded for this job (USD). */
+  totalPaid?: number;
   jobServices: JobService[];
   jobProducts: JobProduct[];
-  payments: Payment[];
   createdAt: string;
   updatedAt: string;
 }
