@@ -156,16 +156,16 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
 
   const total = jobTotal(jobServices, jobProductsList);
 
-  const totalPaid =
+  const grossPaid =
     typeof job.totalPaid === "number" && Number.isFinite(job.totalPaid)
       ? job.totalPaid
       : job.paymentStatus === "PAID"
         ? total
         : 0;
-  const processingFee = Math.max(0, Math.round((totalPaid - total) * 100) / 100);
+  const paidTowardTotal = Math.min(grossPaid, total);
   const remaining = Math.max(
     0,
-    Math.round((total - Math.min(totalPaid, total)) * 100) / 100
+    Math.round((total - paidTowardTotal) * 100) / 100
   );
 
   interface BikeGroup {
@@ -724,15 +724,6 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
           ...fontSize.sm,
           fontWeight: "600",
           color: theme.text,
-          fontVariant: ["tabular-nums"],
-        },
-        processingFeeLabel: {
-          ...fontSize.xs,
-          color: theme.textMuted,
-        },
-        processingFeeValue: {
-          ...fontSize.xs,
-          color: theme.textMuted,
           fontVariant: ["tabular-nums"],
         },
         remainingRow: {
@@ -1555,14 +1546,8 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
       <View style={styles.paymentSummary}>
         <View style={styles.paymentSummaryRow}>
           <Text style={styles.paymentSummaryLabel}>Paid</Text>
-          <Text style={styles.paymentSummaryValue}>{formatCurrency(totalPaid)}</Text>
+          <Text style={styles.paymentSummaryValue}>{formatCurrency(paidTowardTotal)}</Text>
         </View>
-        {processingFee > 0 ? (
-          <View style={styles.paymentSummaryRow}>
-            <Text style={styles.processingFeeLabel}>Includes card processing fee</Text>
-            <Text style={styles.processingFeeValue}>{formatCurrency(processingFee)}</Text>
-          </View>
-        ) : null}
         <View style={styles.remainingRow}>
           <Text style={styles.remainingLabel}>Remaining</Text>
           <Text
