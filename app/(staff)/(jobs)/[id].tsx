@@ -1368,7 +1368,7 @@ export default function JobDetailScreen() {
               {
                 borderWidth: 1,
                 borderColor: theme.dark ? colors.amber[700] : colors.amber[300],
-                backgroundColor: theme.dark ? `${colors.amber[900]}66` : colors.amber[50],
+                backgroundColor: theme.dark ? `${colors.amber[800]}66` : colors.amber[50],
               },
             ]}
           >
@@ -1416,15 +1416,15 @@ export default function JobDetailScreen() {
                     gap: spacing[1.5],
                     paddingVertical: spacing[3],
                     borderRadius: borderRadius.xl,
-                    backgroundColor: theme.dark ? colors.red[900] : colors.red[50],
+                    backgroundColor: theme.dark ? colors.red[800] : colors.red[50],
                     borderWidth: 1,
                     borderColor: theme.dark ? colors.red[700] : colors.red[300],
                   },
                   patchJob.isPending && styles.buttonDisabled,
                 ]}
               >
-                <Ionicons name="close" size={16} color={theme.dark ? colors.red[400] : colors.red[600]} />
-                <Text style={{ ...fontSize.sm, fontWeight: "700", color: theme.dark ? colors.red[400] : colors.red[600] }}>
+                <Ionicons name="close" size={16} color={theme.dark ? colors.red[300] : colors.red[600]} />
+                <Text style={{ ...fontSize.sm, fontWeight: "700", color: theme.dark ? colors.red[300] : colors.red[600] }}>
                   Reject
                 </Text>
               </TouchableOpacity>
@@ -1616,7 +1616,7 @@ export default function JobDetailScreen() {
                       <Ionicons
                         name="flash"
                         size={12}
-                        color={jb.bikeType === "E_BIKE" ? colors.blue[700] : theme.textMuted}
+                        color={jb.bikeType === "E_BIKE" ? colors.blue[600] : theme.textMuted}
                       />
                       <Text
                         style={[

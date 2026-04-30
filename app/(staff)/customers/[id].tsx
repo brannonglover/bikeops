@@ -712,7 +712,7 @@ export default function CustomerDetailScreen() {
                             <Ionicons
                               name="trash-outline"
                               size={18}
-                              color={colors.red[400]}
+                              color={colors.red[500]}
                             />
                           </TouchableOpacity>
                         </View>

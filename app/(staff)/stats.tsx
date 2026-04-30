@@ -2,6 +2,7 @@ import { useState, useCallback } from "react";
 import { View, Text, ScrollView, RefreshControl, StyleSheet } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { type Stats } from "@/lib/types";
 import { spacing, fontSize } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
@@ -40,12 +41,13 @@ function RevenueBreakdown({
 
 export default function StatsScreen() {
   const { theme } = useTheme();
+  const { staffUser } = useAuth();
   const {
     data: stats,
     isLoading,
     refetch,
   } = useQuery({
-    queryKey: ["stats"],
+    queryKey: ["stats", staffUser?.shopSubdomain ?? "unknown"],
     queryFn: async () => {
       const { data } = await api.get<Stats>("/api/stats");
       return data;

@@ -994,10 +994,10 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
           fontWeight: "500",
         },
         lineBikePillServiceText: {
-          color: colors.purple[700],
+          color: colors.purple[600],
         },
         lineBikePillProductText: {
-          color: colors.blue[700],
+          color: colors.blue[600],
         },
         bikeAssignSection: {
           borderTopWidth: 1,

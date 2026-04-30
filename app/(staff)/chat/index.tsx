@@ -244,7 +244,7 @@ export default function ChatListScreen() {
                   { borderBottomColor: theme.surfaceBorderSubtle },
                   unread && {
                     backgroundColor: theme.dark
-                      ? colors.emerald[900] + "30"
+                      ? colors.emerald[800] + "30"
                       : colors.emerald[50] + "40",
                   },
                 ]}

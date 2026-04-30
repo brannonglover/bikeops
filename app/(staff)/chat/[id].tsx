@@ -93,6 +93,15 @@ function conversationBikeLabel(
   return null;
 }
 
+function pickActiveCustomerJob(jobs: Job[] | undefined): Job | null {
+  if (!jobs || jobs.length === 0) return null;
+  return (
+    jobs.find((job) => job.stage !== "COMPLETED" && job.stage !== "CANCELLED") ??
+    jobs[0] ??
+    null
+  );
+}
+
 const POLL_MS = 3000;
 const REACTION_EMOJIS = ["\u{1F44D}", "\u{2764}\u{FE0F}", "\u{1F602}", "\u{1F62E}", "\u{1F622}", "\u{1F64F}"];
 
@@ -385,7 +394,7 @@ export default function ConversationScreen() {
           elevation: 3,
         },
         reactionPillMine: {
-          backgroundColor: theme.dark ? colors.emerald[900] : colors.emerald[50],
+          backgroundColor: theme.dark ? colors.emerald[800] : colors.emerald[50],
         },
         reactionPillEmoji: {
           fontSize: 14,
@@ -527,7 +536,7 @@ export default function ConversationScreen() {
           alignItems: "center",
         },
         emojiButtonSelected: {
-          backgroundColor: theme.dark ? colors.emerald[900] : colors.emerald[100],
+          backgroundColor: theme.dark ? colors.emerald[800] : colors.emerald[100],
         },
         emojiText: {
           fontSize: 24,
@@ -609,6 +618,22 @@ export default function ConversationScreen() {
 
   const customerId = resolvedConversation?.customer?.id ?? resolvedConversation?.customerId ?? null;
   const hasJobContext = !!(resolvedConversation?.job || resolvedConversation?.jobId);
+  const customerJobsQuery = useQuery({
+    queryKey: ["customerJobs", customerId],
+    queryFn: async () => {
+      if (!customerId) return [];
+      const { data } = await api.get<Job[]>(
+        `/api/jobs?customerId=${encodeURIComponent(customerId)}`
+      );
+      return Array.isArray(data) ? data : [];
+    },
+    enabled: !!customerId && !hasJobContext,
+    staleTime: 30_000,
+  });
+  const activeCustomerJob = useMemo(
+    () => pickActiveCustomerJob(customerJobsQuery.data),
+    [customerJobsQuery.data]
+  );
   const hasCustomerBikesInConversation = (resolvedConversation?.customer?.bikes?.length ?? 0) > 0;
   const customerBikesQuery = useQuery({
     queryKey: ["customerBikes", customerId],
@@ -621,18 +646,40 @@ export default function ConversationScreen() {
         return [];
       }
     },
-    enabled: !!customerId && !hasJobContext && !hasCustomerBikesInConversation,
+    enabled:
+      !!customerId &&
+      !hasJobContext &&
+      !activeCustomerJob &&
+      !hasCustomerBikesInConversation,
     staleTime: 60_000,
   });
 
   const bikeLabel = useMemo(() => {
-    const label = conversationBikeLabel(resolvedConversation, {
+    const conversationForLabel =
+      resolvedConversation && activeCustomerJob
+        ? {
+            ...resolvedConversation,
+            job: activeCustomerJob,
+            jobId: activeCustomerJob.id,
+          }
+        : resolvedConversation;
+    const label = conversationBikeLabel(conversationForLabel, {
       customerBikes: customerBikesQuery.data ?? [],
     });
     if (label) return label;
-    if (!resolvedConversation || hasJobContext || !customerBikesQuery.isFetched) return null;
+    if (
+      !resolvedConversation ||
+      hasJobContext ||
+      activeCustomerJob ||
+      customerJobsQuery.isLoading ||
+      !customerBikesQuery.isFetched
+    ) {
+      return null;
+    }
     return "No bike on file";
   }, [
+    activeCustomerJob,
+    customerJobsQuery.isLoading,
     resolvedConversation,
     customerBikesQuery.data,
     customerBikesQuery.isFetched,
@@ -777,7 +824,8 @@ export default function ConversationScreen() {
   }, []);
 
   const handleOpenJobCard = useCallback(async () => {
-    const directJobId = resolvedConversation?.job?.id ?? resolvedConversation?.jobId;
+    const directJobId =
+      resolvedConversation?.job?.id ?? resolvedConversation?.jobId ?? activeCustomerJob?.id;
     if (directJobId) {
       router.push(`/(staff)/(jobs)/${directJobId}` as never);
       return;
@@ -791,12 +839,10 @@ export default function ConversationScreen() {
     }
 
     try {
-      const { data } = await api.get<Job[]>("/api/jobs");
-      const customerJobs = data.filter((job) => job.customerId === currentCustomerId);
-      const activeJob =
-        customerJobs.find(
-          (job) => job.stage !== "COMPLETED" && job.stage !== "CANCELLED"
-        ) ?? customerJobs[0];
+      const { data } = await api.get<Job[]>(
+        `/api/jobs?customerId=${encodeURIComponent(currentCustomerId)}`
+      );
+      const activeJob = pickActiveCustomerJob(data);
 
       if (!activeJob) {
         Alert.alert("No job card", "This customer does not have a job card yet.");
@@ -807,7 +853,7 @@ export default function ConversationScreen() {
     } catch {
       Alert.alert("Error", "Failed to open the job card");
     }
-  }, [resolvedConversation, router]);
+  }, [activeCustomerJob, resolvedConversation, router]);
 
   const handleScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {

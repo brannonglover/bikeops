@@ -1,10 +1,10 @@
-import { View, type ViewStyle } from "react-native";
+import { View, type StyleProp, type ViewStyle } from "react-native";
 import { borderRadius, spacing } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 
 interface CardProps {
   children: React.ReactNode;
-  style?: ViewStyle;
+  style?: StyleProp<ViewStyle>;
 }
 
 export function Card({ children, style }: CardProps) {
