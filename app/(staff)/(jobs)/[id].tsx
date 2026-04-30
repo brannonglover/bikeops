@@ -1227,7 +1227,10 @@ export default function JobDetailScreen() {
 
       const fromCache = cached ? findConv(cached) : undefined;
       if (fromCache) {
-        router.push(`/(staff)/chat/${fromCache.id}` as never);
+        router.push({
+          pathname: "/(staff)/chat/[id]",
+          params: { id: fromCache.id, fromJobId: job.id },
+        } as never);
         return;
       }
 
@@ -1236,7 +1239,10 @@ export default function JobDetailScreen() {
         `/api/conversations/by-customer/${job.customer!.id}`
       );
       if (preview?.conversation?.id) {
-        router.push(`/(staff)/chat/${preview.conversation.id}` as never);
+        router.push({
+          pathname: "/(staff)/chat/[id]",
+          params: { id: preview.conversation.id, fromJobId: job.id },
+        } as never);
         return;
       }
 
@@ -1244,7 +1250,10 @@ export default function JobDetailScreen() {
         customerId: job.customer!.id,
         jobId: null,
       });
-      router.push(`/(staff)/chat/${newConv.id}` as never);
+      router.push({
+        pathname: "/(staff)/chat/[id]",
+        params: { id: newConv.id, fromJobId: job.id },
+      } as never);
     } catch {
       Alert.alert("Error", "Failed to open chat");
     } finally {

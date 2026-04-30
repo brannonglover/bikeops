@@ -108,8 +108,12 @@ const REACTION_EMOJIS = ["\u{1F44D}", "\u{2764}\u{FE0F}", "\u{1F602}", "\u{1F62E
 export default function ConversationScreen() {
   const { theme } = useTheme();
   const router = useRouter();
-  const params = useLocalSearchParams<{ id?: string | string[] }>();
+  const params = useLocalSearchParams<{
+    id?: string | string[];
+    fromJobId?: string | string[];
+  }>();
   const id = paramToString(params.id);
+  const fromJobId = paramToString(params.fromJobId);
   const queryClient = useQueryClient();
   const headerHeight = useHeaderHeight();
   const flatListRef = useRef<FlatList<ChatMessage>>(null);
@@ -825,9 +829,20 @@ export default function ConversationScreen() {
 
   const handleOpenJobCard = useCallback(async () => {
     const directJobId =
-      resolvedConversation?.job?.id ?? resolvedConversation?.jobId ?? activeCustomerJob?.id;
+      fromJobId ??
+      resolvedConversation?.job?.id ??
+      resolvedConversation?.jobId ??
+      activeCustomerJob?.id;
     if (directJobId) {
-      router.push(`/(staff)/(jobs)/${directJobId}` as never);
+      if (directJobId === fromJobId && router.canGoBack()) {
+        router.back();
+        return;
+      }
+
+      router.push({
+        pathname: "/(staff)/(jobs)/[id]",
+        params: { id: directJobId },
+      } as never);
       return;
     }
 
@@ -849,11 +864,19 @@ export default function ConversationScreen() {
         return;
       }
 
-      router.push(`/(staff)/(jobs)/${activeJob.id}` as never);
+      if (activeJob.id === fromJobId && router.canGoBack()) {
+        router.back();
+        return;
+      }
+
+      router.push({
+        pathname: "/(staff)/(jobs)/[id]",
+        params: { id: activeJob.id },
+      } as never);
     } catch {
       Alert.alert("Error", "Failed to open the job card");
     }
-  }, [activeCustomerJob, resolvedConversation, router]);
+  }, [activeCustomerJob, fromJobId, resolvedConversation, router]);
 
   const handleScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
