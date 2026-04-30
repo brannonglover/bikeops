@@ -30,11 +30,6 @@ const MENU_ITEMS = [
     href: "/(staff)/archive",
   },
   {
-    label: "Email Templates",
-    icon: "mail" as const,
-    href: "/(staff)/settings/email-templates",
-  },
-  {
     label: "Settings",
     icon: "settings" as const,
     href: "/(staff)/settings",

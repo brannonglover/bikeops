@@ -3,7 +3,7 @@ import { InteractionManager } from "react-native";
 import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { StripeTerminalProvider, useStripeTerminal } from "@stripe/stripe-terminal-react-native";
-import { colors } from "@/lib/theme";
+import { colors, spacing } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { HamburgerMenu } from "@/components/ui/HamburgerMenu";
 import { ShopLogo } from "@/components/ui/ShopLogo";
@@ -42,6 +42,12 @@ function StaffTabs() {
         headerTitleStyle: {
           fontWeight: "700",
           color: theme.text,
+        },
+        headerLeftContainerStyle: {
+          paddingLeft: spacing[4],
+        },
+        headerRightContainerStyle: {
+          paddingRight: spacing[4],
         },
         headerLeft: () => <ShopLogo />,
         headerRight: () => <HamburgerMenu />,

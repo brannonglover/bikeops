@@ -15,7 +15,6 @@ export default function SettingsLayout() {
     >
       <Stack.Screen name="index" options={{ title: "Settings" }} />
       <Stack.Screen name="products" options={{ title: "Products" }} />
-      <Stack.Screen name="email-templates" options={{ title: "Email Templates" }} />
     </Stack>
   );
 }
