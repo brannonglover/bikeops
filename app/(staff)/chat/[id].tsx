@@ -1196,7 +1196,7 @@ export default function ConversationScreen() {
                 accessibilityRole="button"
                 accessibilityLabel="Open job card"
               >
-                <Ionicons name="document-text-outline" size={24} color={theme.text} />
+                <Ionicons name="construct-outline" size={24} color={theme.text} />
               </TouchableOpacity>
               <ShopLogo />
             </View>
