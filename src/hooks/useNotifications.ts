@@ -1,12 +1,15 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import * as Notifications from "expo-notifications";
 import { useRouter } from "expo-router";
 import { useAuth } from "@/lib/auth";
 import {
   registerForPushNotifications,
+  setBadgeCount,
   type NotificationData,
 } from "@/lib/notifications";
+import { api } from "@/lib/api";
+import { type ChatMessage, type Conversation, type Job } from "@/lib/types";
 
 function normalizeNotificationData(raw: unknown): NotificationData | null {
   if (!raw || typeof raw !== "object") return null;
@@ -79,6 +82,37 @@ function routeForNotification(
 }
 
 const FOREGROUND_REGISTER_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+const BADGE_SYNC_INTERVAL_MS = 60 * 1000;
+
+function lastConversationMessage(conv: Conversation): ChatMessage | null {
+  if (!conv.messages || conv.messages.length === 0) return null;
+  return conv.messages[conv.messages.length - 1] ?? null;
+}
+
+function hasUnreadStaffMessage(conv: Conversation): boolean {
+  const lastMsg = lastConversationMessage(conv);
+  if (!lastMsg || lastMsg.sender !== "CUSTOMER") return false;
+  if (!conv.staffLastReadAt) return true;
+  return new Date(lastMsg.createdAt) > new Date(conv.staffLastReadAt);
+}
+
+async function getStaffBadgeCount(): Promise<number> {
+  const [conversationsResult, jobsResult] = await Promise.allSettled([
+    api.get<Conversation[]>("/api/conversations"),
+    api.get<Job[]>("/api/jobs"),
+  ]);
+
+  const unreadConversations =
+    conversationsResult.status === "fulfilled"
+      ? conversationsResult.value.data.filter(hasUnreadStaffMessage).length
+      : 0;
+  const pendingApprovals =
+    jobsResult.status === "fulfilled"
+      ? jobsResult.value.data.filter((job) => job.stage === "PENDING_APPROVAL").length
+      : 0;
+
+  return unreadConversations + pendingApprovals;
+}
 
 export function useNotifications() {
   const { role } = useAuth();
@@ -86,11 +120,29 @@ export function useNotifications() {
   const registered = useRef(false);
   const coldStartHandled = useRef(false);
   const lastRegisteredAt = useRef(0);
+  const syncingBadge = useRef(false);
+
+  const syncBadgeCount = useCallback(async () => {
+    if (syncingBadge.current) return;
+    syncingBadge.current = true;
+    try {
+      if (role === "staff") {
+        await setBadgeCount(await getStaffBadgeCount());
+      } else if (role === "customer") {
+        await setBadgeCount(0);
+      } else {
+        await setBadgeCount(0);
+      }
+    } finally {
+      syncingBadge.current = false;
+    }
+  }, [role]);
 
   useEffect(() => {
     if (!role) {
       registered.current = false;
       lastRegisteredAt.current = 0;
+      setBadgeCount(0);
       return;
     }
     if (registered.current) return;
@@ -115,12 +167,20 @@ export function useNotifications() {
           lastRegisteredAt.current = now;
           registerForPushNotifications(role);
         }
+        syncBadgeCount();
       }
     };
 
     const subscription = AppState.addEventListener("change", handleAppStateChange);
     return () => subscription.remove();
-  }, [role]);
+  }, [role, syncBadgeCount]);
+
+  useEffect(() => {
+    if (!role) return;
+    syncBadgeCount();
+    const id = setInterval(syncBadgeCount, BADGE_SYNC_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [role, syncBadgeCount]);
 
   // Handle cold-start: the app was launched by tapping a notification while it
   // was killed or suspended. The response listener below won't fire in that case
@@ -150,13 +210,14 @@ export function useNotifications() {
         const raw = response.notification.request.content.data;
         const data = normalizeNotificationData(raw);
         const route = data ? routeForNotification(data, role) : null;
+        syncBadgeCount();
         if (route) {
           router.replace(route as never);
         }
       });
 
     return () => responseSubscription.remove();
-  }, [role, router]);
+  }, [role, router, syncBadgeCount]);
 
   useEffect(() => {
     if (!role) return;
@@ -165,8 +226,9 @@ export function useNotifications() {
       Notifications.addNotificationReceivedListener(() => {
         // Notification received while app is foregrounded.
         // The notification handler in notifications.ts will display it.
+        syncBadgeCount();
       });
 
     return () => receivedSubscription.remove();
-  }, [role]);
+  }, [role, syncBadgeCount]);
 }

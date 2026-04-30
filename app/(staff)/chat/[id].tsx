@@ -29,6 +29,7 @@ import { useTheme } from "@/lib/ThemeContext";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { LinkifiedText } from "@/components/chat/LinkifiedText";
 import { LinkPreview } from "@/components/chat/LinkPreview";
+import { ShopLogo } from "@/components/ui/ShopLogo";
 
 const URL_REGEX = /(https?:\/\/[^\s]+)/g;
 function extractUrls(text: string): string[] {
@@ -775,6 +776,39 @@ export default function ConversationScreen() {
     setShowInviteModal(true);
   }, []);
 
+  const handleOpenJobCard = useCallback(async () => {
+    const directJobId = resolvedConversation?.job?.id ?? resolvedConversation?.jobId;
+    if (directJobId) {
+      router.push(`/(staff)/(jobs)/${directJobId}` as never);
+      return;
+    }
+
+    const currentCustomerId =
+      resolvedConversation?.customer?.id ?? resolvedConversation?.customerId;
+    if (!currentCustomerId) {
+      Alert.alert("Job unavailable", "This conversation is not linked to a customer.");
+      return;
+    }
+
+    try {
+      const { data } = await api.get<Job[]>("/api/jobs");
+      const customerJobs = data.filter((job) => job.customerId === currentCustomerId);
+      const activeJob =
+        customerJobs.find(
+          (job) => job.stage !== "COMPLETED" && job.stage !== "CANCELLED"
+        ) ?? customerJobs[0];
+
+      if (!activeJob) {
+        Alert.alert("No job card", "This customer does not have a job card yet.");
+        return;
+      }
+
+      router.push(`/(staff)/(jobs)/${activeJob.id}` as never);
+    } catch {
+      Alert.alert("Error", "Failed to open the job card");
+    }
+  }, [resolvedConversation, router]);
+
   const handleScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       const { contentOffset, contentSize, layoutMeasurement } =
@@ -1084,6 +1118,20 @@ export default function ConversationScreen() {
     <>
       <Stack.Screen
         options={{
+          headerLeft: () => (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+              <TouchableOpacity
+                onPress={handleOpenJobCard}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                style={{ padding: 4 }}
+                accessibilityRole="button"
+                accessibilityLabel="Open job card"
+              >
+                <Ionicons name="document-text-outline" size={24} color={theme.text} />
+              </TouchableOpacity>
+              <ShopLogo />
+            </View>
+          ),
           headerTitle: () => {
             const name = resolvedConversation
               ? customerName(resolvedConversation.customer)

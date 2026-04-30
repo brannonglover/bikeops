@@ -56,8 +56,14 @@ export async function registerForPushNotifications(
     await Notifications.getPermissionsAsync();
   let finalStatus = existingStatus;
 
-  if (existingStatus !== "granted") {
-    const { status } = await Notifications.requestPermissionsAsync();
+  if (existingStatus !== "granted" || Platform.OS === "ios") {
+    const { status } = await Notifications.requestPermissionsAsync({
+      ios: {
+        allowAlert: true,
+        allowBadge: true,
+        allowSound: true,
+      },
+    });
     finalStatus = status;
   }
 
@@ -70,6 +76,7 @@ export async function registerForPushNotifications(
     await Notifications.setNotificationChannelAsync("default", {
       name: "Default",
       importance: Notifications.AndroidImportance.MAX,
+      showBadge: true,
       vibrationPattern: [0, 250, 250, 250],
       lightColor: "#f59e0b",
     });

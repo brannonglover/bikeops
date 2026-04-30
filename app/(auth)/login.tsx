@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import {
   View,
   Text,
@@ -14,16 +14,26 @@ import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
+import { getLastStaffShopSubdomain } from "@/lib/api";
 
 export default function LoginScreen() {
   const { theme } = useTheme();
   const router = useRouter();
   const { staffLogin, customerLogin } = useAuth();
   const [mode, setMode] = useState<"pick" | "staff" | "customer">("pick");
+  const [shopSubdomain, setShopSubdomain] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    getLastStaffShopSubdomain()
+      .then((lastShop) => {
+        if (lastShop) setShopSubdomain(lastShop);
+      })
+      .catch(() => {});
+  }, []);
 
   const styles = useMemo(
     () =>
@@ -94,11 +104,15 @@ export default function LoginScreen() {
   );
 
   const handleStaffLogin = async () => {
-    if (!email.trim() || !password) return;
+    if (!shopSubdomain.trim() || !email.trim() || !password) return;
     setError(null);
     setLoading(true);
     try {
-      const result = await staffLogin(email.trim().toLowerCase(), password);
+      const result = await staffLogin(
+        email.trim().toLowerCase(),
+        password,
+        shopSubdomain.trim().toLowerCase()
+      );
       if (result.ok) {
         router.replace("/(staff)/(jobs)");
       } else {
@@ -125,6 +139,16 @@ export default function LoginScreen() {
         <View style={styles.card}>
           <Text style={styles.title}>Staff Sign In</Text>
           <Input
+            label="Shop"
+            placeholder="bbm"
+            value={shopSubdomain}
+            onChangeText={setShopSubdomain}
+            autoCapitalize="none"
+            autoCorrect={false}
+            textContentType="URL"
+            containerStyle={styles.inputContainer}
+          />
+          <Input
             label="Email"
             placeholder="you@example.com"
             value={email}
@@ -148,7 +172,7 @@ export default function LoginScreen() {
             title={loading ? "Signing in..." : "Sign In"}
             onPress={handleStaffLogin}
             loading={loading}
-            disabled={!email.trim() || !password}
+            disabled={!shopSubdomain.trim() || !email.trim() || !password}
             style={styles.button}
           />
           <TouchableOpacity onPress={() => setMode("pick")} style={styles.backLink}>

@@ -23,13 +23,18 @@ interface StaffUser {
   id: string;
   email: string;
   name?: string;
+  shopSubdomain?: string;
 }
 
 interface AuthState {
   role: AuthRole;
   staffUser: StaffUser | null;
   loading: boolean;
-  staffLogin: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
+  staffLogin: (
+    email: string,
+    password: string,
+    shopSubdomain: string
+  ) => Promise<{ ok: boolean; error?: string }>;
   staffLogout: () => Promise<void>;
   customerLogin: () => Promise<void>;
   customerLogout: () => Promise<void>;
@@ -81,8 +86,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [refresh]);
 
   const staffLogin = useCallback(
-    async (email: string, password: string) => {
-      const result = await apiStaffLogin(email, password);
+    async (email: string, password: string, shopSubdomain: string) => {
+      const result = await apiStaffLogin(email, password, shopSubdomain);
       if (result.ok) {
         const user = result.user ?? { id: "", email, name: "" };
         const session = { user };

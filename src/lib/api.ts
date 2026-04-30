@@ -1,15 +1,18 @@
 import * as SecureStore from "expo-secure-store";
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:3000";
+const DEFAULT_API_URL = process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:3000";
 
 const STAFF_COOKIE_KEY = "staff_session_cookie";
 const STAFF_SESSION_CACHE_KEY = "staff_session_cache";
+const STAFF_API_URL_KEY = "staff_api_url";
+const STAFF_SHOP_SUBDOMAIN_KEY = "staff_shop_subdomain";
 const CUSTOMER_COOKIE_KEY = "customer_session_cookie";
 const CUSTOMER_ROLE_KEY = "customer_role_persisted";
 
 // In-memory cache so each apiFetch call doesn't hit SecureStore on disk.
 // Values are invalidated on write/delete so they stay consistent.
 const cookieMemCache = new Map<string, string | null>();
+let staffApiUrlMemCache: string | null | undefined;
 
 async function getStoredCookie(key: string): Promise<string | null> {
   if (cookieMemCache.has(key)) return cookieMemCache.get(key) ?? null;
@@ -32,6 +35,68 @@ async function clearCookie(key: string): Promise<void> {
   await SecureStore.deleteItemAsync(key);
 }
 
+function trimTrailingSlash(value: string): string {
+  return value.replace(/\/+$/, "");
+}
+
+function getDefaultApiUrl(): URL {
+  return new URL(DEFAULT_API_URL);
+}
+
+function normalizeShopSubdomain(value: string): string {
+  return value.trim().toLowerCase().replace(/^https?:\/\//, "").split("/")[0] ?? "";
+}
+
+function isValidSubdomain(value: string): boolean {
+  return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value);
+}
+
+export function getShopApiUrl(shop: string): string {
+  const normalized = normalizeShopSubdomain(shop);
+  if (!normalized) {
+    throw new Error("Enter your shop subdomain.");
+  }
+
+  if (normalized.includes(".")) {
+    const protocol = getDefaultApiUrl().protocol;
+    return trimTrailingSlash(`${protocol}//${normalized}`);
+  }
+
+  if (!isValidSubdomain(normalized)) {
+    throw new Error("Enter a valid shop subdomain.");
+  }
+
+  const defaultUrl = getDefaultApiUrl();
+  const rootHost = defaultUrl.hostname;
+  const host = `${normalized}.${rootHost}`;
+  return trimTrailingSlash(`${defaultUrl.protocol}//${host}${defaultUrl.port ? `:${defaultUrl.port}` : ""}`);
+}
+
+async function storeStaffApiUrl(apiUrl: string, shopSubdomain: string): Promise<void> {
+  const normalizedUrl = trimTrailingSlash(apiUrl);
+  staffApiUrlMemCache = normalizedUrl;
+  await storeCookie(STAFF_API_URL_KEY, normalizedUrl);
+  await storeCookie(STAFF_SHOP_SUBDOMAIN_KEY, normalizeShopSubdomain(shopSubdomain));
+}
+
+async function getStaffApiUrl(): Promise<string> {
+  if (staffApiUrlMemCache !== undefined) {
+    return staffApiUrlMemCache ?? DEFAULT_API_URL;
+  }
+  const stored = await getStoredCookie(STAFF_API_URL_KEY);
+  staffApiUrlMemCache = stored ? trimTrailingSlash(stored) : null;
+  return staffApiUrlMemCache ?? DEFAULT_API_URL;
+}
+
+export async function getLastStaffShopSubdomain(): Promise<string | null> {
+  return getStoredCookie(STAFF_SHOP_SUBDOMAIN_KEY);
+}
+
+async function getApiUrl(role: "staff" | "customer"): Promise<string> {
+  if (role === "staff") return getStaffApiUrl();
+  return DEFAULT_API_URL;
+}
+
 function extractCookieValue(
   setCookieHeaders: string | null,
   cookieName: string
@@ -50,7 +115,8 @@ function extractCookieValue(
 
 export function resolveUrl(url: string): string {
   if (!url || url.startsWith("http")) return url;
-  return `${API_URL}${url.startsWith("/") ? "" : "/"}${url}`;
+  const apiUrl = staffApiUrlMemCache ?? DEFAULT_API_URL;
+  return `${apiUrl}${url.startsWith("/") ? "" : "/"}${url}`;
 }
 
 export type AuthRole = "staff" | "customer" | null;
@@ -99,7 +165,8 @@ async function apiFetch<T = unknown>(
     headers["Content-Type"] = "application/json";
   }
 
-  const url = `${API_URL}${path}`;
+  const apiUrl = await getApiUrl(role);
+  const url = `${apiUrl}${path}`;
   const response = await fetch(url, {
     ...fetchOptions,
     headers,
@@ -213,15 +280,17 @@ export async function hasPersistedCustomerRole(): Promise<boolean> {
 interface StaffLoginResult {
   ok: boolean;
   error?: string;
-  user?: { id: string; email: string; name?: string };
+  user?: { id: string; email: string; name?: string; shopSubdomain?: string };
 }
 
 export async function staffLogin(
   email: string,
-  password: string
+  password: string,
+  shopSubdomain: string
 ): Promise<StaffLoginResult> {
   try {
-    const res = await fetch(`${API_URL}/api/auth/mobile-login`, {
+    const apiUrl = getShopApiUrl(shopSubdomain);
+    const res = await fetch(`${apiUrl}/api/auth/mobile-login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password }),
@@ -241,12 +310,13 @@ export async function staffLogin(
 
     const { token, user } = data as {
       token: string;
-      user?: { id: string; email: string; name?: string };
+      user?: { id: string; email: string; name?: string; shopSubdomain?: string };
     };
     // On HTTPS production NextAuth uses the __Secure- prefix; on HTTP (local) it does not.
-    const cookieName = API_URL.startsWith("https://")
+    const cookieName = apiUrl.startsWith("https://")
       ? "__Secure-next-auth.session-token"
       : "next-auth.session-token";
+    await storeStaffApiUrl(apiUrl, user?.shopSubdomain ?? shopSubdomain);
     await storeCookie(STAFF_COOKIE_KEY, `${cookieName}=${token}`);
     return { ok: true, user };
   } catch (e) {

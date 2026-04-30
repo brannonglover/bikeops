@@ -16,7 +16,7 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
-import { api } from "@/lib/api";
+import { api, resolveUrl } from "@/lib/api";
 import { TapToPaySheet } from "@/components/jobs/TapToPaySheet";
 import {
   type Job,
@@ -32,8 +32,6 @@ import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { formatCurrency } from "@/lib/format";
 import { computeJobSubtotal, getJobPaymentSummary } from "@/lib/job-payments";
-
-const API_URL = process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:3000";
 
 interface InvoiceTabProps {
   job: Job;
@@ -418,11 +416,11 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
   }, [job.id]);
 
   const handlePayOnline = useCallback(() => {
-    Linking.openURL(`${API_URL}/pay/${job.id}`);
+    Linking.openURL(resolveUrl(`/pay/${job.id}`));
   }, [job.id]);
 
   const handleCopyPaymentLink = useCallback(async () => {
-    await Clipboard.setStringAsync(`${API_URL}/pay/${job.id}`);
+    await Clipboard.setStringAsync(resolveUrl(`/pay/${job.id}`));
     setCopiedLink(true);
     setTimeout(() => setCopiedLink(false), 2000);
   }, [job.id]);
