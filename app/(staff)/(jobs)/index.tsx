@@ -18,9 +18,11 @@ import { useTheme } from "@/lib/ThemeContext";
 import { JobCard } from "@/components/jobs/JobCard";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 
 export default function JobBoardScreen() {
   const { theme } = useTheme();
+  const layout = useResponsiveLayout();
   const router = useRouter();
   const queryClient = useQueryClient();
   const navigatingRef = useRef(false);
@@ -276,6 +278,7 @@ export default function JobBoardScreen() {
             <View
               style={[
                 styles.sectionHeader,
+                layout.isTablet && styles.tabletConstrained,
                 {
                   backgroundColor: theme.background,
                   borderBottomColor: theme.surfaceBorder,
@@ -303,6 +306,7 @@ export default function JobBoardScreen() {
             <RefreshControl refreshing={isManualRefresh} onRefresh={handleRefresh} />
           }
           contentContainerStyle={styles.listContent}
+          style={layout.isTablet && styles.tabletList}
           ListFooterComponent={
             cancelledJobs.length > 0 ? (
               <TouchableOpacity
@@ -341,6 +345,14 @@ const styles = StyleSheet.create({
     paddingVertical: spacing[3],
     gap: spacing[2],
     borderBottomWidth: 1,
+  },
+  tabletList: {
+    width: "100%",
+  },
+  tabletConstrained: {
+    width: "100%",
+    maxWidth: 1040,
+    alignSelf: "center",
   },
   archiveButton: {
     paddingHorizontal: spacing[3],
@@ -401,6 +413,9 @@ const styles = StyleSheet.create({
   cardWrapper: {
     paddingHorizontal: spacing[4],
     paddingVertical: spacing[1.5],
+    width: "100%",
+    maxWidth: 1040,
+    alignSelf: "center",
   },
   cancelledToggle: {
     flexDirection: "row",

@@ -27,9 +27,11 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { customerName, formatPhoneNumber, unformatPhoneNumber } from "@/lib/format";
+import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 
 export default function CustomersScreen() {
   const { theme } = useTheme();
+  const layout = useResponsiveLayout();
   const router = useRouter();
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
@@ -230,6 +232,7 @@ export default function CustomersScreen() {
               }
               style={[
                 styles.customerRow,
+                layout.isTablet && styles.tabletConstrained,
                 {
                   backgroundColor: theme.surface,
                   borderBottomColor: theme.surfaceBorderSubtle,
@@ -372,6 +375,11 @@ const styles = StyleSheet.create({
   listContent: {
     paddingBottom: spacing[12],
   },
+  tabletConstrained: {
+    width: "100%",
+    maxWidth: 1040,
+    alignSelf: "center",
+  },
   customerRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -425,6 +433,9 @@ const styles = StyleSheet.create({
   },
   modalContent: {
     padding: spacing[4],
+    width: "100%",
+    maxWidth: 720,
+    alignSelf: "center",
   },
   inputGap: {
     marginBottom: spacing[3],

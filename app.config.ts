@@ -28,7 +28,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   name: IS_DEV ? "BikeOps (Dev)" : "BikeOps",
   slug: "bikeops",
   version,
-  orientation: "portrait",
+  orientation: "default",
   icon: "./assets/icon.png",
   scheme: "bikeops",
   userInterfaceStyle: "automatic",
@@ -45,7 +45,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     backgroundColor: "#1e1e1e",
   },
   ios: {
-    supportsTablet: false,
+    supportsTablet: true,
     bundleIdentifier: IS_DEV ? "com.brannonglover.bikeops.app.dev" : "com.brannonglover.bikeops.app",
     buildNumber,
     userInterfaceStyle: "automatic",

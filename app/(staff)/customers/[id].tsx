@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/Button";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { ImageViewer } from "@/components/ui/ImageViewer";
 import { customerName, formatPhoneNumber, unformatPhoneNumber } from "@/lib/format";
+import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 
 type BikeTypeOption = "REGULAR" | "E_BIKE" | null;
 
@@ -38,6 +39,7 @@ interface BikeEditState {
 
 export default function CustomerDetailScreen() {
   const { theme } = useTheme();
+  const layout = useResponsiveLayout();
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -398,7 +400,10 @@ export default function CustomerDetailScreen() {
       />
       <ScrollView
         style={[styles.container, { backgroundColor: theme.background }]}
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[
+          styles.content,
+          layout.isTablet && styles.tabletContent,
+        ]}
         refreshControl={
           <RefreshControl refreshing={isManualRefresh} onRefresh={handleRefresh} />
         }
@@ -1006,6 +1011,12 @@ const styles = StyleSheet.create({
     padding: spacing[4],
     gap: spacing[3],
     paddingBottom: spacing[12],
+  },
+  tabletContent: {
+    width: "100%",
+    maxWidth: 760,
+    alignSelf: "center",
+    padding: spacing[6],
   },
   section: {
     gap: spacing[3],

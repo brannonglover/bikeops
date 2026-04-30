@@ -22,9 +22,11 @@ import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { customerName, formatCurrency, formatDate } from "@/lib/format";
+import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 
 export default function NewJobScreen() {
   const { theme } = useTheme();
+  const layout = useResponsiveLayout();
   const router = useRouter();
   const queryClient = useQueryClient();
 
@@ -251,7 +253,10 @@ export default function NewJobScreen() {
       >
         <ScrollView
           style={[styles.container, { backgroundColor: theme.background }]}
-          contentContainerStyle={styles.content}
+          contentContainerStyle={[
+            styles.content,
+            layout.isTablet && styles.tabletContent,
+          ]}
           keyboardShouldPersistTaps="handled"
         >
           {/* Customer */}
@@ -793,6 +798,12 @@ const styles = StyleSheet.create({
     padding: spacing[4],
     gap: spacing[3],
     paddingBottom: spacing[12],
+  },
+  tabletContent: {
+    width: "100%",
+    maxWidth: 760,
+    alignSelf: "center",
+    padding: spacing[6],
   },
   section: {
     gap: spacing[3],

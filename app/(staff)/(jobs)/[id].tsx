@@ -32,6 +32,7 @@ import { Button } from "@/components/ui/Button";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { ImageViewer } from "@/components/ui/ImageViewer";
 import { InvoiceTab } from "@/components/jobs/InvoiceTab";
+import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import {
   customerName,
   getJobBikeDisplayTitle,
@@ -142,6 +143,7 @@ function PulsingDot({ color }: { color: string }) {
 
 export default function JobDetailScreen() {
   const { theme } = useTheme();
+  const layout = useResponsiveLayout();
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -189,9 +191,12 @@ export default function JobDetailScreen() {
           backgroundColor: theme.background,
         },
         content: {
-          padding: spacing[4],
+          padding: layout.isTablet ? spacing[6] : spacing[4],
           gap: spacing[3],
           paddingBottom: spacing[12],
+          width: "100%",
+          maxWidth: layout.isTablet ? layout.contentMaxWidth : undefined,
+          alignSelf: "center",
         },
         section: {
           gap: spacing[3],
@@ -692,11 +697,14 @@ export default function JobDetailScreen() {
           fontWeight: "600",
         },
         invoiceContainer: {
-          padding: spacing[4],
+          padding: layout.isTablet ? spacing[6] : spacing[4],
           paddingBottom: spacing[12],
+          width: "100%",
+          maxWidth: layout.isTablet ? layout.contentMaxWidth : undefined,
+          alignSelf: "center",
         },
       }),
-    [theme]
+    [layout.contentMaxWidth, layout.isTablet, theme]
   );
 
   const {
