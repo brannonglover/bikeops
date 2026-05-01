@@ -22,6 +22,22 @@ import { JobCard } from "@/components/jobs/JobCard";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
+import { customerName, formatDate, getJobBikeDisplayTitle } from "@/lib/format";
+
+const COLUMN_STAGES = DISPLAY_STAGES.filter(
+  (stage) => stage !== "PENDING_APPROVAL"
+);
+
+const WEB_STAGE_HEADER_COLORS: Record<Stage, string> = {
+  PENDING_APPROVAL: colors.amber[600],
+  BOOKED_IN: colors.slate[500],
+  RECEIVED: colors.slate[600],
+  WORKING_ON: colors.amber[500],
+  WAITING_ON_PARTS: colors.amber[400],
+  BIKE_READY: colors.emerald[500],
+  COMPLETED: "#6366f1",
+  CANCELLED: colors.red[500],
+};
 
 export default function JobBoardScreen() {
   const { theme } = useTheme();
@@ -187,6 +203,7 @@ export default function JobBoardScreen() {
     () => jobs.filter((j) => j.stage === "COMPLETED").length,
     [jobs]
   );
+  const pendingApprovals = jobsByStage.PENDING_APPROVAL ?? [];
 
   const sections = useMemo(() => {
     const result = DISPLAY_STAGES.filter(
@@ -236,8 +253,123 @@ export default function JobBoardScreen() {
 
   if (isLoading) return <LoadingScreen message="Loading jobs..." />;
 
+  const pendingApprovalPanel =
+    useColumnBoard && pendingApprovals.length > 0 ? (
+      <View
+        style={[
+          styles.pendingPanel,
+          {
+            backgroundColor: theme.surface,
+            borderColor: theme.surfaceBorder,
+          },
+        ]}
+      >
+        <View
+          style={[
+            styles.pendingPanelHeader,
+            { borderBottomColor: theme.surfaceBorderSubtle },
+          ]}
+        >
+          <View style={styles.pendingPanelTitleRow}>
+            <View style={styles.pendingCountBadge}>
+              <Text style={styles.pendingCountText}>
+                {pendingApprovals.length}
+              </Text>
+            </View>
+            <Text style={[styles.pendingTitle, { color: theme.textHeading }]}>
+              Pending approval
+            </Text>
+            <Text
+              style={[styles.pendingSubtitle, { color: theme.textSecondary }]}
+              numberOfLines={1}
+            >
+              Booking{pendingApprovals.length === 1 ? "" : "s"} waiting on a yes/no
+            </Text>
+          </View>
+          <TouchableOpacity
+            onPress={handleRefresh}
+            disabled={isManualRefresh}
+            style={[
+              styles.pendingRefreshButton,
+              { backgroundColor: theme.subtleBg },
+              isManualRefresh && styles.disabledButton,
+            ]}
+            accessibilityLabel="Refresh pending approvals"
+          >
+            <Ionicons name="refresh" size={16} color={theme.textSecondary} />
+          </TouchableOpacity>
+        </View>
+        <ScrollView
+          style={styles.pendingList}
+          contentContainerStyle={styles.pendingListContent}
+          showsVerticalScrollIndicator={false}
+        >
+          {pendingApprovals.map((job) => (
+            <View
+              key={job.id}
+              style={[
+                styles.pendingRow,
+                { borderBottomColor: theme.surfaceBorderSubtle },
+              ]}
+            >
+              <TouchableOpacity
+                onPress={() => openJob(job)}
+                style={styles.pendingJobButton}
+                activeOpacity={0.7}
+              >
+                <Text
+                  style={[styles.pendingJobCustomer, { color: theme.text }]}
+                  numberOfLines={1}
+                >
+                  {job.customer ? customerName(job.customer) : "Walk-in customer"}
+                </Text>
+                <Text
+                  style={[styles.pendingJobBike, { color: theme.textSecondary }]}
+                  numberOfLines={1}
+                >
+                  {getJobBikeDisplayTitle(job)}
+                </Text>
+              </TouchableOpacity>
+              {job.dropOffDate ? (
+                <Text
+                  style={[
+                    styles.pendingDate,
+                    {
+                      color: theme.textTertiary,
+                      backgroundColor: theme.subtleBg,
+                    },
+                  ]}
+                >
+                  {formatDate(job.dropOffDate)}
+                </Text>
+              ) : (
+                <View style={styles.pendingDateSpacer} />
+              )}
+              <View style={styles.pendingActions}>
+                <TouchableOpacity
+                  onPress={() => handleAccept(job.id)}
+                  style={styles.pendingAcceptButton}
+                  accessibilityLabel="Accept booking"
+                >
+                  <Ionicons name="checkmark" size={16} color={colors.emerald[700]} />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => handleReject(job)}
+                  style={styles.pendingRejectButton}
+                  accessibilityLabel="Reject booking"
+                >
+                  <Ionicons name="close" size={16} color={colors.red[700]} />
+                </TouchableOpacity>
+              </View>
+            </View>
+          ))}
+        </ScrollView>
+      </View>
+    ) : null;
+
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
+      {pendingApprovalPanel}
       <View
         style={[
           styles.toolbar,
@@ -302,17 +434,22 @@ export default function JobBoardScreen() {
           message="Create your first job to get started."
         />
       ) : useColumnBoard ? (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.boardScroller}
-          contentContainerStyle={styles.boardContent}
-        >
-          {[...DISPLAY_STAGES, ...(cancelledExpanded && cancelledJobs.length > 0 ? ["CANCELLED" as Stage] : [])].map(
-            (stage) => {
+        <View style={styles.landscapeBoard}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.boardScroller}
+            contentContainerStyle={styles.boardContent}
+          >
+            {[
+              ...COLUMN_STAGES,
+              ...(cancelledExpanded && cancelledJobs.length > 0
+                ? ["CANCELLED" as Stage]
+                : []),
+            ].map((stage) => {
               const stageJobs =
                 stage === "CANCELLED" ? cancelledJobs : jobsByStage[stage] ?? [];
-              const stageColor = STAGE_COLORS[stage];
+              const stageColor = WEB_STAGE_HEADER_COLORS[stage];
 
               return (
                 <View
@@ -329,22 +466,16 @@ export default function JobBoardScreen() {
                     style={[
                       styles.boardColumnHeader,
                       {
-                        backgroundColor: `${stageColor}18`,
-                        borderBottomColor: `${stageColor}44`,
+                        backgroundColor: stageColor,
+                        borderBottomColor: stageColor,
                       },
                     ]}
                   >
                     <View style={styles.boardColumnTitleRow}>
-                      <View
-                        style={[
-                          styles.stageDot,
-                          { backgroundColor: stageColor },
-                        ]}
-                      />
                       <Text
                         style={[
                           styles.boardColumnTitle,
-                          { color: theme.textHeading },
+                          { color: colors.white },
                         ]}
                         numberOfLines={1}
                       >
@@ -354,13 +485,13 @@ export default function JobBoardScreen() {
                     <View
                       style={[
                         styles.boardCountBadge,
-                        { backgroundColor: `${stageColor}22` },
+                        { backgroundColor: "rgba(255, 255, 255, 0.24)" },
                       ]}
                     >
                       <Text
                         style={[
                           styles.boardCountText,
-                          { color: stageColor },
+                          { color: colors.white },
                         ]}
                       >
                         {stageJobs.length}
@@ -397,9 +528,9 @@ export default function JobBoardScreen() {
                   </ScrollView>
                 </View>
               );
-            }
-          )}
-        </ScrollView>
+            })}
+          </ScrollView>
+        </View>
       ) : (
         <SectionList
           sections={sections}
@@ -527,6 +658,118 @@ const styles = StyleSheet.create({
   },
   listContent: {
     paddingBottom: spacing[12],
+  },
+  landscapeBoard: {
+    flex: 1,
+  },
+  pendingPanel: {
+    marginHorizontal: spacing[4],
+    marginTop: spacing[4],
+    borderWidth: 1,
+    borderRadius: borderRadius.xl,
+    overflow: "hidden",
+  },
+  pendingPanelHeader: {
+    minHeight: 44,
+    paddingHorizontal: spacing[3],
+    paddingVertical: spacing[2],
+    borderBottomWidth: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing[3],
+  },
+  pendingPanelTitleRow: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing[2],
+    minWidth: 0,
+  },
+  pendingCountBadge: {
+    minWidth: 28,
+    height: 28,
+    borderRadius: borderRadius.full,
+    paddingHorizontal: spacing[2],
+    backgroundColor: colors.amber[100],
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  pendingCountText: {
+    ...fontSize.xs,
+    fontWeight: "700",
+    color: colors.amber[800],
+    fontVariant: ["tabular-nums"],
+  },
+  pendingTitle: {
+    ...fontSize.sm,
+    fontWeight: "700",
+  },
+  pendingSubtitle: {
+    ...fontSize.xs,
+    flex: 1,
+  },
+  pendingRefreshButton: {
+    width: 36,
+    height: 36,
+    borderRadius: borderRadius.lg,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  pendingList: {
+    maxHeight: 180,
+  },
+  pendingListContent: {
+    paddingHorizontal: spacing[3],
+  },
+  pendingRow: {
+    minHeight: 54,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing[3],
+    borderBottomWidth: 1,
+  },
+  pendingJobButton: {
+    flex: 1,
+    minWidth: 0,
+    paddingVertical: spacing[2],
+  },
+  pendingJobCustomer: {
+    ...fontSize.sm,
+    fontWeight: "700",
+  },
+  pendingJobBike: {
+    ...fontSize.xs,
+  },
+  pendingDate: {
+    ...fontSize.xs,
+    fontWeight: "700",
+    paddingHorizontal: spacing[2],
+    paddingVertical: spacing[1],
+    borderRadius: borderRadius.md,
+  },
+  pendingDateSpacer: {
+    width: 1,
+  },
+  pendingActions: {
+    flexDirection: "row",
+    gap: spacing[1.5],
+  },
+  pendingAcceptButton: {
+    width: 34,
+    height: 34,
+    borderRadius: borderRadius.lg,
+    backgroundColor: colors.emerald[50],
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  pendingRejectButton: {
+    width: 34,
+    height: 34,
+    borderRadius: borderRadius.lg,
+    backgroundColor: colors.red[50],
+    alignItems: "center",
+    justifyContent: "center",
   },
   boardContent: {
     gap: spacing[3],
