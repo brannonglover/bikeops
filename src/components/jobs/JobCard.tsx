@@ -1,10 +1,11 @@
-import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { View, Text, TouchableOpacity, StyleSheet, Image } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { StageBadge, PaymentBadge } from "@/components/ui/Badge";
 import { type Job, STAGE_LABELS, type Stage } from "@/lib/types";
 import { customerName, getJobBikeDisplayTitle, formatDate } from "@/lib/format";
+import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 
 interface JobCardProps {
   job: Job;
@@ -22,64 +23,136 @@ export function JobCard({
   onReject,
 }: JobCardProps) {
   const { theme } = useTheme();
+  const layout = useResponsiveLayout();
+  const showPortraitThumb = layout.isTabletPortrait;
+  const bikeImageUrl = job.jobBikes.find((bike) => bike.imageUrl)?.imageUrl;
 
   return (
     <TouchableOpacity
       onPress={onPress}
       activeOpacity={0.7}
-      style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.surfaceBorder }]}
+      style={[
+        styles.card,
+        showPortraitThumb && styles.cardTabletPortrait,
+        { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
+      ]}
     >
-      <View style={styles.header}>
-        <View style={styles.headerLeft}>
-          <Ionicons name="bicycle" size={16} color={theme.textMuted} />
-          <Text style={[styles.bikeLabel, { color: theme.text }]} numberOfLines={1}>
-            {getJobBikeDisplayTitle(job)}
-          </Text>
+      <View style={showPortraitThumb && styles.tabletRow}>
+        {showPortraitThumb ? (
+          bikeImageUrl ? (
+            <Image
+              source={{ uri: bikeImageUrl }}
+              style={[styles.bikeThumb, { backgroundColor: theme.placeholderBg }]}
+            />
+          ) : (
+            <View style={[styles.bikeThumbPlaceholder, { backgroundColor: theme.placeholderBg }]}>
+              <Ionicons name="bicycle" size={28} color={theme.iconMuted} />
+            </View>
+          )
+        ) : null}
+
+        <View style={styles.cardBody}>
+          <View style={styles.header}>
+            <View style={styles.headerLeft}>
+              <Ionicons
+                name="bicycle"
+                size={showPortraitThumb ? 18 : 16}
+                color={theme.textMuted}
+              />
+              <Text
+                style={[
+                  styles.bikeLabel,
+                  showPortraitThumb && styles.bikeLabelTabletPortrait,
+                  { color: theme.text },
+                ]}
+                numberOfLines={1}
+              >
+                {getJobBikeDisplayTitle(job)}
+              </Text>
+            </View>
+            <PaymentBadge status={job.paymentStatus} />
+          </View>
+
+          {job.customer ? (
+            <Text
+              style={[
+                styles.customerName,
+                showPortraitThumb && styles.customerNameTabletPortrait,
+                { color: theme.textTertiary },
+              ]}
+              numberOfLines={1}
+            >
+              {customerName(job.customer)}
+            </Text>
+          ) : null}
+
+          {job.stage !== "COMPLETED" && job.stage !== "CANCELLED" && (() => {
+            const hasWaitingBike = job.jobBikes.some(
+              (b) => b.waitingOnPartsAt && !b.completedAt && b.id !== job.workingOnJobBikeId
+            );
+            if (!hasWaitingBike) return null;
+            return (
+              <Text
+                style={[
+                  styles.waitingLabel,
+                  showPortraitThumb && styles.metaTabletPortrait,
+                ]}
+              >
+                <Ionicons name="time-outline" size={showPortraitThumb ? 13 : 11} /> Waiting on parts
+              </Text>
+            );
+          })()}
+
+          {job.jobBikes.length > 1 ? (
+            <Text
+              style={[
+                styles.meta,
+                showPortraitThumb && styles.metaTabletPortrait,
+                { color: theme.textSecondary },
+              ]}
+            >
+              {job.jobBikes.length} bikes
+            </Text>
+          ) : null}
+
+          {job.jobServices.length > 0 ? (
+            <Text
+              style={[
+                styles.meta,
+                showPortraitThumb && styles.metaTabletPortrait,
+                { color: theme.textSecondary },
+              ]}
+              numberOfLines={1}
+            >
+              {job.jobServices.filter((s) => s.service).map((s) => s.service.name).join(", ")}
+            </Text>
+          ) : null}
+
+          <View style={styles.footer}>
+            {job.dropOffDate ? (
+              <Text
+                style={[
+                  styles.date,
+                  showPortraitThumb && styles.metaTabletPortrait,
+                  { color: theme.textMuted },
+                ]}
+              >
+                Drop-off: {formatDate(job.dropOffDate)}
+              </Text>
+            ) : null}
+            {job.pickupDate ? (
+              <Text
+                style={[
+                  styles.date,
+                  showPortraitThumb && styles.metaTabletPortrait,
+                  { color: theme.textMuted },
+                ]}
+              >
+                Pickup: {formatDate(job.pickupDate)}
+              </Text>
+            ) : null}
+          </View>
         </View>
-        <PaymentBadge status={job.paymentStatus} />
-      </View>
-
-      {job.customer ? (
-        <Text style={[styles.customerName, { color: theme.textTertiary }]} numberOfLines={1}>
-          {customerName(job.customer)}
-        </Text>
-      ) : null}
-
-      {job.stage !== "COMPLETED" && job.stage !== "CANCELLED" && (() => {
-        const hasWaitingBike = job.jobBikes.some(
-          (b) => b.waitingOnPartsAt && !b.completedAt && b.id !== job.workingOnJobBikeId
-        );
-        if (!hasWaitingBike) return null;
-        return (
-          <Text style={styles.waitingLabel}>
-            <Ionicons name="time-outline" size={11} /> Waiting on parts
-          </Text>
-        );
-      })()}
-
-      {job.jobBikes.length > 1 ? (
-        <Text style={[styles.meta, { color: theme.textSecondary }]}>
-          {job.jobBikes.length} bikes
-        </Text>
-      ) : null}
-
-      {job.jobServices.length > 0 ? (
-        <Text style={[styles.meta, { color: theme.textSecondary }]} numberOfLines={1}>
-          {job.jobServices.filter((s) => s.service).map((s) => s.service.name).join(", ")}
-        </Text>
-      ) : null}
-
-      <View style={styles.footer}>
-        {job.dropOffDate ? (
-          <Text style={[styles.date, { color: theme.textMuted }]}>
-            Drop-off: {formatDate(job.dropOffDate)}
-          </Text>
-        ) : null}
-        {job.pickupDate ? (
-          <Text style={[styles.date, { color: theme.textMuted }]}>
-            Pickup: {formatDate(job.pickupDate)}
-          </Text>
-        ) : null}
       </View>
 
       {job.stage === "PENDING_APPROVAL" && (onAccept || onReject) ? (
@@ -124,6 +197,30 @@ const styles = StyleSheet.create({
     elevation: 2,
     gap: spacing[1.5],
   },
+  cardTabletPortrait: {
+    padding: spacing[4],
+  },
+  tabletRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing[4],
+  },
+  bikeThumb: {
+    width: 84,
+    height: 84,
+    borderRadius: borderRadius.xl,
+  },
+  bikeThumbPlaceholder: {
+    width: 84,
+    height: 84,
+    borderRadius: borderRadius.xl,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cardBody: {
+    flex: 1,
+    gap: spacing[1.5],
+  },
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -140,11 +237,20 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     flex: 1,
   },
+  bikeLabelTabletPortrait: {
+    ...fontSize.lg,
+  },
   customerName: {
     ...fontSize.xs,
   },
+  customerNameTabletPortrait: {
+    ...fontSize.base,
+  },
   meta: {
     ...fontSize.xs,
+  },
+  metaTabletPortrait: {
+    ...fontSize.sm,
   },
   waitingLabel: {
     ...fontSize.xs,

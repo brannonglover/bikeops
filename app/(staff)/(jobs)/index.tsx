@@ -2,11 +2,14 @@ import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import {
   View,
   Text,
+  ScrollView,
   SectionList,
   TouchableOpacity,
   RefreshControl,
   Alert,
   StyleSheet,
+  type StyleProp,
+  type ViewStyle,
 } from "react-native";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -26,6 +29,7 @@ export default function JobBoardScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const navigatingRef = useRef(false);
+  const useColumnBoard = layout.isTablet && layout.isLandscape;
 
   useFocusEffect(
     useCallback(() => {
@@ -197,17 +201,22 @@ export default function JobBoardScreen() {
     return result;
   }, [jobsByStage, cancelledJobs, cancelledExpanded]);
 
-  const renderItem = useCallback(
-    ({ item }: { item: Job }) => (
-      <View style={styles.cardWrapper}>
+  const openJob = useCallback(
+    (job: Job) => {
+      if (navigatingRef.current) return;
+      navigatingRef.current = true;
+      queryClient.setQueryData(["job", job.id], job);
+      router.push(`/(staff)/(jobs)/${job.id}`);
+    },
+    [queryClient, router]
+  );
+
+  const renderJobCard = useCallback(
+    (item: Job, wrapperStyle?: StyleProp<ViewStyle>) => (
+      <View style={[styles.cardWrapper, wrapperStyle]}>
         <JobCard
           job={item}
-          onPress={() => {
-            if (navigatingRef.current) return;
-            navigatingRef.current = true;
-            queryClient.setQueryData(["job", item.id], item);
-            router.push(`/(staff)/(jobs)/${item.id}`);
-          }}
+          onPress={() => openJob(item)}
           onAccept={
             item.stage === "PENDING_APPROVAL" ? () => handleAccept(item.id) : undefined
           }
@@ -217,7 +226,12 @@ export default function JobBoardScreen() {
         />
       </View>
     ),
-    [router, handleAccept, handleReject]
+    [openJob, handleAccept, handleReject]
+  );
+
+  const renderItem = useCallback(
+    ({ item }: { item: Job }) => renderJobCard(item),
+    [renderJobCard]
   );
 
   if (isLoading) return <LoadingScreen message="Loading jobs..." />;
@@ -254,6 +268,24 @@ export default function JobBoardScreen() {
             {completedCount > 0 ? `Archive (${completedCount})` : "Archive"}
           </Text>
         </TouchableOpacity>
+        {useColumnBoard && cancelledJobs.length > 0 ? (
+          <TouchableOpacity
+            onPress={() => setCancelledExpanded((e) => !e)}
+            style={[
+              styles.archiveButton,
+              {
+                borderColor: theme.inputBorder,
+                backgroundColor: cancelledExpanded
+                  ? theme.subtleBg
+                  : theme.surface,
+              },
+            ]}
+          >
+            <Text style={[styles.archiveText, { color: colors.red[600] }]}>
+              Cancelled ({cancelledJobs.length})
+            </Text>
+          </TouchableOpacity>
+        ) : null}
         <TouchableOpacity
           onPress={() => router.push("/(staff)/(jobs)/new")}
           style={styles.newJobButton}
@@ -269,6 +301,105 @@ export default function JobBoardScreen() {
           title="No jobs yet"
           message="Create your first job to get started."
         />
+      ) : useColumnBoard ? (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.boardScroller}
+          contentContainerStyle={styles.boardContent}
+        >
+          {[...DISPLAY_STAGES, ...(cancelledExpanded && cancelledJobs.length > 0 ? ["CANCELLED" as Stage] : [])].map(
+            (stage) => {
+              const stageJobs =
+                stage === "CANCELLED" ? cancelledJobs : jobsByStage[stage] ?? [];
+              const stageColor = STAGE_COLORS[stage];
+
+              return (
+                <View
+                  key={stage}
+                  style={[
+                    styles.boardColumn,
+                    {
+                      backgroundColor: theme.surface,
+                      borderColor: theme.surfaceBorder,
+                    },
+                  ]}
+                >
+                  <View
+                    style={[
+                      styles.boardColumnHeader,
+                      {
+                        backgroundColor: `${stageColor}18`,
+                        borderBottomColor: `${stageColor}44`,
+                      },
+                    ]}
+                  >
+                    <View style={styles.boardColumnTitleRow}>
+                      <View
+                        style={[
+                          styles.stageDot,
+                          { backgroundColor: stageColor },
+                        ]}
+                      />
+                      <Text
+                        style={[
+                          styles.boardColumnTitle,
+                          { color: theme.textHeading },
+                        ]}
+                        numberOfLines={1}
+                      >
+                        {STAGE_LABELS[stage]}
+                      </Text>
+                    </View>
+                    <View
+                      style={[
+                        styles.boardCountBadge,
+                        { backgroundColor: `${stageColor}22` },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.boardCountText,
+                          { color: stageColor },
+                        ]}
+                      >
+                        {stageJobs.length}
+                      </Text>
+                    </View>
+                  </View>
+
+                  <ScrollView
+                    style={styles.boardColumnScroll}
+                    contentContainerStyle={styles.boardColumnContent}
+                    showsVerticalScrollIndicator={false}
+                  >
+                    {stageJobs.length > 0 ? (
+                      stageJobs.map((job) =>
+                        renderJobCard(job, styles.boardCardWrapper)
+                      )
+                    ) : (
+                      <View
+                        style={[
+                          styles.boardEmpty,
+                          { borderColor: theme.surfaceBorderSubtle },
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.boardEmptyText,
+                            { color: theme.textMuted },
+                          ]}
+                        >
+                          No jobs
+                        </Text>
+                      </View>
+                    )}
+                  </ScrollView>
+                </View>
+              );
+            }
+          )}
+        </ScrollView>
       ) : (
         <SectionList
           sections={sections}
@@ -279,6 +410,7 @@ export default function JobBoardScreen() {
               style={[
                 styles.sectionHeader,
                 layout.isTablet && styles.tabletConstrained,
+                layout.isTabletPortrait && styles.sectionHeaderTabletPortrait,
                 {
                   backgroundColor: theme.background,
                   borderBottomColor: theme.surfaceBorder,
@@ -291,11 +423,23 @@ export default function JobBoardScreen() {
                   { backgroundColor: STAGE_COLORS[section.title as Stage] },
                 ]}
               />
-              <Text style={[styles.sectionTitle, { color: theme.textTertiary }]}>
+              <Text
+                style={[
+                  styles.sectionTitle,
+                  layout.isTabletPortrait && styles.sectionTitleTabletPortrait,
+                  { color: theme.textTertiary },
+                ]}
+              >
                 {STAGE_LABELS[section.title as Stage]}
               </Text>
               <View style={[styles.countBadge, { backgroundColor: theme.subtleBg }]}>
-                <Text style={[styles.countText, { color: theme.textTertiary }]}>
+                <Text
+                  style={[
+                    styles.countText,
+                    layout.isTabletPortrait && styles.countTextTabletPortrait,
+                    { color: theme.textTertiary },
+                  ]}
+                >
                   {section.data.length}
                 </Text>
               </View>
@@ -384,6 +528,78 @@ const styles = StyleSheet.create({
   listContent: {
     paddingBottom: spacing[12],
   },
+  boardContent: {
+    gap: spacing[3],
+    padding: spacing[4],
+    paddingBottom: spacing[6],
+  },
+  boardScroller: {
+    flex: 1,
+  },
+  boardColumn: {
+    width: 292,
+    borderWidth: 1,
+    borderRadius: borderRadius.xl,
+    overflow: "hidden",
+  },
+  boardColumnHeader: {
+    minHeight: 52,
+    paddingHorizontal: spacing[3],
+    paddingVertical: spacing[2.5],
+    borderBottomWidth: 1,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: spacing[2],
+  },
+  boardColumnTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing[2],
+    flex: 1,
+  },
+  boardColumnTitle: {
+    ...fontSize.sm,
+    fontWeight: "700",
+    flex: 1,
+  },
+  boardCountBadge: {
+    borderRadius: borderRadius.full,
+    minWidth: 28,
+    minHeight: 24,
+    paddingHorizontal: spacing[2],
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  boardCountText: {
+    ...fontSize.xs,
+    fontWeight: "700",
+    fontVariant: ["tabular-nums"],
+  },
+  boardColumnScroll: {
+    flex: 1,
+  },
+  boardColumnContent: {
+    paddingVertical: spacing[2],
+    minHeight: 180,
+  },
+  boardCardWrapper: {
+    paddingHorizontal: spacing[2],
+    maxWidth: undefined,
+  },
+  boardEmpty: {
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderRadius: borderRadius.lg,
+    marginHorizontal: spacing[2],
+    minHeight: 72,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  boardEmptyText: {
+    ...fontSize.xs,
+    fontWeight: "600",
+  },
   sectionHeader: {
     flexDirection: "row",
     alignItems: "center",
@@ -391,6 +607,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing[4],
     paddingVertical: spacing[2.5],
     borderBottomWidth: 1,
+  },
+  sectionHeaderTabletPortrait: {
+    paddingVertical: spacing[3],
   },
   stageDot: {
     width: 8,
@@ -401,6 +620,10 @@ const styles = StyleSheet.create({
     ...fontSize.sm,
     fontWeight: "600",
   },
+  sectionTitleTabletPortrait: {
+    ...fontSize.base,
+    fontWeight: "700",
+  },
   countBadge: {
     borderRadius: borderRadius.full,
     paddingHorizontal: spacing[2],
@@ -409,6 +632,10 @@ const styles = StyleSheet.create({
   countText: {
     ...fontSize.xs,
     fontWeight: "600",
+  },
+  countTextTabletPortrait: {
+    ...fontSize.sm,
+    fontWeight: "700",
   },
   cardWrapper: {
     paddingHorizontal: spacing[4],

@@ -8,12 +8,14 @@ export function useResponsiveLayout() {
     const shortestSide = Math.min(width, height);
     const isTablet = shortestSide >= 768;
     const isLandscape = width > height;
+    const isTabletPortrait = isTablet && !isLandscape;
 
     return {
       width,
       height,
       isTablet,
       isLandscape,
+      isTabletPortrait,
       contentMaxWidth: isTablet ? 1120 : undefined,
       formMaxWidth: isTablet ? 720 : undefined,
       listMaxWidth: isTablet ? 1040 : undefined,
