@@ -60,26 +60,26 @@ function applyJobPatchOptimistically(job: Job, patch: JobPatchBody): Job {
   const nowIso = new Date().toISOString();
 
   if (patch.completeJobBikeId) {
-    next.jobBikes = next.jobBikes.map((jb) =>
+    next.jobBikes = (next.jobBikes ?? []).map((jb) =>
       jb.id === patch.completeJobBikeId
         ? { ...jb, completedAt: nowIso, waitingOnPartsAt: null }
         : jb
     );
   }
   if (patch.uncompleteJobBikeId) {
-    next.jobBikes = next.jobBikes.map((jb) =>
+    next.jobBikes = (next.jobBikes ?? []).map((jb) =>
       jb.id === patch.uncompleteJobBikeId ? { ...jb, completedAt: null } : jb
     );
   }
   if (patch.waitForPartsJobBikeId) {
-    next.jobBikes = next.jobBikes.map((jb) =>
+    next.jobBikes = (next.jobBikes ?? []).map((jb) =>
       jb.id === patch.waitForPartsJobBikeId
         ? { ...jb, waitingOnPartsAt: nowIso }
         : jb
     );
   }
   if (patch.unwaitForPartsJobBikeId) {
-    next.jobBikes = next.jobBikes.map((jb) =>
+    next.jobBikes = (next.jobBikes ?? []).map((jb) =>
       jb.id === patch.unwaitForPartsJobBikeId
         ? { ...jb, waitingOnPartsAt: null }
         : jb
@@ -798,7 +798,7 @@ export default function JobDetailScreen() {
     // Only undo auto-completion that happened due to a payment event. If the
     // user manually marks the job as completed later, don't fight them.
     if (prevPaymentStatus === "PAID") return;
-    const hasIncompleteBike = job.jobBikes.some((jb) => !jb.completedAt);
+    const hasIncompleteBike = (job.jobBikes ?? []).some((jb) => !jb.completedAt);
     if (!hasIncompleteBike) return;
 
     const restoreStage = lastNonCompletedStageRef.current ?? "RECEIVED";
@@ -853,22 +853,22 @@ export default function JobDetailScreen() {
         // When the stage is manually set to WORKING_ON, also clear the per-bike
         // "waiting on parts" state so the badge doesn't linger. Mirror what
         // handleResumeWork does: pick the first waiting (non-completed) bike.
-        const waitingBike = job.jobBikes.find(
+        const waitingBike = (job.jobBikes ?? []).find(
           (jb) => !!jb.waitingOnPartsAt && !jb.completedAt
         );
         if (waitingBike) {
           patch.unwaitForPartsJobBikeId = waitingBike.id;
           patch.workingOnJobBikeId = waitingBike.id;
         } else if (!job.workingOnJobBikeId) {
-          const firstActive = job.jobBikes.find((jb) => !jb.completedAt);
+          const firstActive = (job.jobBikes ?? []).find((jb) => !jb.completedAt);
           if (firstActive) patch.workingOnJobBikeId = firstActive.id;
         }
       } else if (stage === "WAITING_ON_PARTS") {
         // Mirror what handleWaitForParts does: pick the currently active bike
         // (or the first non-completed one) so the per-bike badge updates too.
         const targetBike =
-          job.jobBikes.find((jb) => jb.id === job.workingOnJobBikeId) ??
-          job.jobBikes.find((jb) => !jb.completedAt);
+          (job.jobBikes ?? []).find((jb) => jb.id === job.workingOnJobBikeId) ??
+          (job.jobBikes ?? []).find((jb) => !jb.completedAt);
         if (targetBike) patch.waitForPartsJobBikeId = targetBike.id;
       }
 
@@ -975,7 +975,7 @@ export default function JobDetailScreen() {
       // this matters when the job is already WORKING_ON (e.g. switching to a
       // different bike that still has waitingOnPartsAt set from a prior state).
       if (nextId) {
-        const clickedBike = job.jobBikes.find((jb) => jb.id === nextId);
+        const clickedBike = (job.jobBikes ?? []).find((jb) => jb.id === nextId);
         if (clickedBike?.waitingOnPartsAt && !clickedBike.completedAt) {
           patch.unwaitForPartsJobBikeId = nextId;
         }
@@ -999,7 +999,7 @@ export default function JobDetailScreen() {
         : { completeJobBikeId: bikeId };
 
       if (!isCompleted) {
-        const allCompletedAfter = job.jobBikes.every(
+        const allCompletedAfter = (job.jobBikes ?? []).every(
           (jb) => !!jb.completedAt || jb.id === bikeId
         );
         if (allCompletedAfter) {
@@ -1007,7 +1007,7 @@ export default function JobDetailScreen() {
           patch.workingOnJobBikeId = null;
           patch.completedAt = null;
         } else if (job.workingOnJobBikeId === bikeId) {
-          const nextActive = job.jobBikes.find(
+          const nextActive = (job.jobBikes ?? []).find(
             (jb) => jb.id !== bikeId && !jb.completedAt
           );
           patch.workingOnJobBikeId = nextActive?.id ?? null;
@@ -1065,7 +1065,7 @@ export default function JobDetailScreen() {
   const handleBikeTypeChange = useCallback(
     (jobBikeId: string, bikeType: BikeType) => {
       if (!job) return;
-      const bikes = job.jobBikes.map((jb) => ({
+      const bikes = (job.jobBikes ?? []).map((jb) => ({
         make: jb.make,
         model: jb.model,
         nickname: jb.nickname,
@@ -1269,10 +1269,6 @@ export default function JobDetailScreen() {
     }
   }, [job, openingChat, queryClient, router]);
 
-  if (isLoading || !job) return <LoadingScreen message="Loading job..." />;
-
-  const total = jobTotal(job.jobServices, job.jobProducts);
-
   const handleBack = useCallback(() => {
     Keyboard.dismiss();
 
@@ -1323,6 +1319,13 @@ export default function JobDetailScreen() {
       return () => sub.remove();
     }, [handleBack])
   );
+
+  if (isLoading || !job) return <LoadingScreen message="Loading job..." />;
+
+  const jobBikes = job.jobBikes ?? [];
+  const jobServices = job.jobServices ?? [];
+  const jobProducts = job.jobProducts ?? [];
+  const total = jobTotal(jobServices, jobProducts);
 
   return (
     <>
@@ -1535,9 +1538,9 @@ export default function JobDetailScreen() {
         {/* Bikes */}
         <Card style={styles.section}>
           <Text style={styles.sectionTitle}>
-            {job.jobBikes.length === 1 ? "Bike" : `Bikes (${job.jobBikes.length})`}
+            {jobBikes.length === 1 ? "Bike" : `Bikes (${jobBikes.length})`}
           </Text>
-          {job.jobBikes.map((jb) => {
+          {jobBikes.map((jb) => {
             const isWorkingOn = job.workingOnJobBikeId === jb.id;
             const isCompleted = !!jb.completedAt;
             // Never show "waiting on parts" for the bike currently being worked on —
@@ -1957,42 +1960,46 @@ export default function JobDetailScreen() {
         </Card>
 
         {/* Services */}
-        {job.jobServices.length > 0 ? (
+        {jobServices.length > 0 ? (
           <Card style={styles.section}>
             <Text style={styles.sectionTitle}>Services</Text>
-            {job.jobServices.map((js) => (
-              <View key={js.id} style={styles.lineItem}>
-                <View style={styles.lineItemLeft}>
-                  <Text style={styles.lineItemName}>{js.service.name}</Text>
-                  {js.quantity > 1 ? (
-                    <Text style={styles.lineItemQty}>x{js.quantity}</Text>
-                  ) : null}
+            {jobServices.map((js) =>
+              js?.service ? (
+                <View key={js.id} style={styles.lineItem}>
+                  <View style={styles.lineItemLeft}>
+                    <Text style={styles.lineItemName}>{js.service.name}</Text>
+                    {js.quantity > 1 ? (
+                      <Text style={styles.lineItemQty}>x{js.quantity}</Text>
+                    ) : null}
+                  </View>
+                  <Text style={styles.lineItemPrice}>
+                    {formatCurrency(parseFloat(js.unitPrice) * js.quantity)}
+                  </Text>
                 </View>
-                <Text style={styles.lineItemPrice}>
-                  {formatCurrency(parseFloat(js.unitPrice) * js.quantity)}
-                </Text>
-              </View>
-            ))}
+              ) : null
+            )}
           </Card>
         ) : null}
 
         {/* Products */}
-        {job.jobProducts.length > 0 ? (
+        {jobProducts.length > 0 ? (
           <Card style={styles.section}>
             <Text style={styles.sectionTitle}>Products</Text>
-            {job.jobProducts.map((jp) => (
-              <View key={jp.id} style={styles.lineItem}>
-                <View style={styles.lineItemLeft}>
-                  <Text style={styles.lineItemName}>{jp.product.name}</Text>
-                  {jp.quantity > 1 ? (
-                    <Text style={styles.lineItemQty}>x{jp.quantity}</Text>
-                  ) : null}
+            {jobProducts.map((jp) =>
+              jp?.product ? (
+                <View key={jp.id} style={styles.lineItem}>
+                  <View style={styles.lineItemLeft}>
+                    <Text style={styles.lineItemName}>{jp.product.name}</Text>
+                    {jp.quantity > 1 ? (
+                      <Text style={styles.lineItemQty}>x{jp.quantity}</Text>
+                    ) : null}
+                  </View>
+                  <Text style={styles.lineItemPrice}>
+                    {formatCurrency(parseFloat(jp.unitPrice) * jp.quantity)}
+                  </Text>
                 </View>
-                <Text style={styles.lineItemPrice}>
-                  {formatCurrency(parseFloat(jp.unitPrice) * jp.quantity)}
-                </Text>
-              </View>
-            ))}
+              ) : null
+            )}
           </Card>
         ) : null}
 

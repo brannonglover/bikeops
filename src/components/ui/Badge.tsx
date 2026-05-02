@@ -19,11 +19,19 @@ export function Badge({ label, color, backgroundColor, style }: BadgeProps) {
   );
 }
 
-export function StageBadge({ stage, style }: { stage: Stage; style?: ViewStyle }) {
-  const color = STAGE_COLORS[stage];
+function humanizeStage(stage: string): string {
+  return stage
+    .toLowerCase()
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+export function StageBadge({ stage, style }: { stage: Stage | string; style?: ViewStyle }) {
+  const color = STAGE_COLORS[stage as Stage] ?? colors.slate[600];
   return (
     <Badge
-      label={STAGE_LABELS[stage]}
+      label={STAGE_LABELS[stage as Stage] ?? humanizeStage(stage)}
       color={color}
       backgroundColor={color + "20"}
       style={style}

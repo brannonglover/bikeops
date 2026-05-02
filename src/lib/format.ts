@@ -118,11 +118,25 @@ export function unformatPhoneNumber(formatted: string): string {
 }
 
 export function jobTotal(
-  services: { quantity: number; unitPrice: string }[],
-  products: { quantity: number; unitPrice: string }[]
+  services: ({ quantity?: number | null; unitPrice?: string | null } | null | undefined)[] | null | undefined,
+  products: ({ quantity?: number | null; unitPrice?: string | null } | null | undefined)[] | null | undefined
 ): number {
   let total = 0;
-  for (const s of services) total += s.quantity * parseFloat(s.unitPrice);
-  for (const p of products) total += p.quantity * parseFloat(p.unitPrice);
+  for (const s of services ?? []) {
+    if (!s) continue;
+    const quantity = Number(s.quantity ?? 0);
+    const unitPrice = Number.parseFloat(s.unitPrice ?? "0");
+    if (Number.isFinite(quantity) && Number.isFinite(unitPrice)) {
+      total += quantity * unitPrice;
+    }
+  }
+  for (const p of products ?? []) {
+    if (!p) continue;
+    const quantity = Number(p.quantity ?? 0);
+    const unitPrice = Number.parseFloat(p.unitPrice ?? "0");
+    if (Number.isFinite(quantity) && Number.isFinite(unitPrice)) {
+      total += quantity * unitPrice;
+    }
+  }
   return total;
 }

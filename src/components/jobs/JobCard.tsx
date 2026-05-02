@@ -25,7 +25,9 @@ export function JobCard({
   const { theme } = useTheme();
   const layout = useResponsiveLayout();
   const showPortraitThumb = layout.isTabletPortrait;
-  const bikeImageUrl = job.jobBikes.find((bike) => bike.imageUrl)?.imageUrl;
+  const jobBikes = job.jobBikes ?? [];
+  const jobServices = job.jobServices ?? [];
+  const bikeImageUrl = jobBikes.find((bike) => bike.imageUrl)?.imageUrl;
 
   return (
     <TouchableOpacity
@@ -87,7 +89,7 @@ export function JobCard({
           ) : null}
 
           {job.stage !== "COMPLETED" && job.stage !== "CANCELLED" && (() => {
-            const hasWaitingBike = job.jobBikes.some(
+            const hasWaitingBike = jobBikes.some(
               (b) => b.waitingOnPartsAt && !b.completedAt && b.id !== job.workingOnJobBikeId
             );
             if (!hasWaitingBike) return null;
@@ -103,7 +105,7 @@ export function JobCard({
             );
           })()}
 
-          {job.jobBikes.length > 1 ? (
+          {jobBikes.length > 1 ? (
             <Text
               style={[
                 styles.meta,
@@ -111,11 +113,11 @@ export function JobCard({
                 { color: theme.textSecondary },
               ]}
             >
-              {job.jobBikes.length} bikes
+              {jobBikes.length} bikes
             </Text>
           ) : null}
 
-          {job.jobServices.length > 0 ? (
+          {jobServices.length > 0 ? (
             <Text
               style={[
                 styles.meta,
@@ -124,7 +126,10 @@ export function JobCard({
               ]}
               numberOfLines={1}
             >
-              {job.jobServices.filter((s) => s.service).map((s) => s.service.name).join(", ")}
+              {jobServices
+                .filter((s) => s?.service)
+                .map((s) => s.service.name)
+                .join(", ")}
             </Text>
           ) : null}
 

@@ -197,6 +197,14 @@ export default function NewJobScreen() {
   );
 
   const handleSubmit = async () => {
+    if (!selectedCustomer && customerSearch.trim()) {
+      Alert.alert(
+        "Select Customer",
+        "Tap a customer from the search results to attach them to this job, or clear the customer field to create a walk-in job."
+      );
+      return;
+    }
+
     const customerBikes = (selectedCustomer?.bikes ?? [])
       .filter((b) => selectedCustomerBikeIds.includes(b.id))
       .map((b) => ({ make: b.make, model: b.model ?? null, bikeId: b.id }));
@@ -303,6 +311,11 @@ export default function NewJobScreen() {
                   onChangeText={searchCustomers}
                   autoCapitalize="none"
                 />
+                {customerSearch.trim() ? (
+                  <Text style={[styles.customerSearchHint, { color: theme.textSecondary }]}>
+                    Select a result below to attach this customer.
+                  </Text>
+                ) : null}
                 {customers.length > 0 ? (
                   <View
                     style={[
@@ -335,6 +348,10 @@ export default function NewJobScreen() {
                       </TouchableOpacity>
                     ))}
                   </View>
+                ) : customerSearch.trim() ? (
+                  <Text style={[styles.customerSearchHint, { color: theme.textMuted }]}>
+                    No matching customer found. Clear this field to continue as a walk-in job.
+                  </Text>
                 ) : null}
               </>
             )}
@@ -902,6 +919,10 @@ const styles = StyleSheet.create({
   },
   customerOptionEmail: {
     ...fontSize.xs,
+  },
+  customerSearchHint: {
+    ...fontSize.xs,
+    marginTop: -spacing[2],
   },
   sectionToggle: {
     flexDirection: "row",
