@@ -38,6 +38,7 @@ import {
   getJobBikeDisplayTitle,
   formatDate,
   formatCurrency,
+  formatPhoneNumber,
   jobTotal,
 } from "@/lib/format";
 import { AppleMaps } from "expo-maps";
@@ -1528,7 +1529,7 @@ export default function JobDetailScreen() {
                 activeOpacity={0.6}
               >
                 <Text style={[styles.meta, { color: colors.blue[500] }]}>
-                  {job.customer.phone}
+                  {formatPhoneNumber(job.customer.phone)}
                 </Text>
               </TouchableOpacity>
             ) : null}

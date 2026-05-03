@@ -107,7 +107,11 @@ export function getJobBikeDisplayTitle(job: Job): string {
 }
 
 export function formatPhoneNumber(raw: string): string {
-  const digits = raw.replace(/\D/g, "").slice(0, 10);
+  const normalizedDigits = raw.replace(/\D/g, "");
+  const digits =
+    normalizedDigits.length === 11 && normalizedDigits.startsWith("1")
+      ? normalizedDigits.slice(1)
+      : normalizedDigits.slice(0, 10);
   if (digits.length <= 3) return digits;
   if (digits.length <= 6) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`;
   return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
