@@ -12,6 +12,7 @@ import {
   Linking,
   FlatList,
   KeyboardAvoidingView,
+  Keyboard,
   Platform,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -36,6 +37,13 @@ import { computeJobSubtotal, getJobPaymentSummary } from "@/lib/job-payments";
 interface InvoiceTabProps {
   job: Job;
   onJobUpdated: (job: Job) => void;
+}
+
+const IOS_PICKER_DISMISS_DELAY_MS = 260;
+
+function waitForPickerDismiss() {
+  if (Platform.OS !== "ios") return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, IOS_PICKER_DISMISS_DELAY_MS));
 }
 
 export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
@@ -219,29 +227,41 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
     onJobUpdated(data);
   }, [job.id, onJobUpdated]);
 
+  const closeServicePicker = useCallback(() => {
+    Keyboard.dismiss();
+    setShowServicePicker(false);
+    setServiceSearch("");
+  }, []);
+
+  const closeProductPicker = useCallback(() => {
+    Keyboard.dismiss();
+    setShowProductPicker(false);
+    setProductSearch("");
+  }, []);
+
   const handleAddService = useCallback(
     async (serviceId: string) => {
+      closeServicePicker();
       setAdding(true);
-      setShowServicePicker(false);
-      setServiceSearch("");
       try {
+        await waitForPickerDismiss();
         const res = await api.post(`/api/jobs/${job.id}/services`, { serviceId });
         if (res.response.ok) await refetchJob();
       } finally {
         setAdding(false);
       }
     },
-    [job.id, refetchJob]
+    [closeServicePicker, job.id, refetchJob]
   );
 
   const handleAddCustomService = useCallback(
     async (name: string) => {
       const trimmed = name.trim();
       if (!trimmed) return;
+      closeServicePicker();
       setAdding(true);
-      setShowServicePicker(false);
-      setServiceSearch("");
       try {
+        await waitForPickerDismiss();
         const res = await api.post(`/api/jobs/${job.id}/services`, {
           customServiceName: trimmed,
           unitPrice: 0,
@@ -251,7 +271,7 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
         setAdding(false);
       }
     },
-    [job.id, refetchJob]
+    [closeServicePicker, job.id, refetchJob]
   );
 
   const handleRemoveService = useCallback(
@@ -352,17 +372,17 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
 
   const handleAddProduct = useCallback(
     async (productId: string) => {
+      closeProductPicker();
       setAddingProduct(true);
-      setShowProductPicker(false);
-      setProductSearch("");
       try {
+        await waitForPickerDismiss();
         const res = await api.post(`/api/jobs/${job.id}/products`, { productId });
         if (res.response.ok) await refetchJob();
       } finally {
         setAddingProduct(false);
       }
     },
-    [job.id, refetchJob]
+    [closeProductPicker, job.id, refetchJob]
   );
 
   const handleRemoveProduct = useCallback(
@@ -1511,6 +1531,7 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
         <TouchableOpacity
           style={styles.addButton}
           onPress={() => {
+            Keyboard.dismiss();
             setServiceSearch("");
             setShowServicePicker(true);
           }}
@@ -1525,6 +1546,7 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
           <TouchableOpacity
             style={styles.addButton}
             onPress={() => {
+              Keyboard.dismiss();
               setProductSearch("");
               setShowProductPicker(true);
             }}
@@ -1653,7 +1675,7 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
         transparent
         animationType="slide"
         statusBarTranslucent
-        onRequestClose={() => setShowServicePicker(false)}
+        onRequestClose={closeServicePicker}
       >
         <KeyboardAvoidingView
           behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -1661,7 +1683,7 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
         >
           <Pressable
             style={styles.pickerBackdrop}
-            onPress={() => setShowServicePicker(false)}
+            onPress={closeServicePicker}
           >
             <Pressable
               style={styles.pickerSheet}
@@ -1725,7 +1747,7 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
         transparent
         animationType="slide"
         statusBarTranslucent
-        onRequestClose={() => setShowProductPicker(false)}
+        onRequestClose={closeProductPicker}
       >
         <KeyboardAvoidingView
           behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -1733,7 +1755,7 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
         >
           <Pressable
             style={styles.pickerBackdrop}
-            onPress={() => setShowProductPicker(false)}
+            onPress={closeProductPicker}
           >
             <Pressable
               style={styles.pickerSheet}
