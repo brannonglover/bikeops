@@ -153,7 +153,7 @@ async function apiFetch<T = unknown>(
     // without relying on cookie header parsing (more reliable in native apps).
     if (role === "staff") {
       const jwt = extractJwtFromCookie(storedCookie);
-      if (jwt) headers["Authorization"] = `Bearer ${encodeURIComponent(jwt)}`;
+      if (jwt) headers["Authorization"] = `Bearer ${jwt}`;
     }
   }
 
