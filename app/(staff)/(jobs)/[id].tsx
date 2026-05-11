@@ -171,6 +171,10 @@ export default function JobDetailScreen() {
   const [showDatePicker, setShowDatePicker] = useState<"dropOff" | "pickup" | null>(null);
   const [calMonth, setCalMonth] = useState(new Date().getMonth());
   const [calYear, setCalYear] = useState(new Date().getFullYear());
+  const [collPickupFrom, setCollPickupFrom] = useState("");
+  const [collPickupTo, setCollPickupTo] = useState("");
+  const [collReturnFrom, setCollReturnFrom] = useState("");
+  const [collReturnTo, setCollReturnTo] = useState("");
   const [activeTab, setActiveTab] = useState<Tab>("details");
   const [internalNotesValue, setInternalNotesValue] = useState("");
   const [savingInternalNotes, setSavingInternalNotes] = useState(false);
@@ -669,6 +673,27 @@ export default function JobDetailScreen() {
           color: theme.text,
           fontWeight: "500" as const,
         },
+        windowRow: {
+          paddingLeft: spacing[3],
+          marginTop: -spacing[1],
+          marginBottom: spacing[1],
+        },
+        windowLabel: {
+          ...fontSize.xs,
+          marginBottom: spacing[1],
+        },
+        windowInputs: {
+          flexDirection: "row" as const,
+          alignItems: "center" as const,
+          gap: spacing[2],
+        },
+        windowInput: {
+          flex: 1,
+        },
+        windowDash: {
+          ...fontSize.base,
+          fontWeight: "500" as const,
+        },
         actionsSection: {
           gap: spacing[3],
           marginTop: spacing[2],
@@ -777,6 +802,10 @@ export default function JobDetailScreen() {
 
   useEffect(() => {
     setInternalNotesValue(job?.internalNotes ?? "");
+    setCollPickupFrom(job?.collectionPickupWindowFrom ?? "");
+    setCollPickupTo(job?.collectionPickupWindowTo ?? "");
+    setCollReturnFrom(job?.collectionReturnWindowFrom ?? "");
+    setCollReturnTo(job?.collectionReturnWindowTo ?? "");
   }, [job?.id]);
 
   const lastNonCompletedStageRef = useRef<Stage | null>(null);
@@ -1036,12 +1065,18 @@ export default function JobDetailScreen() {
     [savingWaiting, patchJob]
   );
 
+  const isCollection = job?.deliveryType === "COLLECTION_SERVICE";
+
   const handleDeliveryTypeChange = useCallback(
     (newType: DeliveryType) => {
       if (!job || job.deliveryType === newType) return;
       const patch: Record<string, unknown> = { deliveryType: newType };
       if (newType === "DROP_OFF_AT_SHOP") {
         patch.collectionAddress = null;
+        patch.collectionPickupWindowFrom = null;
+        patch.collectionPickupWindowTo = null;
+        patch.collectionReturnWindowFrom = null;
+        patch.collectionReturnWindowTo = null;
         setEditAddress(null);
       }
       patchJob.mutate(patch as Partial<Job>);
@@ -1940,17 +1975,8 @@ export default function JobDetailScreen() {
               ) : null}
             </View>
           ) : null}
-          <TouchableOpacity style={styles.row} onPress={() => openDatePicker("pickup")} activeOpacity={0.6}>
-            <Text style={styles.label}>Pickup</Text>
-            <View style={styles.dateValue}>
-              <Text style={[styles.dateText, !job.pickupDate && { color: theme.textMuted }]}>
-                {job.pickupDate ? formatDate(job.pickupDate) : "Set date"}
-              </Text>
-              <Ionicons name="calendar-outline" size={16} color={theme.textMuted} />
-            </View>
-          </TouchableOpacity>
           <TouchableOpacity style={styles.row} onPress={() => openDatePicker("dropOff")} activeOpacity={0.6}>
-            <Text style={styles.label}>Drop-off</Text>
+            <Text style={styles.label}>{isCollection ? "Collection pickup" : "Drop-off"}</Text>
             <View style={styles.dateValue}>
               <Text style={[styles.dateText, !job.dropOffDate && { color: theme.textMuted }]}>
                 {job.dropOffDate ? formatDate(job.dropOffDate) : "Set date"}
@@ -1958,6 +1984,75 @@ export default function JobDetailScreen() {
               <Ionicons name="calendar-outline" size={16} color={theme.textMuted} />
             </View>
           </TouchableOpacity>
+          {isCollection ? (
+            <View style={styles.windowRow}>
+              <Text style={[styles.windowLabel, { color: theme.textSecondary }]}>Window</Text>
+              <View style={styles.windowInputs}>
+                <Input
+                  placeholder="From (e.g. 09:00)"
+                  value={collPickupFrom}
+                  onChangeText={setCollPickupFrom}
+                  onBlur={() => {
+                    const v = collPickupFrom.trim() || null;
+                    if (v !== (job.collectionPickupWindowFrom ?? null))
+                      patchJob.mutate({ collectionPickupWindowFrom: v } as Partial<Job>);
+                  }}
+                  containerStyle={styles.windowInput}
+                />
+                <Text style={[styles.windowDash, { color: theme.textMuted }]}>–</Text>
+                <Input
+                  placeholder="To (e.g. 12:00)"
+                  value={collPickupTo}
+                  onChangeText={setCollPickupTo}
+                  onBlur={() => {
+                    const v = collPickupTo.trim() || null;
+                    if (v !== (job.collectionPickupWindowTo ?? null))
+                      patchJob.mutate({ collectionPickupWindowTo: v } as Partial<Job>);
+                  }}
+                  containerStyle={styles.windowInput}
+                />
+              </View>
+            </View>
+          ) : null}
+          <TouchableOpacity style={styles.row} onPress={() => openDatePicker("pickup")} activeOpacity={0.6}>
+            <Text style={styles.label}>{isCollection ? "Collection return" : "Pickup"}</Text>
+            <View style={styles.dateValue}>
+              <Text style={[styles.dateText, !job.pickupDate && { color: theme.textMuted }]}>
+                {job.pickupDate ? formatDate(job.pickupDate) : "Set date"}
+              </Text>
+              <Ionicons name="calendar-outline" size={16} color={theme.textMuted} />
+            </View>
+          </TouchableOpacity>
+          {isCollection ? (
+            <View style={styles.windowRow}>
+              <Text style={[styles.windowLabel, { color: theme.textSecondary }]}>Window</Text>
+              <View style={styles.windowInputs}>
+                <Input
+                  placeholder="From (e.g. 09:00)"
+                  value={collReturnFrom}
+                  onChangeText={setCollReturnFrom}
+                  onBlur={() => {
+                    const v = collReturnFrom.trim() || null;
+                    if (v !== (job.collectionReturnWindowFrom ?? null))
+                      patchJob.mutate({ collectionReturnWindowFrom: v } as Partial<Job>);
+                  }}
+                  containerStyle={styles.windowInput}
+                />
+                <Text style={[styles.windowDash, { color: theme.textMuted }]}>–</Text>
+                <Input
+                  placeholder="To (e.g. 12:00)"
+                  value={collReturnTo}
+                  onChangeText={setCollReturnTo}
+                  onBlur={() => {
+                    const v = collReturnTo.trim() || null;
+                    if (v !== (job.collectionReturnWindowTo ?? null))
+                      patchJob.mutate({ collectionReturnWindowTo: v } as Partial<Job>);
+                  }}
+                  containerStyle={styles.windowInput}
+                />
+              </View>
+            </View>
+          ) : null}
         </Card>
 
         {/* Services */}
@@ -2163,7 +2258,9 @@ export default function JobDetailScreen() {
             onPress={(e) => e.stopPropagation()}
           >
             <Text style={[datePickerStyles.title, { color: theme.textHeading }]}>
-              {showDatePicker === "dropOff" ? "Drop-off Date" : "Pickup Date"}
+              {showDatePicker === "dropOff"
+                ? isCollection ? "Collection Pickup Date" : "Drop-off Date"
+                : isCollection ? "Collection Return Date" : "Pickup Date"}
             </Text>
 
             {/* Month / year navigation */}

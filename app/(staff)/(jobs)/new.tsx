@@ -45,9 +45,15 @@ export default function NewJobScreen() {
   const [deliveryType, setDeliveryType] = useState<DeliveryType>("DROP_OFF_AT_SHOP");
   const [dropOffDate, setDropOffDate] = useState<string | null>(null);
   const [pickupDate, setPickupDate] = useState<string | null>(null);
+  const [collectionPickupWindowFrom, setCollectionPickupWindowFrom] = useState("");
+  const [collectionPickupWindowTo, setCollectionPickupWindowTo] = useState("");
+  const [collectionReturnWindowFrom, setCollectionReturnWindowFrom] = useState("");
+  const [collectionReturnWindowTo, setCollectionReturnWindowTo] = useState("");
   const [showDatePicker, setShowDatePicker] = useState<"dropOff" | "pickup" | null>(null);
   const [calMonth, setCalMonth] = useState(new Date().getMonth());
   const [calYear, setCalYear] = useState(new Date().getFullYear());
+
+  const isCollection = deliveryType === "COLLECTION_SERVICE";
 
   const filteredServices = services.filter((svc) => {
     if (!serviceSearch.trim()) return true;
@@ -229,6 +235,12 @@ export default function NewJobScreen() {
         deliveryType,
         dropOffDate: dropOffDate ?? null,
         pickupDate: pickupDate ?? null,
+        ...(deliveryType === "COLLECTION_SERVICE" && {
+          collectionPickupWindowFrom: collectionPickupWindowFrom || null,
+          collectionPickupWindowTo: collectionPickupWindowTo || null,
+          collectionReturnWindowFrom: collectionReturnWindowFrom || null,
+          collectionReturnWindowTo: collectionReturnWindowTo || null,
+        }),
       });
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
       router.back();
@@ -615,7 +627,7 @@ export default function NewJobScreen() {
               activeOpacity={0.6}
             >
               <Text style={[styles.detailLabel, { color: theme.textSecondary }]}>
-                Drop-off
+                {isCollection ? "Collection pickup" : "Drop-off"}
               </Text>
               <View style={styles.dateValue}>
                 <Text
@@ -629,13 +641,35 @@ export default function NewJobScreen() {
                 <Ionicons name="calendar-outline" size={16} color={theme.textMuted} />
               </View>
             </TouchableOpacity>
+            {isCollection ? (
+              <View style={styles.windowRow}>
+                <Text style={[styles.windowLabel, { color: theme.textSecondary }]}>
+                  Window
+                </Text>
+                <View style={styles.windowInputs}>
+                  <Input
+                    placeholder="From (e.g. 09:00)"
+                    value={collectionPickupWindowFrom}
+                    onChangeText={setCollectionPickupWindowFrom}
+                    containerStyle={styles.windowInput}
+                  />
+                  <Text style={[styles.windowDash, { color: theme.textMuted }]}>–</Text>
+                  <Input
+                    placeholder="To (e.g. 12:00)"
+                    value={collectionPickupWindowTo}
+                    onChangeText={setCollectionPickupWindowTo}
+                    containerStyle={styles.windowInput}
+                  />
+                </View>
+              </View>
+            ) : null}
             <TouchableOpacity
               style={styles.dateRow}
               onPress={() => openDatePicker("pickup")}
               activeOpacity={0.6}
             >
               <Text style={[styles.detailLabel, { color: theme.textSecondary }]}>
-                Pickup
+                {isCollection ? "Collection return" : "Pickup"}
               </Text>
               <View style={styles.dateValue}>
                 <Text
@@ -649,6 +683,28 @@ export default function NewJobScreen() {
                 <Ionicons name="calendar-outline" size={16} color={theme.textMuted} />
               </View>
             </TouchableOpacity>
+            {isCollection ? (
+              <View style={styles.windowRow}>
+                <Text style={[styles.windowLabel, { color: theme.textSecondary }]}>
+                  Window
+                </Text>
+                <View style={styles.windowInputs}>
+                  <Input
+                    placeholder="From (e.g. 09:00)"
+                    value={collectionReturnWindowFrom}
+                    onChangeText={setCollectionReturnWindowFrom}
+                    containerStyle={styles.windowInput}
+                  />
+                  <Text style={[styles.windowDash, { color: theme.textMuted }]}>–</Text>
+                  <Input
+                    placeholder="To (e.g. 12:00)"
+                    value={collectionReturnWindowTo}
+                    onChangeText={setCollectionReturnWindowTo}
+                    containerStyle={styles.windowInput}
+                  />
+                </View>
+              </View>
+            ) : null}
           </Card>
 
           {/* Notes */}
@@ -693,7 +749,9 @@ export default function NewJobScreen() {
             onPress={(e) => e.stopPropagation()}
           >
             <Text style={[datePickerStyles.title, { color: theme.textHeading }]}>
-              {showDatePicker === "dropOff" ? "Drop-off Date" : "Pickup Date"}
+              {showDatePicker === "dropOff"
+                ? isCollection ? "Collection Pickup Date" : "Drop-off Date"
+                : isCollection ? "Collection Return Date" : "Pickup Date"}
             </Text>
 
             <View style={datePickerStyles.navRow}>
@@ -992,6 +1050,27 @@ const styles = StyleSheet.create({
   },
   dateText: {
     ...fontSize.sm,
+    fontWeight: "500",
+  },
+  windowRow: {
+    paddingLeft: spacing[3],
+    marginTop: -spacing[1],
+    marginBottom: spacing[1],
+  },
+  windowLabel: {
+    ...fontSize.xs,
+    marginBottom: spacing[1],
+  },
+  windowInputs: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing[2],
+  },
+  windowInput: {
+    flex: 1,
+  },
+  windowDash: {
+    ...fontSize.base,
     fontWeight: "500",
   },
   serviceInfo: {

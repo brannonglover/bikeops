@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
-import { AppState, type AppStateStatus } from "react-native";
+import { AppState, type AppStateStatus, Linking } from "react-native";
 import * as Notifications from "expo-notifications";
 import { useRouter } from "expo-router";
 import { useAuth } from "@/lib/auth";
@@ -78,6 +78,23 @@ function routeForNotification(
     }
   }
 
+  return null;
+}
+
+function routeForUniversalLink(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    if (
+      parsed.hostname !== "bikeops.co" &&
+      !parsed.hostname.endsWith(".bikeops.co")
+    ) {
+      return null;
+    }
+    const staffChat = parsed.pathname.match(/^\/staff\/chat\/([^/]+)/);
+    if (staffChat) return `/(staff)/chat/${staffChat[1]}`;
+  } catch {
+    // not a valid URL
+  }
   return null;
 }
 
@@ -200,6 +217,24 @@ export function useNotifications() {
         setTimeout(() => router.replace(route as never), 0);
       }
     });
+  }, [role, router]);
+
+  // Handle universal links (https://bikeops.co/staff/chat/:id) so the email
+  // "Open staff chat" button opens the app instead of the browser.
+  useEffect(() => {
+    if (role !== "staff") return;
+
+    const handleUrl = ({ url }: { url: string }) => {
+      const route = routeForUniversalLink(url);
+      if (route) router.replace(route as never);
+    };
+
+    Linking.getInitialURL().then((url) => {
+      if (url) handleUrl({ url });
+    });
+
+    const sub = Linking.addEventListener("url", handleUrl);
+    return () => sub.remove();
   }, [role, router]);
 
   useEffect(() => {

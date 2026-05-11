@@ -303,13 +303,17 @@ export default function JobStatusScreen() {
         <Card style={styles.section}>
           {job.dropOffDate ? (
             <View style={styles.infoRow}>
-              <Text style={styles.infoLabel}>Drop-off</Text>
+              <Text style={styles.infoLabel}>
+                {job.deliveryType === "COLLECTION_SERVICE" ? "Collection pickup" : "Drop-off"}
+              </Text>
               <Text style={styles.infoValue}>{formatDate(job.dropOffDate)}</Text>
             </View>
           ) : null}
           {job.pickupDate ? (
             <View style={styles.infoRow}>
-              <Text style={styles.infoLabel}>Pickup</Text>
+              <Text style={styles.infoLabel}>
+                {job.deliveryType === "COLLECTION_SERVICE" ? "Collection return" : "Pickup"}
+              </Text>
               <Text style={styles.infoValue}>{formatDate(job.pickupDate)}</Text>
             </View>
           ) : null}

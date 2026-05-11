@@ -1,6 +1,6 @@
 import { useCallback, useEffect } from "react";
 import { InteractionManager } from "react-native";
-import { Tabs } from "expo-router";
+import { Tabs, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { StripeTerminalProvider, useStripeTerminal } from "@stripe/stripe-terminal-react-native";
 import { colors, spacing } from "@/lib/theme";
@@ -12,6 +12,7 @@ import { api } from "@/lib/api";
 function StaffTabs() {
   const { theme } = useTheme();
   const { initialize } = useStripeTerminal();
+  const router = useRouter();
 
   useEffect(() => {
     // Defer until after the first screen has finished rendering so the
@@ -71,6 +72,12 @@ function StaffTabs() {
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="chatbubbles" size={size} color={color} />
           ),
+        }}
+        listeners={{
+          tabPress: (e) => {
+            e.preventDefault();
+            router.navigate("/(staff)/chat");
+          },
         }}
       />
       <Tabs.Screen

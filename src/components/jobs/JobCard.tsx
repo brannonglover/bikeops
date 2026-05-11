@@ -142,7 +142,8 @@ export function JobCard({
                   { color: theme.textMuted },
                 ]}
               >
-                Drop-off: {formatDate(job.dropOffDate)}
+                {job.deliveryType === "COLLECTION_SERVICE" ? "Collection pickup" : "Drop-off"}:{" "}
+                {formatDate(job.dropOffDate)}
               </Text>
             ) : null}
             {job.pickupDate ? (
@@ -153,7 +154,8 @@ export function JobCard({
                   { color: theme.textMuted },
                 ]}
               >
-                Pickup: {formatDate(job.pickupDate)}
+                {job.deliveryType === "COLLECTION_SERVICE" ? "Collection return" : "Pickup"}:{" "}
+                {formatDate(job.pickupDate)}
               </Text>
             ) : null}
           </View>

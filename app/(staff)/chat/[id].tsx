@@ -1190,13 +1190,13 @@ export default function ConversationScreen() {
           headerLeft: () => (
             <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
               <TouchableOpacity
-                onPress={handleOpenJobCard}
+                onPress={() => router.navigate("/(staff)/chat")}
                 hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                 style={{ padding: 4 }}
                 accessibilityRole="button"
-                accessibilityLabel="Open job card"
+                accessibilityLabel="Back to conversations"
               >
-                <Ionicons name="construct-outline" size={24} color={theme.text} />
+                <Ionicons name="chevron-back" size={24} color={theme.text} />
               </TouchableOpacity>
               <ShopLogo />
             </View>
@@ -1250,26 +1250,37 @@ export default function ConversationScreen() {
               </Pressable>
             );
           },
-          headerRight: conversation?.customer?.email
-            ? () => {
-                const iconColor =
-                  inviteStatus === "active"
-                    ? colors.emerald[500]
-                    : inviteStatus === "pending"
-                      ? colors.amber[500]
-                      : theme.icon;
-                return (
+          headerRight: () => {
+            const inviteIconColor =
+              inviteStatus === "active"
+                ? colors.emerald[500]
+                : inviteStatus === "pending"
+                  ? colors.amber[500]
+                  : theme.icon;
+            return (
+              <View style={{ flexDirection: "row", alignItems: "center", gap: spacing[1] }}>
+                <TouchableOpacity
+                  onPress={handleOpenJobCard}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  style={{ padding: spacing[2] }}
+                  accessibilityRole="button"
+                  accessibilityLabel="Open job card"
+                >
+                  <Ionicons name="construct-outline" size={20} color={theme.icon} />
+                </TouchableOpacity>
+                {conversation?.customer?.email ? (
                   <TouchableOpacity
                     onPress={handleInvitePress}
                     disabled={sendingInvite}
                     style={{ padding: spacing[2], opacity: sendingInvite ? 0.5 : 1 }}
                     hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                   >
-                    <Ionicons name="mail-outline" size={20} color={iconColor} />
+                    <Ionicons name="mail-outline" size={20} color={inviteIconColor} />
                   </TouchableOpacity>
-                );
-              }
-            : undefined,
+                ) : null}
+              </View>
+            );
+          },
         }}
       />
       <KeyboardAvoidingView

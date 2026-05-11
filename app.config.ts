@@ -49,6 +49,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     bundleIdentifier: IS_DEV ? "com.brannonglover.bikeops.app.dev" : "com.brannonglover.bikeops.app",
     buildNumber,
     userInterfaceStyle: "automatic",
+    associatedDomains: ["applinks:bikeops.co", "applinks:*.bikeops.co"],
     infoPlist: {
       UIBackgroundModes: ["remote-notification", "fetch", "processing"],
       ITSAppUsesNonExemptEncryption: false,
@@ -72,6 +73,17 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     userInterfaceStyle: "automatic",
     package: IS_DEV ? "com.brannonglover.bikeops.app.dev" : "com.brannonglover.bikeops.app",
     versionCode,
+    intentFilters: [
+      {
+        action: "VIEW",
+        autoVerify: true,
+        data: [
+          { scheme: "https", host: "bikeops.co", pathPrefix: "/staff/chat" },
+          { scheme: "https", host: "*.bikeops.co", pathPrefix: "/staff/chat" },
+        ],
+        category: ["BROWSABLE", "DEFAULT"],
+      },
+    ],
   },
   plugins: [
     "expo-router",

@@ -26,9 +26,11 @@ export default function ChatLayout() {
           headerLeft: () => (
             <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
               <TouchableOpacity
-                onPress={() => router.back()}
+                onPress={() => router.navigate("/(staff)/chat")}
                 hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                 style={{ padding: 4 }}
+                accessibilityRole="button"
+                accessibilityLabel="Back to conversations"
               >
                 <Ionicons name="chevron-back" size={24} color={theme.text} />
               </TouchableOpacity>
