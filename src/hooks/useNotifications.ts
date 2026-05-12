@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { AppState, type AppStateStatus, Linking } from "react-native";
 import * as Notifications from "expo-notifications";
 import { useRouter } from "expo-router";
+import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth";
 import {
   registerForPushNotifications,
@@ -100,6 +101,16 @@ function routeForUniversalLink(url: string): string | null {
 
 const FOREGROUND_REGISTER_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const BADGE_SYNC_INTERVAL_MS = 60 * 1000;
+export const CUSTOMER_MESSAGES_QUERY_KEY = ["customerMessages"] as const;
+
+type MessagesData =
+  | ChatMessage[]
+  | {
+      messages: ChatMessage[];
+      customerTypingAt?: string | null;
+      customerLastReadAt?: string | null;
+      staffLastReadAt?: string | null;
+    };
 
 function lastConversationMessage(conv: Conversation): ChatMessage | null {
   if (!conv.messages || conv.messages.length === 0) return null;
@@ -134,10 +145,92 @@ async function getStaffBadgeCount(): Promise<number> {
 export function useNotifications() {
   const { role } = useAuth();
   const router = useRouter();
+  const queryClient = useQueryClient();
   const registered = useRef(false);
   const coldStartHandled = useRef(false);
   const lastRegisteredAt = useRef(0);
   const syncingBadge = useRef(false);
+  const prefetchingChat = useRef<Record<string, boolean>>({});
+
+  const cacheMessages = useCallback(
+    (queryKey: readonly unknown[], data: MessagesData) => {
+      queryClient.setQueryData<MessagesData>(queryKey, (old) => {
+        const oldMessages = old
+          ? Array.isArray(old)
+            ? old
+            : old.messages
+          : [];
+        const serverMessages = Array.isArray(data) ? data : data.messages ?? [];
+        const oldById = new Map(oldMessages.map((m) => [m.id, m]));
+        const merged = serverMessages.map((m) => {
+          const previous = oldById.get(m.id);
+          return previous?.clientDeliveryState
+            ? { ...m, clientDeliveryState: previous.clientDeliveryState }
+            : m;
+        });
+        const serverIds = new Set(serverMessages.map((m) => m.id));
+        const optimistic = oldMessages.filter(
+          (m) => m.id.startsWith("temp-") && !serverIds.has(m.id)
+        );
+        const messages = [...merged, ...optimistic];
+
+        if (Array.isArray(data)) return messages;
+        return { ...data, messages };
+      });
+    },
+    [queryClient]
+  );
+
+  const prefetchChatForNotification = useCallback(
+    async (data: NotificationData | null) => {
+      if (!data || data.type !== "new_message" || !role) return;
+
+      const key =
+        role === "staff" && data.conversationId
+          ? `staff:${data.conversationId}`
+          : role === "customer"
+            ? "customer"
+            : null;
+      if (!key || prefetchingChat.current[key]) return;
+
+      prefetchingChat.current[key] = true;
+      try {
+        if (role === "staff" && data.conversationId) {
+          const { data: messagesData } = await api.get<MessagesData>(
+            `/api/conversations/${data.conversationId}/messages`
+          );
+          cacheMessages(["messages", data.conversationId], messagesData);
+          queryClient.invalidateQueries({ queryKey: ["conversations"] });
+        } else if (role === "customer") {
+          const { data: messagesData } = await api.get<MessagesData>(
+            "/api/chat/conversation/messages",
+            { role: "customer" }
+          );
+          cacheMessages(CUSTOMER_MESSAGES_QUERY_KEY, messagesData);
+        }
+      } catch {
+        // Best-effort warm cache; the chat screens still fetch normally.
+      } finally {
+        delete prefetchingChat.current[key];
+      }
+    },
+    [cacheMessages, queryClient, role]
+  );
+
+  const prefetchPresentedChatNotifications = useCallback(async () => {
+    try {
+      const notifications = await Notifications.getPresentedNotificationsAsync();
+      await Promise.all(
+        notifications.map((notification) =>
+          prefetchChatForNotification(
+            normalizeNotificationData(notification.request.content.data)
+          )
+        )
+      );
+    } catch {
+      // Not available on every platform/version; normal screen fetches remain.
+    }
+  }, [prefetchChatForNotification]);
 
   const syncBadgeCount = useCallback(async () => {
     if (syncingBadge.current) return;
@@ -185,19 +278,21 @@ export function useNotifications() {
           registerForPushNotifications(role);
         }
         syncBadgeCount();
+        prefetchPresentedChatNotifications();
       }
     };
 
     const subscription = AppState.addEventListener("change", handleAppStateChange);
     return () => subscription.remove();
-  }, [role, syncBadgeCount]);
+  }, [role, syncBadgeCount, prefetchPresentedChatNotifications]);
 
   useEffect(() => {
     if (!role) return;
     syncBadgeCount();
+    prefetchPresentedChatNotifications();
     const id = setInterval(syncBadgeCount, BADGE_SYNC_INTERVAL_MS);
     return () => clearInterval(id);
-  }, [role, syncBadgeCount]);
+  }, [role, syncBadgeCount, prefetchPresentedChatNotifications]);
 
   // Handle cold-start: the app was launched by tapping a notification while it
   // was killed or suspended. The response listener below won't fire in that case
@@ -207,17 +302,18 @@ export function useNotifications() {
     if (!role || coldStartHandled.current) return;
     coldStartHandled.current = true;
 
-    Notifications.getLastNotificationResponseAsync().then((response) => {
+    Notifications.getLastNotificationResponseAsync().then(async (response) => {
       if (!response) return;
       const raw = response.notification.request.content.data;
       const data = normalizeNotificationData(raw);
       const route = data ? routeForNotification(data, role) : null;
+      await prefetchChatForNotification(data);
       if (route) {
         // Use replace so the index Redirect can't "win" and leave you on the job board.
         setTimeout(() => router.replace(route as never), 0);
       }
     });
-  }, [role, router]);
+  }, [role, router, prefetchChatForNotification]);
 
   // Handle universal links (https://bikeops.co/staff/chat/:id) so the email
   // "Open staff chat" button opens the app instead of the browser.
@@ -241,29 +337,33 @@ export function useNotifications() {
     if (!role) return;
 
     const responseSubscription =
-      Notifications.addNotificationResponseReceivedListener((response) => {
+      Notifications.addNotificationResponseReceivedListener(async (response) => {
         const raw = response.notification.request.content.data;
         const data = normalizeNotificationData(raw);
         const route = data ? routeForNotification(data, role) : null;
         syncBadgeCount();
+        await prefetchChatForNotification(data);
         if (route) {
           router.replace(route as never);
         }
       });
 
     return () => responseSubscription.remove();
-  }, [role, router, syncBadgeCount]);
+  }, [role, router, syncBadgeCount, prefetchChatForNotification]);
 
   useEffect(() => {
     if (!role) return;
 
     const receivedSubscription =
-      Notifications.addNotificationReceivedListener(() => {
+      Notifications.addNotificationReceivedListener((notification) => {
         // Notification received while app is foregrounded.
         // The notification handler in notifications.ts will display it.
+        prefetchChatForNotification(
+          normalizeNotificationData(notification.request.content.data)
+        );
         syncBadgeCount();
       });
 
     return () => receivedSubscription.remove();
-  }, [role, syncBadgeCount]);
+  }, [role, syncBadgeCount, prefetchChatForNotification]);
 }

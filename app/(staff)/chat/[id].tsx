@@ -1341,7 +1341,7 @@ export default function ConversationScreen() {
                       ]}
                     >
                       <LinkifiedText
-                        text={item.body}
+                        text={item.body ?? ""}
                         style={[
                           styles.bubbleText,
                           isOwn

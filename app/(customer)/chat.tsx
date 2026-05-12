@@ -20,10 +20,12 @@ import {
 } from "react-native";
 import { Stack } from "expo-router";
 import { useHeaderHeight } from "@react-navigation/elements";
+import { useQueryClient } from "@tanstack/react-query";
 import * as ImagePicker from "expo-image-picker";
 import { Ionicons } from "@expo/vector-icons";
 import { api, isCustomerAuthenticated, resolveUrl } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { CUSTOMER_MESSAGES_QUERY_KEY } from "@/hooks/useNotifications";
 import { type ChatMessage } from "@/lib/types";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
@@ -48,6 +50,7 @@ type AuthState = "loading" | "needs_login" | "authenticated";
 export default function CustomerChatScreen() {
   const { theme } = useTheme();
   const { setCustomerAuthenticated } = useAuth();
+  const queryClient = useQueryClient();
   const headerHeight = useHeaderHeight();
   const flatListRef = useRef<FlatList<ChatMessage>>(null);
   const isAtBottomRef = useRef(true);
@@ -150,6 +153,21 @@ export default function CustomerChatScreen() {
     });
   }, []);
 
+  useEffect(() => {
+    if (authState !== "authenticated") return;
+    const cached = queryClient.getQueryData<
+      ChatMessage[] | { messages: ChatMessage[]; staffLastReadAt?: string | null }
+    >(CUSTOMER_MESSAGES_QUERY_KEY);
+    if (!cached) return;
+
+    if (Array.isArray(cached)) {
+      mergeServerMessages(cached);
+    } else {
+      mergeServerMessages(cached.messages ?? []);
+      setStaffLastReadAt(cached.staffLastReadAt ?? null);
+    }
+  }, [authState, mergeServerMessages, queryClient]);
+
   const fetchMessages = useCallback(async () => {
     if (authState !== "authenticated") return;
     try {
@@ -157,6 +175,7 @@ export default function CustomerChatScreen() {
         | ChatMessage[]
         | { messages: ChatMessage[]; staffLastReadAt: string | null }
       >("/api/chat/conversation/messages", { role: "customer" });
+      queryClient.setQueryData(CUSTOMER_MESSAGES_QUERY_KEY, data);
       if (Array.isArray(data)) {
         mergeServerMessages(data);
       } else {
@@ -166,7 +185,7 @@ export default function CustomerChatScreen() {
     } catch {
       // ignore
     }
-  }, [authState, mergeServerMessages]);
+  }, [authState, mergeServerMessages, queryClient]);
 
   useEffect(() => {
     fetchMessages();
@@ -868,7 +887,7 @@ export default function CustomerChatScreen() {
                       ]}
                     >
                       <LinkifiedText
-                        text={item.body}
+                        text={item.body ?? ""}
                         style={[
                           styles.bubbleText,
                           isOwn
