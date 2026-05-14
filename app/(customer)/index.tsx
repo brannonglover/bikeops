@@ -10,6 +10,7 @@ import { useRouter, Stack } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { type Job } from "@/lib/types";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
@@ -27,6 +28,12 @@ const ACTIVE_STAGES = new Set([
 export default function CustomerHomeScreen() {
   const { theme } = useTheme();
   const router = useRouter();
+  const { customerLogout } = useAuth();
+
+  const handleLogout = async () => {
+    await customerLogout();
+    router.replace("/(auth)/login");
+  };
 
   const { data: jobs } = useQuery({
     queryKey: ["customer-jobs"],
@@ -116,7 +123,16 @@ export default function CustomerHomeScreen() {
 
   return (
     <>
-      <Stack.Screen options={{ title: "Home" }} />
+      <Stack.Screen
+        options={{
+          title: "Home",
+          headerRight: () => (
+            <TouchableOpacity onPress={handleLogout} style={{ padding: spacing[1] }}>
+              <Ionicons name="log-out-outline" size={22} color={theme.icon} />
+            </TouchableOpacity>
+          ),
+        }}
+      />
       <ScrollView
         style={styles.container}
         contentContainerStyle={styles.content}
