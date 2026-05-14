@@ -92,9 +92,19 @@ export async function getLastStaffShopSubdomain(): Promise<string | null> {
   return getStoredCookie(STAFF_SHOP_SUBDOMAIN_KEY);
 }
 
+function getCustomerApiUrl(): string {
+  const subdomain = process.env.EXPO_PUBLIC_SHOP_SUBDOMAIN;
+  if (subdomain) {
+    const url = new URL(DEFAULT_API_URL);
+    url.hostname = `${subdomain}.${url.hostname}`;
+    return trimTrailingSlash(url.toString());
+  }
+  return DEFAULT_API_URL;
+}
+
 async function getApiUrl(role: "staff" | "customer"): Promise<string> {
   if (role === "staff") return getStaffApiUrl();
-  return DEFAULT_API_URL;
+  return getCustomerApiUrl();
 }
 
 function extractCookieValue(

@@ -15,6 +15,7 @@
       "distribution": "internal",
       "env": {
         "EXPO_PUBLIC_API_URL": "https://bikeops.co",
+        "EXPO_PUBLIC_SHOP_SUBDOMAIN": "bbm",
         "EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY": "pk_live_51TDncP2KeCrirEdDdkekUsVlvkGv9AyeNoG7fXgmup5V4YW52bGfYND2cFH4ZwsxJ75kJc6EvPCdjNZkGWqBx5aM00KxyL134M",
         "EXPO_PUBLIC_SHOP_NAME": "Basement Bike Mechanic"
       }
@@ -23,6 +24,7 @@
       "autoIncrement": true,
       "env": {
         "EXPO_PUBLIC_API_URL": "https://bikeops.co",
+        "EXPO_PUBLIC_SHOP_SUBDOMAIN": "bbm",
         "EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY": "pk_live_51TDncP2KeCrirEdDdkekUsVlvkGv9AyeNoG7fXgmup5V4YW52bGfYND2cFH4ZwsxJ75kJc6EvPCdjNZkGWqBx5aM00KxyL134M",
         "EXPO_PUBLIC_SHOP_NAME": "Basement Bike Mechanic"
       }
