@@ -7,9 +7,13 @@ import {
   KeyboardAvoidingView,
   Platform,
   TouchableOpacity,
+  Alert,
+  Linking,
 } from "react-native";
 import { useRouter } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/lib/auth";
+import { api } from "@/lib/api";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
@@ -19,13 +23,16 @@ import { getLastStaffShopSubdomain } from "@/lib/api";
 export default function LoginScreen() {
   const { theme } = useTheme();
   const router = useRouter();
-  const { staffLogin, customerLogin } = useAuth();
+  const { staffLogin, setCustomerAuthenticated } = useAuth();
   const [mode, setMode] = useState<"pick" | "staff" | "customer">("pick");
   const [shopSubdomain, setShopSubdomain] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [customerEmail, setCustomerEmail] = useState("");
+  const [requestingLogin, setRequestingLogin] = useState(false);
+  const [loginMessage, setLoginMessage] = useState<string | null>(null);
 
   useEffect(() => {
     getLastStaffShopSubdomain()
@@ -34,6 +41,57 @@ export default function LoginScreen() {
       })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (mode !== "customer") return;
+
+    const handleUrl = ({ url }: { url: string }) => {
+      const hash = url.split("#")[1] ?? "";
+      const params = new URLSearchParams(hash);
+      const token = params.get("token");
+      if (token) verifyToken(token);
+    };
+
+    Linking.getInitialURL().then((url) => {
+      if (url) handleUrl({ url });
+    });
+
+    const sub = Linking.addEventListener("url", handleUrl);
+    return () => sub.remove();
+  }, [mode]);
+
+  const verifyToken = async (token: string) => {
+    setLoading(true);
+    try {
+      await api.post("/api/chat/verify", { token }, { role: "customer" });
+      await setCustomerAuthenticated();
+      router.replace("/(customer)/");
+    } catch {
+      Alert.alert("Error", "Invalid or expired link. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCustomerLogin = async () => {
+    if (!customerEmail.trim()) return;
+    setRequestingLogin(true);
+    setLoginMessage(null);
+    try {
+      const { data } = await api.post<{ message?: string }>(
+        "/api/chat/request-login",
+        { email: customerEmail.trim().toLowerCase() },
+        { role: "customer" }
+      );
+      setLoginMessage(
+        data.message ?? "Check your email for a login link. It may take a minute."
+      );
+    } catch {
+      setLoginMessage("Something went wrong. Please try again.");
+    } finally {
+      setRequestingLogin(false);
+    }
+  };
 
   const styles = useMemo(
     () =>
@@ -125,10 +183,70 @@ export default function LoginScreen() {
     }
   };
 
-  const handleCustomerContinue = async () => {
-    await customerLogin();
-    router.replace("/(customer)/book");
+  const handleCustomerContinue = () => {
+    setMode("customer");
   };
+
+  if (mode === "customer") {
+    return (
+      <KeyboardAvoidingView
+        style={styles.container}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
+        <View style={styles.card}>
+          <Ionicons
+            name="mail-outline"
+            size={48}
+            color={theme.iconMuted}
+            style={{ alignSelf: "center", marginBottom: spacing[2] }}
+          />
+          <Text style={styles.title}>Customer Login</Text>
+          <Text
+            style={{
+              ...fontSize.sm,
+              color: theme.textSecondary,
+              textAlign: "center",
+              marginBottom: spacing[4],
+            }}
+          >
+            Enter your email and we'll send you a login link.
+          </Text>
+          <Input
+            label="Email"
+            placeholder="you@example.com"
+            value={customerEmail}
+            onChangeText={setCustomerEmail}
+            autoCapitalize="none"
+            keyboardType="email-address"
+            autoComplete="email"
+            containerStyle={styles.inputContainer}
+          />
+          {loginMessage ? (
+            <Text
+              style={{
+                ...fontSize.sm,
+                color: colors.emerald[600],
+                textAlign: "center",
+                marginBottom: spacing[3],
+              }}
+            >
+              {loginMessage}
+            </Text>
+          ) : null}
+          <Button
+            title={requestingLogin ? "Sending..." : "Send Login Link"}
+            onPress={handleCustomerLogin}
+            loading={requestingLogin}
+            disabled={!customerEmail.trim()}
+            style={styles.button}
+          />
+          <TouchableOpacity onPress={() => setMode("pick")} style={styles.backLink}>
+            <Text style={styles.backText}>Back</Text>
+          </TouchableOpacity>
+        </View>
+      </KeyboardAvoidingView>
+    );
+  }
 
   if (mode === "staff") {
     return (

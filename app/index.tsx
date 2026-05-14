@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import { Redirect } from "expo-router";
 import { useAuth } from "@/lib/auth";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
@@ -15,7 +14,7 @@ export default function Index() {
   }
 
   if (role === "customer") {
-    return <Redirect href="/(customer)/chat" />;
+    return <Redirect href="/(customer)/" />;
   }
 
   return <Redirect href="/(auth)/login" />;
