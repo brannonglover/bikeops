@@ -7,23 +7,20 @@ import {
   KeyboardAvoidingView,
   Platform,
   TouchableOpacity,
-  Alert,
-  Linking,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/lib/auth";
-import { api } from "@/lib/api";
+import { api, getLastStaffShopSubdomain } from "@/lib/api";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
-import { getLastStaffShopSubdomain } from "@/lib/api";
 
 export default function LoginScreen() {
   const { theme } = useTheme();
   const router = useRouter();
-  const { staffLogin, setCustomerAuthenticated } = useAuth();
+  const { staffLogin } = useAuth();
   const [mode, setMode] = useState<"pick" | "staff" | "customer">("pick");
   const [shopSubdomain, setShopSubdomain] = useState("");
   const [email, setEmail] = useState("");
@@ -42,36 +39,6 @@ export default function LoginScreen() {
       .catch(() => {});
   }, []);
 
-  useEffect(() => {
-    if (mode !== "customer") return;
-
-    const handleUrl = ({ url }: { url: string }) => {
-      const hash = url.split("#")[1] ?? "";
-      const params = new URLSearchParams(hash);
-      const token = params.get("token");
-      if (token) verifyToken(token);
-    };
-
-    Linking.getInitialURL().then((url) => {
-      if (url) handleUrl({ url });
-    });
-
-    const sub = Linking.addEventListener("url", handleUrl);
-    return () => sub.remove();
-  }, [mode]);
-
-  const verifyToken = async (token: string) => {
-    setLoading(true);
-    try {
-      await api.post("/api/chat/verify", { token }, { role: "customer" });
-      await setCustomerAuthenticated();
-      router.replace("/(customer)/");
-    } catch {
-      Alert.alert("Error", "Invalid or expired link. Please try again.");
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleCustomerLogin = async () => {
     if (!customerEmail.trim()) return;
