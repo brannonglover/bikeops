@@ -435,6 +435,18 @@ export default function CustomerChatScreen() {
     setMessages([]);
   };
 
+  const lastViewedOwnMsgId = useMemo(() => {
+    if (!staffLastReadAt) return null;
+    const readTime = new Date(staffLastReadAt).getTime();
+    let lastId: string | null = null;
+    for (const msg of messages) {
+      if (msg.sender === "CUSTOMER" && new Date(msg.createdAt).getTime() <= readTime) {
+        lastId = msg.id;
+      }
+    }
+    return lastId;
+  }, [messages, staffLastReadAt]);
+
   const styles = useMemo(
     () =>
       StyleSheet.create({
@@ -804,18 +816,6 @@ export default function CustomerChatScreen() {
       </>
     );
   }
-
-  const lastViewedOwnMsgId = useMemo(() => {
-    if (!staffLastReadAt) return null;
-    const readTime = new Date(staffLastReadAt).getTime();
-    let lastId: string | null = null;
-    for (const msg of messages) {
-      if (msg.sender === "CUSTOMER" && new Date(msg.createdAt).getTime() <= readTime) {
-        lastId = msg.id;
-      }
-    }
-    return lastId;
-  }, [messages, staffLastReadAt]);
 
   return (
     <>
