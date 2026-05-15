@@ -425,16 +425,6 @@ export default function CustomerChatScreen() {
     [messages, fetchMessages]
   );
 
-  const handleLogout = async () => {
-    try {
-      await api.post("/api/chat/logout", undefined, { role: "customer" });
-    } catch {
-      // ignore
-    }
-    setAuthState("needs_login");
-    setMessages([]);
-  };
-
   const lastViewedOwnMsgId = useMemo(() => {
     if (!staffLastReadAt) return null;
     const readTime = new Date(staffLastReadAt).getTime();
@@ -819,16 +809,7 @@ export default function CustomerChatScreen() {
 
   return (
     <>
-      <Stack.Screen
-        options={{
-          title: "Chat",
-          headerRight: () => (
-            <TouchableOpacity onPress={handleLogout} style={{ padding: spacing[2] }}>
-              <Ionicons name="log-out-outline" size={20} color={theme.icon} />
-            </TouchableOpacity>
-          ),
-        }}
-      />
+      <Stack.Screen options={{ title: "Chat" }} />
       <KeyboardAvoidingView
         style={styles.chatContainer}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
