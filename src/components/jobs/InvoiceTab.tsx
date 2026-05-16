@@ -46,6 +46,15 @@ function waitForPickerDismiss() {
   return new Promise((resolve) => setTimeout(resolve, IOS_PICKER_DISMISS_DELAY_MS));
 }
 
+function currencyInputValue(amount: number): string {
+  return Number.isFinite(amount) ? amount.toFixed(2) : "0.00";
+}
+
+function parseCurrencyInput(value: string): number {
+  const parsed = Number.parseFloat(value.replace(/[$,\s]/g, ""));
+  return Number.isFinite(parsed) ? Math.round(parsed * 100) / 100 : Number.NaN;
+}
+
 export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
   const { theme } = useTheme();
   const [services, setServices] = useState<
@@ -90,6 +99,7 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
 
   const [recordingCash, setRecordingCash] = useState(false);
   const [showCashConfirm, setShowCashConfirm] = useState(false);
+  const [cashAmountInput, setCashAmountInput] = useState("");
   const [showTapToPay, setShowTapToPay] = useState(false);
   const [resending, setResending] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
@@ -176,6 +186,13 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
   });
   const paidTowardTotal = Math.min(paymentSummary.totalPaid, total);
   const remaining = paymentSummary.remaining;
+  const remainingCents = Math.round(remaining * 100);
+  const cashAmount = parseCurrencyInput(cashAmountInput);
+  const cashAmountCents = Number.isFinite(cashAmount)
+    ? Math.round(cashAmount * 100)
+    : 0;
+  const canRecordCash =
+    cashAmountCents > 0 && cashAmountCents <= remainingCents && !recordingCash;
 
   interface BikeGroup {
     key: string;
@@ -400,13 +417,35 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
     [job.id, refetchJob]
   );
 
+  const openCashModal = useCallback(() => {
+    setCashAmountInput(currencyInputValue(remaining));
+    setShowCashConfirm(true);
+  }, [remaining]);
+
+  const closeCashModal = useCallback(() => {
+    if (recordingCash) return;
+    setShowCashConfirm(false);
+    setCashAmountInput("");
+  }, [recordingCash]);
+
   const handleRecordCash = useCallback(async () => {
+    if (!canRecordCash) {
+      Alert.alert(
+        "Check amount",
+        `Enter a cash amount between $0.01 and ${formatCurrency(remaining)}.`
+      );
+      return;
+    }
+
     setRecordingCash(true);
     try {
-      const res = await api.post(`/api/jobs/${job.id}/payments/record-cash`);
+      const res = await api.post(`/api/jobs/${job.id}/payments/record-cash`, {
+        amount: cashAmount,
+      });
       if (res.response.ok) {
         await refetchJob();
         setShowCashConfirm(false);
+        setCashAmountInput("");
       } else {
         const errData = res.data as { error?: string };
         Alert.alert("Error", errData?.error ?? "Failed to record cash payment");
@@ -416,7 +455,7 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
     } finally {
       setRecordingCash(false);
     }
-  }, [job.id, refetchJob]);
+  }, [canRecordCash, cashAmount, job.id, refetchJob, remaining]);
 
   const handleResendReceipt = useCallback(async () => {
     setResending(true);
@@ -990,6 +1029,38 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
         cashModalDesc: {
           ...fontSize.sm,
           color: theme.textSecondary,
+        },
+        cashAmountLabel: {
+          ...fontSize.xs,
+          fontWeight: "700",
+          color: theme.textSecondary,
+          textTransform: "uppercase",
+          letterSpacing: 0.5,
+        },
+        cashAmountInput: {
+          ...fontSize["2xl"],
+          fontWeight: "700",
+          color: theme.text,
+          borderWidth: 1,
+          borderColor: theme.inputBorder,
+          backgroundColor: theme.inputBg,
+          borderRadius: borderRadius.lg,
+          paddingHorizontal: spacing[3],
+          paddingVertical: spacing[2],
+          fontVariant: ["tabular-nums"],
+        },
+        cashAmountHint: {
+          ...fontSize.xs,
+          color: theme.textMuted,
+        },
+        cashFullButton: {
+          alignSelf: "flex-start",
+          paddingVertical: spacing[1],
+        },
+        cashFullButtonText: {
+          ...fontSize.sm,
+          fontWeight: "600",
+          color: colors.emerald[700],
         },
         cashModalActions: {
           flexDirection: "row",
@@ -1639,7 +1710,7 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.cashButton}
-              onPress={() => setShowCashConfirm(true)}
+              onPress={openCashModal}
               activeOpacity={0.7}
             >
               <Ionicons name="cash" size={16} color={colors.emerald[700]} />
@@ -1813,52 +1884,84 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
         transparent
         animationType="fade"
         statusBarTranslucent
-        onRequestClose={() => !recordingCash && setShowCashConfirm(false)}
+        onRequestClose={closeCashModal}
       >
-        <Pressable
-          style={styles.cashModalBackdrop}
-          onPress={() => !recordingCash && setShowCashConfirm(false)}
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={{ flex: 1 }}
         >
           <Pressable
-            style={styles.cashModalSheet}
-            onPress={(e) => e.stopPropagation()}
+            style={styles.cashModalBackdrop}
+            onPress={closeCashModal}
           >
-            <View style={styles.cashModalHeader}>
-              <View style={styles.cashModalIcon}>
-                <Ionicons name="cash" size={20} color={colors.emerald[600]} />
+            <Pressable
+              style={styles.cashModalSheet}
+              onPress={(e) => e.stopPropagation()}
+            >
+              <View style={styles.cashModalHeader}>
+                <View style={styles.cashModalIcon}>
+                  <Ionicons name="cash" size={20} color={colors.emerald[600]} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.cashModalTitle}>Record cash payment</Text>
+                  <Text style={styles.cashModalDesc}>
+                    Enter the cash received. The remaining balance is{" "}
+                    {formatCurrency(remaining)}.
+                  </Text>
+                </View>
               </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.cashModalTitle}>Record cash payment</Text>
-                <Text style={styles.cashModalDesc}>
-                  {formatCurrency(remaining)} will be marked as paid. You can mark
-                  the job as completed when you're ready.
+              <View>
+                <Text style={styles.cashAmountLabel}>Cash received</Text>
+                <TextInput
+                  style={styles.cashAmountInput}
+                  value={cashAmountInput}
+                  onChangeText={setCashAmountInput}
+                  keyboardType="decimal-pad"
+                  placeholder="0.00"
+                  placeholderTextColor={theme.textMuted}
+                  selectTextOnFocus
+                  autoFocus
+                />
+                <Text style={styles.cashAmountHint}>
+                  Record a partial payment or the full remaining balance.
                 </Text>
               </View>
-            </View>
-            <View style={styles.cashModalActions}>
-              <Button
-                title="Cancel"
-                onPress={() => !recordingCash && setShowCashConfirm(false)}
-                variant="ghost"
-                size="md"
+              <TouchableOpacity
+                style={styles.cashFullButton}
+                onPress={() => setCashAmountInput(currencyInputValue(remaining))}
                 disabled={recordingCash}
-              />
-              <Button
-                title={
-                  recordingCash
-                    ? "Recording…"
-                    : `Record ${formatCurrency(remaining)}`
-                }
-                onPress={handleRecordCash}
-                variant="primary"
-                size="md"
-                loading={recordingCash}
-                disabled={recordingCash}
-                style={{ backgroundColor: colors.emerald[600] }}
-              />
-            </View>
+              >
+                <Text style={styles.cashFullButtonText}>
+                  Use full balance ({formatCurrency(remaining)})
+                </Text>
+              </TouchableOpacity>
+              <View style={styles.cashModalActions}>
+                <Button
+                  title="Cancel"
+                  onPress={closeCashModal}
+                  variant="ghost"
+                  size="md"
+                  disabled={recordingCash}
+                />
+                <Button
+                  title={
+                    recordingCash
+                      ? "Recording…"
+                      : canRecordCash
+                      ? `Record ${formatCurrency(cashAmount)}`
+                      : "Record cash"
+                  }
+                  onPress={handleRecordCash}
+                  variant="primary"
+                  size="md"
+                  loading={recordingCash}
+                  disabled={!canRecordCash}
+                  style={{ backgroundColor: colors.emerald[600] }}
+                />
+              </View>
+            </Pressable>
           </Pressable>
-        </Pressable>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
