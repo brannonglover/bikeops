@@ -1705,7 +1705,7 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
             >
               <Ionicons name="card" size={16} color={colors.white} />
               <Text style={styles.payOnlineText}>
-                {paymentSummary.totalPaid > 0 ? "Pay remaining balance" : "Pay online"}
+                {paymentSummary.totalPaid > 0 ? "Pay balance" : "Pay online"}
               </Text>
             </TouchableOpacity>
             <TouchableOpacity

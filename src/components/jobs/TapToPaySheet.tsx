@@ -86,6 +86,7 @@ export function TapToPaySheet({
     confirmPaymentIntent,
     cancelDiscovering,
     connectedReader,
+    supportsReadersOfType,
   } = useStripeTerminal({
     onUpdateDiscoveredReaders: (readers) => {
       setDiscoveredReaders(readers);
@@ -214,6 +215,24 @@ export function TapToPaySheet({
       handleError("Tap to Pay on iPhone requires an iOS device.");
       return;
     }
+
+    const { readerSupportResult, error: supportError } =
+      await supportsReadersOfType({
+        deviceType: "tapToPay",
+        discoveryMethod: "tapToPay",
+        simulated: false,
+      });
+    if (supportError) {
+      handleError(supportError.message);
+      return;
+    }
+    if (!readerSupportResult) {
+      handleError(
+        "Tap to Pay is not available on this device or build. Use an iPhone XS or later with the Tap to Pay entitlement enabled."
+      );
+      return;
+    }
+
     let locationId = TERMINAL_LOCATION_ID.trim() || terminalLocationId;
     if (!locationId) {
       const { locations, error } = await getLocations({ limit: 1 });
@@ -243,7 +262,14 @@ export function TapToPaySheet({
         handleError(error.message);
       }
     }
-  }, [connectedReader, discoverReaders, getLocations, handleError, terminalLocationId]);
+  }, [
+    connectedReader,
+    discoverReaders,
+    getLocations,
+    handleError,
+    supportsReadersOfType,
+    terminalLocationId,
+  ]);
 
   const handleClose = useCallback(() => {
     if (phase === "collecting" || phase === "processing") return;
