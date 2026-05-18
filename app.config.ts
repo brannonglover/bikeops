@@ -60,10 +60,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
           : "com.brannonglover.bikeops.app.notifications",
       ],
     },
-    // TODO: re-add proximity-reader entitlement once Apple approves the app for Tap to Pay
-    // entitlements: {
-    //   "com.apple.developer.proximity-reader.payment.acceptance": true,
-    // },
+    entitlements: {
+      "com.apple.developer.proximity-reader.payment.acceptance": true,
+    },
   },
   android: {
     adaptiveIcon: {

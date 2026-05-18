@@ -7,6 +7,7 @@ import {
   Pressable,
   ActivityIndicator,
   TouchableOpacity,
+  Platform,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useStripeTerminal } from "@stripe/stripe-terminal-react-native";
@@ -37,6 +38,28 @@ interface TapToPaySheetProps {
 
 const SHOP_NAME =
   process.env.EXPO_PUBLIC_SHOP_NAME ?? "Bike Shop";
+const TERMINAL_LOCATION_ID =
+  process.env.EXPO_PUBLIC_STRIPE_TERMINAL_LOCATION_ID ?? "";
+
+function getTapToPayErrorMessage(message: string): string {
+  const lower = message.toLowerCase();
+  if (
+    lower.includes("proximity") ||
+    lower.includes("entitlement") ||
+    lower.includes("not supported") ||
+    lower.includes("unsupported") ||
+    lower.includes("local mobile")
+  ) {
+    return "Tap to Pay is not available on this device or build. Use an approved iPhone with the Tap to Pay entitlement enabled.";
+  }
+  if (lower.includes("location")) {
+    return "Stripe Terminal needs a valid location before Tap to Pay can start. Check the shop's Terminal location setup.";
+  }
+  if (lower.includes("permission")) {
+    return "Tap to Pay needs the requested device permissions before it can accept a payment.";
+  }
+  return message;
+}
 
 export function TapToPaySheet({
   visible,
@@ -49,13 +72,18 @@ export function TapToPaySheet({
   const [phase, setPhase] = useState<Phase>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [discoveredReaders, setDiscoveredReaders] = useState<Reader.Type[]>([]);
+  const [terminalLocationId, setTerminalLocationId] = useState(
+    TERMINAL_LOCATION_ID.trim()
+  );
   const isConnectingRef = useRef(false);
 
   const {
     discoverReaders,
-    connectLocalMobileReader,
+    connectReader,
+    getLocations,
+    retrievePaymentIntent,
     collectPaymentMethod,
-    processPayment,
+    confirmPaymentIntent,
     cancelDiscovering,
     connectedReader,
   } = useStripeTerminal({
@@ -66,7 +94,7 @@ export function TapToPaySheet({
 
   const handleError = useCallback((message: string) => {
     setPhase("error");
-    setErrorMessage(message);
+    setErrorMessage(getTapToPayErrorMessage(message));
     isConnectingRef.current = false;
   }, []);
 
@@ -74,7 +102,7 @@ export function TapToPaySheet({
   useEffect(() => {
     if (phase !== "discovering") return;
     const timeout = setTimeout(() => {
-      handleError("Could not find a reader. Make sure Tap to Pay is enabled and supported on this device.");
+      handleError("Could not find a Tap to Pay reader. Make sure this is an approved iPhone build with Tap to Pay enabled.");
     }, 20_000);
     return () => clearTimeout(timeout);
   }, [phase, handleError]);
@@ -88,9 +116,17 @@ export function TapToPaySheet({
     isConnectingRef.current = true;
     setPhase("connecting");
 
-    connectLocalMobileReader({
+    if (!terminalLocationId) {
+      handleError("Stripe Terminal needs a location before Tap to Pay can start.");
+      return;
+    }
+
+    connectReader({
+      discoveryMethod: "tapToPay",
       reader: discoveredReaders[0],
-      params: { merchantDisplayName: SHOP_NAME },
+      locationId: terminalLocationId,
+      merchantDisplayName: SHOP_NAME,
+      tosAcceptancePermitted: true,
     }).then(({ error }) => {
       isConnectingRef.current = false;
       if (error) {
@@ -99,7 +135,7 @@ export function TapToPaySheet({
         setPhase("creating_intent");
       }
     });
-  }, [phase, discoveredReaders, connectLocalMobileReader, handleError]);
+  }, [phase, discoveredReaders, terminalLocationId, connectReader, handleError]);
 
   // When connected, create intent and run the full collection flow
   useEffect(() => {
@@ -116,10 +152,19 @@ export function TapToPaySheet({
         const { clientSecret } = res.data;
 
         if (cancelled) return;
+        const { paymentIntent, error: retrieveError } =
+          await retrievePaymentIntent(clientSecret);
+
+        if (cancelled) return;
+        if (retrieveError || !paymentIntent) {
+          handleError(retrieveError?.message ?? "Payment could not be prepared");
+          return;
+        }
+
         setPhase("collecting");
 
         const { paymentIntent: collected, error: collectError } =
-          await collectPaymentMethod({ paymentIntentClientSecret: clientSecret });
+          await collectPaymentMethod({ paymentIntent, skipTipping: true });
 
         if (cancelled) return;
         if (collectError || !collected) {
@@ -129,7 +174,9 @@ export function TapToPaySheet({
 
         setPhase("processing");
 
-        const { error: processError } = await processPayment(collected);
+        const { error: processError } = await confirmPaymentIntent({
+          paymentIntent: collected,
+        });
 
         if (cancelled) return;
         if (processError) {
@@ -149,11 +196,38 @@ export function TapToPaySheet({
     return () => {
       cancelled = true;
     };
-  }, [phase, jobId, collectPaymentMethod, processPayment, handleError, onJobPaid]);
+  }, [
+    phase,
+    jobId,
+    retrievePaymentIntent,
+    collectPaymentMethod,
+    confirmPaymentIntent,
+    handleError,
+    onJobPaid,
+  ]);
 
   const startPayment = useCallback(async () => {
     setErrorMessage(null);
     isConnectingRef.current = false;
+
+    if (Platform.OS !== "ios") {
+      handleError("Tap to Pay on iPhone requires an iOS device.");
+      return;
+    }
+    let locationId = TERMINAL_LOCATION_ID.trim() || terminalLocationId;
+    if (!locationId) {
+      const { locations, error } = await getLocations({ limit: 1 });
+      if (error) {
+        handleError(error.message);
+        return;
+      }
+      locationId = locations?.[0]?.id ?? "";
+    }
+    if (!locationId) {
+      handleError("Stripe Terminal needs a location before Tap to Pay can start.");
+      return;
+    }
+    setTerminalLocationId(locationId);
 
     if (connectedReader) {
       // Skip discovery if already connected
@@ -162,14 +236,14 @@ export function TapToPaySheet({
       setDiscoveredReaders([]);
       setPhase("discovering");
       const { error } = await discoverReaders({
-        discoveryMethod: "localMobile",
+        discoveryMethod: "tapToPay",
         simulated: false,
       });
       if (error) {
         handleError(error.message);
       }
     }
-  }, [connectedReader, discoverReaders, handleError]);
+  }, [connectedReader, discoverReaders, getLocations, handleError, terminalLocationId]);
 
   const handleClose = useCallback(() => {
     if (phase === "collecting" || phase === "processing") return;
@@ -277,7 +351,7 @@ export function TapToPaySheet({
               </View>
               <Text style={styles.title}>Tap to Pay</Text>
               <Text style={styles.subtitle}>
-                Ask the customer to tap their card or Apple Pay wallet to the top of this iPhone.
+                Ask the customer to tap their card or phone on the staff iPhone.
               </Text>
             </View>
             <Text style={styles.amount}>{formatCurrency(total)}</Text>
@@ -318,7 +392,7 @@ export function TapToPaySheet({
             </Text>
             {phase === "collecting" && (
               <Text style={styles.subtitle}>
-                The customer can tap their credit card, Apple Pay, or Google Pay.
+                The customer can tap a contactless card, Apple Pay, Google Pay, or another NFC wallet.
               </Text>
             )}
             <Text style={styles.amount}>{formatCurrency(total)}</Text>

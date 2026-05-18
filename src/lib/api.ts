@@ -129,6 +129,12 @@ export function resolveUrl(url: string): string {
   return `${apiUrl}${url.startsWith("/") ? "" : "/"}${url}`;
 }
 
+export function resolveCustomerUrl(url: string): string {
+  if (!url || url.startsWith("http")) return url;
+  const apiUrl = getCustomerApiUrl();
+  return `${apiUrl}${url.startsWith("/") ? "" : "/"}${url}`;
+}
+
 export type AuthRole = "staff" | "customer" | null;
 
 interface FetchOptions extends Omit<RequestInit, "headers"> {

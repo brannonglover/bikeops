@@ -10,7 +10,7 @@ import {
 import { useLocalSearchParams, Stack, useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
-import { api } from "@/lib/api";
+import { api, resolveCustomerUrl } from "@/lib/api";
 import { type Job } from "@/lib/types";
 import { colors, spacing, fontSize } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
@@ -19,8 +19,6 @@ import { Button } from "@/components/ui/Button";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { formatCurrency, getJobBikeDisplayTitle } from "@/lib/format";
 import { computeJobSubtotal, getJobPaymentSummary } from "@/lib/job-payments";
-
-const API_URL = process.env.EXPO_PUBLIC_API_URL ?? "";
 
 export default function PayScreen() {
   const { theme } = useTheme();
@@ -213,8 +211,8 @@ export default function PayScreen() {
   const handlePay = async () => {
     setPaying(true);
     try {
-      // Open the web payment page in the device browser
-      const payUrl = `${API_URL}/pay/${jobId}`;
+      // Remote customer payments use Stripe's secure online flow.
+      const payUrl = resolveCustomerUrl(`/pay/${jobId}`);
       const supported = await Linking.canOpenURL(payUrl);
       if (supported) {
         await Linking.openURL(payUrl);
@@ -279,7 +277,7 @@ export default function PayScreen() {
 
         <Text style={styles.info}>
           You'll be redirected to a secure payment page to complete your
-          payment via card or Apple Pay.
+          payment with Apple Pay, Google Pay, Link, or card.
         </Text>
 
         <Button
