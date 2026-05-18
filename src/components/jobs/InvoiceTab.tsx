@@ -18,7 +18,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import { api, resolveUrl } from "@/lib/api";
-import { TapToPaySheet } from "@/components/jobs/TapToPaySheet";
+// import { TapToPaySheet } from "@/components/jobs/TapToPaySheet";
 import {
   type Job,
   type JobBike,
@@ -100,7 +100,7 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
   const [recordingCash, setRecordingCash] = useState(false);
   const [showCashConfirm, setShowCashConfirm] = useState(false);
   const [cashAmountInput, setCashAmountInput] = useState("");
-  const [showTapToPay, setShowTapToPay] = useState(false);
+  // const [showTapToPay, setShowTapToPay] = useState(false);
   const [resending, setResending] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
 
@@ -1689,6 +1689,7 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
         </View>
       ) : (
         <View style={styles.paymentActions}>
+          {/* Tap to Pay is hidden until the Apple entitlement is approved.
           <TouchableOpacity
             style={styles.tapToPayButton}
             onPress={() => setShowTapToPay(true)}
@@ -1697,6 +1698,7 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
             <Ionicons name="phone-portrait" size={16} color={colors.white} />
             <Text style={styles.tapToPayText}>Tap to Pay</Text>
           </TouchableOpacity>
+          */}
           <View style={styles.paymentRow}>
             <TouchableOpacity
               style={styles.payOnlineButton}
@@ -1866,7 +1868,7 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* Tap to Pay sheet */}
+      {/* Tap to Pay sheet is hidden until the Apple entitlement is approved.
       <TapToPaySheet
         visible={showTapToPay}
         jobId={job.id}
@@ -1877,6 +1879,7 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
           await refetchJob();
         }}
       />
+      */}
 
       {/* Record cash confirmation modal */}
       <Modal

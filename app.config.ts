@@ -60,9 +60,10 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
           : "com.brannonglover.bikeops.app.notifications",
       ],
     },
-    entitlements: {
-      "com.apple.developer.proximity-reader.payment.acceptance": true,
-    },
+    // Re-enable when the Apple Proximity Reader entitlement is approved.
+    // entitlements: {
+    //   "com.apple.developer.proximity-reader.payment.acceptance": true,
+    // },
   },
   android: {
     adaptiveIcon: {
