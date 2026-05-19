@@ -123,14 +123,18 @@ function extractCookieValue(
   return null;
 }
 
+function isAbsoluteOrLocalUri(url: string): boolean {
+  return /^(https?:|file:|content:|ph:|assets-library:)/i.test(url);
+}
+
 export function resolveUrl(url: string): string {
-  if (!url || url.startsWith("http")) return url;
+  if (!url || isAbsoluteOrLocalUri(url)) return url;
   const apiUrl = staffApiUrlMemCache ?? DEFAULT_API_URL;
   return `${apiUrl}${url.startsWith("/") ? "" : "/"}${url}`;
 }
 
 export function resolveCustomerUrl(url: string): string {
-  if (!url || url.startsWith("http")) return url;
+  if (!url || isAbsoluteOrLocalUri(url)) return url;
   const apiUrl = getCustomerApiUrl();
   return `${apiUrl}${url.startsWith("/") ? "" : "/"}${url}`;
 }

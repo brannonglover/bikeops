@@ -24,6 +24,13 @@ import { useQueryClient } from "@tanstack/react-query";
 import * as ImagePicker from "expo-image-picker";
 import { Ionicons } from "@expo/vector-icons";
 import { api, isCustomerAuthenticated, resolveUrl } from "@/lib/api";
+import {
+  buildPendingChatImage,
+  hasUploadingPendingImages,
+  isPendingChatImageReady,
+  pendingChatImageDisplayUri,
+  type PendingChatImage,
+} from "@/lib/chat-attachments";
 import { useAuth } from "@/lib/auth";
 import { CUSTOMER_MESSAGES_QUERY_KEY } from "@/hooks/useNotifications";
 import { type ChatMessage } from "@/lib/types";
@@ -67,9 +74,7 @@ export default function CustomerChatScreen() {
   const [staffLastReadAt, setStaffLastReadAt] = useState<string | null>(null);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
-  const [pendingImages, setPendingImages] = useState<
-    { id: string; url: string; filename: string }[]
-  >([]);
+  const [pendingImages, setPendingImages] = useState<PendingChatImage[]>([]);
   const [editingMessage, setEditingMessage] = useState<ChatMessage | null>(null);
   const [activeMessage, setActiveMessage] = useState<ChatMessage | null>(null);
   const [viewingImageUrl, setViewingImageUrl] = useState<string | null>(null);
@@ -260,8 +265,9 @@ export default function CustomerChatScreen() {
 
   const handleSend = useCallback(async () => {
     const textToSend = text.trim();
-    const imagesToSend = [...pendingImages];
+    const imagesToSend = pendingImages.filter(isPendingChatImageReady);
     if (!textToSend && imagesToSend.length === 0) return;
+    if (hasUploadingPendingImages(pendingImages)) return;
 
     const tempId = `temp-${Date.now()}`;
     const optimisticMsg: ChatMessage = {
@@ -270,8 +276,8 @@ export default function CustomerChatScreen() {
       sender: "CUSTOMER",
       body: textToSend || null,
       attachments: imagesToSend.map((img) => ({
-        id: img.id,
-        url: img.url,
+        id: img.id!,
+        url: img.url ?? img.previewUri,
         filename: img.filename,
         mimeType: "",
         messageId: null,
@@ -295,7 +301,7 @@ export default function CustomerChatScreen() {
         "/api/chat/conversation/messages",
         {
           body: textToSend || null,
-          attachmentIds: imagesToSend.map((p) => p.id),
+          attachmentIds: imagesToSend.map((p) => p.id!),
         },
         { role: "customer" }
       );
@@ -318,27 +324,34 @@ export default function CustomerChatScreen() {
       quality: 0.8,
     });
     if (result.canceled || !result.assets[0]) return;
-    const asset = result.assets[0];
-    const isHeic =
-      asset.mimeType === "image/heic" || asset.mimeType === "image/heif";
-    const mimeType = isHeic ? "image/jpeg" : (asset.mimeType ?? "image/jpeg");
-    const fileName = isHeic
-      ? (asset.fileName?.replace(/\.heic$/i, ".jpg").replace(/\.heif$/i, ".jpg") ?? "photo.jpg")
-      : (asset.fileName ?? "photo.jpg");
-    const formData = new FormData();
-    formData.append("file", {
-      uri: asset.uri,
-      type: mimeType,
-      name: fileName,
-    } as unknown as Blob);
+    const { pending, formData } = buildPendingChatImage(result.assets[0]);
+    setPendingImages((prev) => [...prev, pending]);
+
     try {
       const { data } = await api.postForm<{
         id: string;
         url: string;
         filename: string;
       }>("/api/chat/upload", formData, { role: "customer" });
-      setPendingImages((prev) => [...prev, data]);
+      setPendingImages((prev) =>
+        prev.map((img) =>
+          img.localId === pending.localId
+            ? {
+                ...img,
+                id: data.id,
+                url: data.url,
+                filename: data.filename,
+                status: "ready",
+              }
+            : img
+        )
+      );
     } catch {
+      setPendingImages((prev) =>
+        prev.map((img) =>
+          img.localId === pending.localId ? { ...img, status: "failed" } : img
+        )
+      );
       Alert.alert("Error", "Failed to upload image");
     }
   };
@@ -555,6 +568,13 @@ export default function CustomerChatScreen() {
           height: 60,
           borderRadius: borderRadius.lg,
           backgroundColor: theme.surfaceBorder,
+        },
+        pendingUploading: {
+          ...StyleSheet.absoluteFillObject,
+          backgroundColor: "rgba(0,0,0,0.35)",
+          borderRadius: borderRadius.lg,
+          justifyContent: "center",
+          alignItems: "center",
         },
         pendingRemove: {
           position: "absolute",
@@ -1047,11 +1067,22 @@ export default function CustomerChatScreen() {
         {pendingImages.length > 0 ? (
           <View style={styles.pendingRow}>
             {pendingImages.map((p) => (
-              <View key={p.id} style={styles.pendingWrapper}>
-                <Image source={{ uri: p.url }} style={styles.pendingImg} />
+              <View key={p.localId} style={styles.pendingWrapper}>
+                <Image
+                  source={{ uri: pendingChatImageDisplayUri(p) }}
+                  style={styles.pendingImg}
+                  resizeMode="cover"
+                />
+                {p.status === "uploading" ? (
+                  <View style={styles.pendingUploading} pointerEvents="none">
+                    <ActivityIndicator size="small" color={colors.white} />
+                  </View>
+                ) : null}
                 <TouchableOpacity
                   onPress={() =>
-                    setPendingImages((prev) => prev.filter((i) => i.id !== p.id))
+                    setPendingImages((prev) =>
+                      prev.filter((i) => i.localId !== p.localId)
+                    )
                   }
                   style={styles.pendingRemove}
                 >
@@ -1090,10 +1121,20 @@ export default function CustomerChatScreen() {
           />
           <TouchableOpacity
             onPress={editingMessage ? handleEdit : handleSend}
-            disabled={sending || (!text.trim() && !editingMessage && pendingImages.length === 0)}
+            disabled={
+              sending ||
+              hasUploadingPendingImages(pendingImages) ||
+              (!text.trim() &&
+                !editingMessage &&
+                pendingImages.filter(isPendingChatImageReady).length === 0)
+            }
             style={[
               styles.sendButton,
-              (sending || (!text.trim() && !editingMessage && pendingImages.length === 0)) &&
+              (sending ||
+                hasUploadingPendingImages(pendingImages) ||
+                (!text.trim() &&
+                  !editingMessage &&
+                  pendingImages.filter(isPendingChatImageReady).length === 0)) &&
                 styles.sendDisabled,
             ]}
           >

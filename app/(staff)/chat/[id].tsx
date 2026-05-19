@@ -23,6 +23,13 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import { api, resolveUrl } from "@/lib/api";
+import {
+  buildPendingChatImage,
+  hasUploadingPendingImages,
+  isPendingChatImageReady,
+  pendingChatImageDisplayUri,
+  type PendingChatImage,
+} from "@/lib/chat-attachments";
 import { type Bike, type ChatMessage, type Conversation, type Job } from "@/lib/types";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
@@ -121,9 +128,7 @@ export default function ConversationScreen() {
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
-  const [pendingImages, setPendingImages] = useState<
-    { id: string; url: string; filename: string }[]
-  >([]);
+  const [pendingImages, setPendingImages] = useState<PendingChatImage[]>([]);
   const [editingMessage, setEditingMessage] = useState<ChatMessage | null>(null);
   const [activeMessage, setActiveMessage] = useState<ChatMessage | null>(null);
   const [viewingImageUrl, setViewingImageUrl] = useState<string | null>(null);
@@ -313,6 +318,13 @@ export default function ConversationScreen() {
           height: 20,
           borderRadius: 10,
           backgroundColor: colors.red[500],
+          justifyContent: "center",
+          alignItems: "center",
+        },
+        pendingUploading: {
+          ...StyleSheet.absoluteFillObject,
+          backgroundColor: "rgba(0,0,0,0.35)",
+          borderRadius: borderRadius.lg,
           justifyContent: "center",
           alignItems: "center",
         },
@@ -899,8 +911,9 @@ export default function ConversationScreen() {
 
   const handleSend = useCallback(async () => {
     const textToSend = text.trim();
-    const imagesToSend = [...pendingImages];
+    const imagesToSend = pendingImages.filter(isPendingChatImageReady);
     if (!textToSend && imagesToSend.length === 0) return;
+    if (hasUploadingPendingImages(pendingImages)) return;
 
     const tempId = `temp-${Date.now()}`;
     const optimisticMsg: ChatMessage = {
@@ -909,8 +922,8 @@ export default function ConversationScreen() {
       sender: "STAFF",
       body: textToSend || null,
       attachments: imagesToSend.map((img) => ({
-        id: img.id,
-        url: img.url,
+        id: img.id!,
+        url: img.url ?? img.previewUri,
         filename: img.filename,
         mimeType: "",
         messageId: null,
@@ -938,7 +951,7 @@ export default function ConversationScreen() {
       const { data: newMsg } = await api.post<ChatMessage>(`/api/conversations/${id}/messages`, {
         sender: "STAFF",
         body: textToSend || null,
-        attachmentIds: imagesToSend.map((p) => p.id),
+        attachmentIds: imagesToSend.map((p) => p.id!),
       });
       const deliveredMsg: ChatMessage = { ...newMsg, clientDeliveryState: "DELIVERED" };
       queryClient.setQueryData<MessagesData>(["messages", id], (old) => {
@@ -970,27 +983,34 @@ export default function ConversationScreen() {
       quality: 0.8,
     });
     if (result.canceled || !result.assets[0]) return;
-    const asset = result.assets[0];
-    const isHeic =
-      asset.mimeType === "image/heic" || asset.mimeType === "image/heif";
-    const mimeType = isHeic ? "image/jpeg" : (asset.mimeType ?? "image/jpeg");
-    const fileName = isHeic
-      ? (asset.fileName?.replace(/\.heic$/i, ".jpg").replace(/\.heif$/i, ".jpg") ?? "photo.jpg")
-      : (asset.fileName ?? "photo.jpg");
-    const formData = new FormData();
-    formData.append("file", {
-      uri: asset.uri,
-      type: mimeType,
-      name: fileName,
-    } as unknown as Blob);
+    const { pending, formData } = buildPendingChatImage(result.assets[0]);
+    setPendingImages((prev) => [...prev, pending]);
+
     try {
       const { data } = await api.postForm<{
         id: string;
         url: string;
         filename: string;
       }>("/api/chat/upload", formData);
-      setPendingImages((prev) => [...prev, data]);
+      setPendingImages((prev) =>
+        prev.map((img) =>
+          img.localId === pending.localId
+            ? {
+                ...img,
+                id: data.id,
+                url: data.url,
+                filename: data.filename,
+                status: "ready",
+              }
+            : img
+        )
+      );
     } catch {
+      setPendingImages((prev) =>
+        prev.map((img) =>
+          img.localId === pending.localId ? { ...img, status: "failed" } : img
+        )
+      );
       Alert.alert("Error", "Failed to upload image");
     }
   };
@@ -1524,15 +1544,21 @@ export default function ConversationScreen() {
         {pendingImages.length > 0 ? (
           <View style={styles.pendingRow}>
             {pendingImages.map((p) => (
-              <View key={p.id} style={styles.pendingImageWrapper}>
+              <View key={p.localId} style={styles.pendingImageWrapper}>
                 <Image
-                  source={{ uri: p.url }}
+                  source={{ uri: pendingChatImageDisplayUri(p) }}
                   style={styles.pendingImage}
+                  resizeMode="cover"
                 />
+                {p.status === "uploading" ? (
+                  <View style={styles.pendingUploading} pointerEvents="none">
+                    <ActivityIndicator size="small" color={colors.white} />
+                  </View>
+                ) : null}
                 <TouchableOpacity
                   onPress={() =>
                     setPendingImages((prev) =>
-                      prev.filter((i) => i.id !== p.id)
+                      prev.filter((i) => i.localId !== p.localId)
                     )
                   }
                   style={styles.pendingRemove}
@@ -1574,10 +1600,20 @@ export default function ConversationScreen() {
           />
           <TouchableOpacity
             onPress={editingMessage ? handleEdit : handleSend}
-            disabled={sending || (!text.trim() && !editingMessage && pendingImages.length === 0)}
+            disabled={
+              sending ||
+              hasUploadingPendingImages(pendingImages) ||
+              (!text.trim() &&
+                !editingMessage &&
+                pendingImages.filter(isPendingChatImageReady).length === 0)
+            }
             style={[
               styles.sendButton,
-              (sending || (!text.trim() && !editingMessage && pendingImages.length === 0)) &&
+              (sending ||
+                hasUploadingPendingImages(pendingImages) ||
+                (!text.trim() &&
+                  !editingMessage &&
+                  pendingImages.filter(isPendingChatImageReady).length === 0)) &&
                 styles.sendButtonDisabled,
             ]}
           >
