@@ -21,9 +21,11 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { formatCurrency } from "@/lib/format";
+import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 
 export default function ProductsScreen() {
   const { theme } = useTheme();
+  const layout = useResponsiveLayout();
   const queryClient = useQueryClient();
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -31,6 +33,7 @@ export default function ProductsScreen() {
   const [description, setDescription] = useState("");
   const [price, setPrice] = useState("");
   const [stockQuantity, setStockQuantity] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
 
   const styles = useMemo(
     () =>
@@ -38,9 +41,18 @@ export default function ProductsScreen() {
         container: { flex: 1, backgroundColor: theme.background },
         toolbar: {
           padding: spacing[3],
+          gap: spacing[2],
           backgroundColor: theme.surface,
           borderBottomWidth: 1,
           borderBottomColor: theme.surfaceBorder,
+        },
+        searchInput: {
+          marginBottom: 0,
+        },
+        tabletConstrained: {
+          width: "100%",
+          maxWidth: 1040,
+          alignSelf: "center",
         },
         addButton: {
           flexDirection: "row",
@@ -114,6 +126,17 @@ export default function ProductsScreen() {
     },
   });
 
+  const filteredProducts = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return products;
+    return products.filter(
+      (p) =>
+        p.name.toLowerCase().includes(q) ||
+        (p.description?.toLowerCase().includes(q) ?? false) ||
+        (p.supplier?.toLowerCase().includes(q) ?? false)
+    );
+  }, [products, searchQuery]);
+
   const [isManualRefresh, setIsManualRefresh] = useState(false);
   const handleRefresh = useCallback(async () => {
     setIsManualRefresh(true);
@@ -186,13 +209,26 @@ export default function ProductsScreen() {
           <Ionicons name="add" size={18} color={colors.white} />
           <Text style={styles.addText}>Add Product</Text>
         </TouchableOpacity>
+        <Input
+          placeholder="Search products..."
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          autoCapitalize="none"
+          autoCorrect={false}
+          containerStyle={styles.searchInput}
+        />
       </View>
 
       {products.length === 0 ? (
         <EmptyState icon="cube-outline" title="No products" />
+      ) : filteredProducts.length === 0 ? (
+        <EmptyState
+          icon="search-outline"
+          title={`No products match "${searchQuery}"`}
+        />
       ) : (
         <FlatList
-          data={products}
+          data={filteredProducts}
           keyExtractor={(item) => item.id}
           refreshControl={
             <RefreshControl refreshing={isManualRefresh} onRefresh={handleRefresh} />
@@ -210,7 +246,7 @@ export default function ProductsScreen() {
                   },
                 ]);
               }}
-              style={styles.row}
+              style={[styles.row, layout.isTablet && styles.tabletConstrained]}
             >
               {item.imageUrl ? (
                 <Image source={{ uri: item.imageUrl }} style={styles.productImage} />

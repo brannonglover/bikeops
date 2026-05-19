@@ -166,9 +166,13 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
 
   const filteredProducts = useMemo(() => {
     const q = productSearch.trim().toLowerCase();
-    return q
-      ? availableProducts.filter((p) => p.name.toLowerCase().includes(q))
-      : availableProducts;
+    if (!q) return availableProducts;
+    return availableProducts.filter(
+      (p) =>
+        p.name.toLowerCase().includes(q) ||
+        (p.description?.toLowerCase().includes(q) ?? false) ||
+        (p.supplier?.toLowerCase().includes(q) ?? false)
+    );
   }, [availableProducts, productSearch]);
 
   const total = computeJobSubtotal({
@@ -964,10 +968,18 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
           borderBottomWidth: StyleSheet.hairlineWidth,
           borderBottomColor: theme.surfaceBorder,
         },
+        pickerItemInfo: {
+          flex: 1,
+          gap: 2,
+        },
         pickerItemName: {
           ...fontSize.sm,
           fontWeight: "500",
           color: theme.text,
+        },
+        pickerItemMeta: {
+          ...fontSize.xs,
+          color: theme.textMuted,
         },
         pickerItemPrice: {
           ...fontSize.xs,
@@ -1852,7 +1864,12 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
                     style={styles.pickerItem}
                     onPress={() => handleAddProduct(item.id)}
                   >
-                    <Text style={styles.pickerItemName}>{item.name}</Text>
+                    <View style={styles.pickerItemInfo}>
+                      <Text style={styles.pickerItemName}>{item.name}</Text>
+                      <Text style={styles.pickerItemMeta}>
+                        Stock: {item.stockQuantity}
+                      </Text>
+                    </View>
                     <Text style={styles.pickerItemPrice}>
                       {formatCurrency(item.price)}
                     </Text>
