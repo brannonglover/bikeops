@@ -68,8 +68,9 @@ export interface Service {
 export interface JobService {
   id: string;
   jobId: string;
-  serviceId: string;
-  service: Service;
+  serviceId: string | null;
+  service: Service | null;
+  customServiceName?: string | null;
   quantity: number;
   unitPrice: string;
   notes: string | null;

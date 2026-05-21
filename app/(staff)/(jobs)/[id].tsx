@@ -2059,11 +2059,14 @@ export default function JobDetailScreen() {
         {jobServices.length > 0 ? (
           <Card style={styles.section}>
             <Text style={styles.sectionTitle}>Services</Text>
-            {jobServices.map((js) =>
-              js?.service ? (
+            {jobServices.map((js) => {
+              const serviceName =
+                js.service?.name ?? js.customServiceName ?? null;
+              if (!serviceName) return null;
+              return (
                 <View key={js.id} style={styles.lineItem}>
                   <View style={styles.lineItemLeft}>
-                    <Text style={styles.lineItemName}>{js.service.name}</Text>
+                    <Text style={styles.lineItemName}>{serviceName}</Text>
                     {js.quantity > 1 ? (
                       <Text style={styles.lineItemQty}>x{js.quantity}</Text>
                     ) : null}
@@ -2072,8 +2075,8 @@ export default function JobDetailScreen() {
                     {formatCurrency(parseFloat(js.unitPrice) * js.quantity)}
                   </Text>
                 </View>
-              ) : null
-            )}
+              );
+            })}
           </Card>
         ) : null}
 

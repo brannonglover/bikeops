@@ -325,7 +325,9 @@ export default function JobStatusScreen() {
             <Text style={styles.sectionTitle}>Line Items</Text>
             {job.jobServices.map((js) => (
               <View key={js.id} style={styles.lineItem}>
-                <Text style={styles.lineItemName}>{js.service.name}</Text>
+                <Text style={styles.lineItemName}>
+                  {js.service?.name ?? js.customServiceName ?? "Service"}
+                </Text>
                 <Text style={styles.lineItemPrice}>
                   {formatCurrency(parseFloat(js.unitPrice) * js.quantity)}
                 </Text>

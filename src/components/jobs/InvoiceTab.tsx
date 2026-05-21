@@ -34,6 +34,12 @@ import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { formatCurrency } from "@/lib/format";
 import { computeJobSubtotal, getJobPaymentSummary } from "@/lib/job-payments";
+import {
+  enrichJobFromCatalogs,
+  enrichJobService,
+  getJobProductDisplayName,
+  getJobServiceDisplayName,
+} from "@/lib/job-line-items";
 
 interface InvoiceTabProps {
   job: Job;
@@ -114,6 +120,9 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
         id: s.id,
         name: s.name,
         price: catalogPrice(s.price),
+        description: s.description,
+        slug: s.slug,
+        isSystem: s.isSystem,
       })),
   });
 
@@ -138,7 +147,12 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
   const jobProductsList: JobProduct[] = job.jobProducts ?? [];
 
   const attachedServiceIds = useMemo(
-    () => new Set(jobServices.map((js) => js.serviceId)),
+    () =>
+      new Set(
+        jobServices
+          .map((js) => js.serviceId)
+          .filter((id): id is string => Boolean(id))
+      ),
     [jobServices]
   );
   const attachedProductIds = useMemo(
@@ -243,8 +257,8 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
 
   const refetchJob = useCallback(async () => {
     const { data } = await api.get<Job>(`/api/jobs/${job.id}`);
-    onJobUpdated(data);
-  }, [job.id, onJobUpdated]);
+    onJobUpdated(enrichJobFromCatalogs(data, services, products));
+  }, [job.id, onJobUpdated, services, products]);
 
   const closeServicePicker = useCallback(() => {
     Keyboard.dismiss();
@@ -264,13 +278,28 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
       setAdding(true);
       try {
         await waitForPickerDismiss();
-        const res = await api.post(`/api/jobs/${job.id}/services`, { serviceId });
-        if (res.response.ok) await refetchJob();
+        const res = await api.post<JobService>(`/api/jobs/${job.id}/services`, {
+          serviceId,
+        });
+        if (res.response.ok) {
+          const created = enrichJobService(res.data, services);
+          onJobUpdated(
+            enrichJobFromCatalogs(
+              {
+                ...job,
+                jobServices: [...(job.jobServices ?? []), created],
+              },
+              services,
+              products
+            )
+          );
+          await refetchJob();
+        }
       } finally {
         setAdding(false);
       }
     },
-    [closeServicePicker, job.id, refetchJob]
+    [closeServicePicker, job, onJobUpdated, services, products, refetchJob]
   );
 
   const handleAddCustomService = useCallback(
@@ -1306,11 +1335,14 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
                                   </Text>
                                 </View>
                                 <Text style={styles.lineItemName} numberOfLines={2}>
-                                  {js.service?.name ?? "Unknown"}
+                                  {getJobServiceDisplayName(js, services)}
                                 </Text>
                                 <TouchableOpacity
                                   onPress={() =>
-                                    Alert.alert("Remove Service", `Remove "${js.service?.name}"?`, [
+                                    Alert.alert(
+                                      "Remove Service",
+                                      `Remove "${getJobServiceDisplayName(js, services)}"?`,
+                                      [
                                       { text: "Cancel", style: "cancel" },
                                       {
                                         text: "Remove",
@@ -1469,13 +1501,13 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
                                   </Text>
                                 </View>
                                 <Text style={styles.lineItemName} numberOfLines={2}>
-                                  {jp.product?.name ?? "Unknown"}
+                                  {getJobProductDisplayName(jp, products)}
                                 </Text>
                                 <TouchableOpacity
                                   onPress={() =>
                                     Alert.alert(
                                       "Remove Part",
-                                      `Remove "${jp.product?.name}"?`,
+                                      `Remove "${getJobProductDisplayName(jp, products)}"?`,
                                       [
                                         { text: "Cancel", style: "cancel" },
                                         {

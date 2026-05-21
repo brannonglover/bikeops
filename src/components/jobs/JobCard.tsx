@@ -127,8 +127,8 @@ export function JobCard({
               numberOfLines={1}
             >
               {jobServices
-                .filter((s) => s?.service)
-                .map((s) => s.service.name)
+                .map((s) => s.service?.name ?? s.customServiceName)
+                .filter(Boolean)
                 .join(", ")}
             </Text>
           ) : null}
