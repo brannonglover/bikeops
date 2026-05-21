@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   View,
   Text,
@@ -55,14 +56,12 @@ function parseCurrencyInput(value: string): number {
   return Number.isFinite(parsed) ? Math.round(parsed * 100) / 100 : Number.NaN;
 }
 
+function catalogPrice(value: string | number | undefined): number {
+  return typeof value === "string" ? parseFloat(value) : Number(value ?? 0);
+}
+
 export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
   const { theme } = useTheme();
-  const [services, setServices] = useState<
-    { id: string; name: string; price: number }[]
-  >([]);
-  const [products, setProducts] = useState<
-    { id: string; name: string; price: number }[]
-  >([]);
   const [adding, setAdding] = useState(false);
   const [addingProduct, setAddingProduct] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
@@ -104,37 +103,36 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
   const [resending, setResending] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
 
-  useEffect(() => {
-    api
-      .get<Service[]>("/api/services")
-      .then(({ data }) =>
-        setServices(
-          data.map((s) => ({
-            id: s.id,
-            name: s.name,
-            price:
-              typeof s.price === "string" ? parseFloat(s.price) : Number(s.price ?? 0),
-          }))
-        )
-      )
-      .catch(() => {});
-  }, []);
+  const { data: services = [] } = useQuery({
+    queryKey: ["services"],
+    queryFn: async () => {
+      const { data } = await api.get<Service[]>("/api/services");
+      return data;
+    },
+    select: (data) =>
+      data.map((s) => ({
+        id: s.id,
+        name: s.name,
+        price: catalogPrice(s.price),
+      })),
+  });
 
-  useEffect(() => {
-    api
-      .get<Product[]>("/api/products")
-      .then(({ data }) =>
-        setProducts(
-          data.map((p) => ({
-            id: p.id,
-            name: p.name,
-            price:
-              typeof p.price === "string" ? parseFloat(p.price) : Number(p.price ?? 0),
-          }))
-        )
-      )
-      .catch(() => {});
-  }, []);
+  const { data: products = [], refetch: refetchProducts } = useQuery({
+    queryKey: ["products"],
+    queryFn: async () => {
+      const { data } = await api.get<Product[]>("/api/products");
+      return data;
+    },
+    select: (data) =>
+      data.map((p) => ({
+        id: p.id,
+        name: p.name,
+        price: catalogPrice(p.price),
+        description: p.description,
+        supplier: p.supplier,
+        stockQuantity: p.stockQuantity,
+      })),
+  });
 
   const jobServices: JobService[] = job.jobServices ?? [];
   const jobProductsList: JobProduct[] = job.jobProducts ?? [];
@@ -1625,22 +1623,21 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
             {adding ? "Adding…" : "Add service"}
           </Text>
         </TouchableOpacity>
-        {availableProducts.length > 0 ? (
-          <TouchableOpacity
-            style={styles.addButton}
-            onPress={() => {
-              Keyboard.dismiss();
-              setProductSearch("");
-              setShowProductPicker(true);
-            }}
-            disabled={addingProduct}
-          >
-            <Ionicons name="add" size={16} color={theme.text} />
-            <Text style={styles.addButtonText}>
-              {addingProduct ? "Adding…" : "Add product"}
-            </Text>
-          </TouchableOpacity>
-        ) : null}
+        <TouchableOpacity
+          style={styles.addButton}
+          onPress={() => {
+            Keyboard.dismiss();
+            setProductSearch("");
+            void refetchProducts();
+            setShowProductPicker(true);
+          }}
+          disabled={addingProduct}
+        >
+          <Ionicons name="add" size={16} color={theme.text} />
+          <Text style={styles.addButtonText}>
+            {addingProduct ? "Adding…" : "Add product"}
+          </Text>
+        </TouchableOpacity>
       </View>
 
       {/* Total */}
