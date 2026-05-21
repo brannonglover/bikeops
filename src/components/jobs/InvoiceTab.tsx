@@ -354,6 +354,23 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
     [job.id, refetchJob]
   );
 
+  const adjustProductQuantity = useCallback(
+    async (jobProductId: string, quantity: number) => {
+      if (quantity < 1) return;
+      setUpdatingQty(jobProductId);
+      try {
+        const res = await api.patch(`/api/jobs/${job.id}/products`, {
+          jobProductId,
+          quantity,
+        });
+        if (res.response.ok) await refetchJob();
+      } finally {
+        setUpdatingQty(null);
+      }
+    },
+    [job.id, refetchJob]
+  );
+
   const updateServiceUnitPrice = useCallback(
     async (jobServiceId: string, unitPrice: number) => {
       setUpdatingPrice(jobServiceId);
@@ -1491,6 +1508,7 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
                               : Number(jp.unitPrice);
                           const qty = jp.quantity || 1;
                           const lineTotal = price * qty;
+                          const qtyBusy = updatingQty === jp.id;
 
                           return (
                             <View key={jp.id} style={styles.lineItem}>
@@ -1532,7 +1550,32 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
                               <View style={styles.lineItemBottom}>
                                 <View style={styles.lineItemRow}>
                                   <Text style={styles.lineItemRowLabel}>Qty</Text>
-                                  <Text style={styles.lineItemRowValue}>{qty}</Text>
+                                  <View
+                                    style={styles.qtyControl}
+                                    onStartShouldSetResponder={() => true}
+                                  >
+                                    <TouchableOpacity
+                                      onPress={() => adjustProductQuantity(jp.id, qty - 1)}
+                                      disabled={qty <= 1 || qtyBusy}
+                                      style={[
+                                        styles.qtyButton,
+                                        (qty <= 1 || qtyBusy) && styles.qtyButtonDisabled,
+                                      ]}
+                                    >
+                                      <Text style={styles.qtyButtonText}>−</Text>
+                                    </TouchableOpacity>
+                                    <Text style={styles.qtyValue}>{qtyBusy ? "…" : qty}</Text>
+                                    <TouchableOpacity
+                                      onPress={() => adjustProductQuantity(jp.id, qty + 1)}
+                                      disabled={qtyBusy}
+                                      style={[
+                                        styles.qtyButton,
+                                        qtyBusy && styles.qtyButtonDisabled,
+                                      ]}
+                                    >
+                                      <Text style={styles.qtyButtonText}>+</Text>
+                                    </TouchableOpacity>
+                                  </View>
                                 </View>
 
                                 <View style={styles.lineItemRow}>
