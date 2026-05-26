@@ -80,6 +80,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
         data: [
           { scheme: "https", host: "bikeops.co", pathPrefix: "/staff/chat" },
           { scheme: "https", host: "*.bikeops.co", pathPrefix: "/staff/chat" },
+          { scheme: "https", host: "bikeops.co", pathPrefix: "/open/staff/chat" },
+          { scheme: "https", host: "*.bikeops.co", pathPrefix: "/open/staff/chat" },
         ],
         category: ["BROWSABLE", "DEFAULT"],
       },

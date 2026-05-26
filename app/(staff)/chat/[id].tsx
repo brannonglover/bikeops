@@ -706,6 +706,8 @@ export default function ConversationScreen() {
     hasJobContext,
   ]);
 
+  const cachedMessages = queryClient.getQueryData<MessagesData>(["messages", id]);
+
   const {
     data: messagesData,
     isLoading,
@@ -713,6 +715,7 @@ export default function ConversationScreen() {
     refetch: refetchMessages,
   } = useQuery({
     queryKey: ["messages", id],
+    initialData: cachedMessages,
     queryFn: async () => {
       const { data } = await api.get<
         | ChatMessage[]
@@ -1223,7 +1226,9 @@ export default function ConversationScreen() {
     );
   }
 
-  if (isLoading) return <LoadingScreen message="Loading messages..." />;
+  if (isLoading && !cachedMessages && messages.length === 0) {
+    return <LoadingScreen message="Loading messages..." />;
+  }
 
   if (isError) {
     return (
