@@ -15,7 +15,15 @@ import {
   routeForUniversalLink,
 } from "@/lib/notification-routing";
 import { api } from "@/lib/api";
-import { type ChatMessage, type Conversation, type Job } from "@/lib/types";
+import {
+  conversationsQueryKey,
+  fetchStaffConversations,
+  fetchStaffJobs,
+  jobsQueryKey,
+  prefetchStaffHomeData,
+} from "@/lib/staff-queries";
+import { type ChatMessage, type Conversation } from "@/lib/types";
+import type { QueryClient } from "@tanstack/react-query";
 
 const FOREGROUND_REGISTER_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const BADGE_SYNC_INTERVAL_MS = 60 * 1000;
@@ -42,19 +50,25 @@ function hasUnreadStaffMessage(conv: Conversation): boolean {
   return new Date(lastMsg.createdAt) > new Date(conv.staffLastReadAt);
 }
 
-async function getStaffBadgeCount(): Promise<number> {
+async function getStaffBadgeCount(queryClient: QueryClient): Promise<number> {
   const [conversationsResult, jobsResult] = await Promise.allSettled([
-    api.get<Conversation[]>("/api/conversations"),
-    api.get<Job[]>("/api/jobs"),
+    queryClient.fetchQuery({
+      queryKey: conversationsQueryKey,
+      queryFn: fetchStaffConversations,
+    }),
+    queryClient.fetchQuery({
+      queryKey: jobsQueryKey,
+      queryFn: fetchStaffJobs,
+    }),
   ]);
 
   const unreadConversations =
     conversationsResult.status === "fulfilled"
-      ? conversationsResult.value.data.filter(hasUnreadStaffMessage).length
+      ? conversationsResult.value.filter(hasUnreadStaffMessage).length
       : 0;
   const pendingApprovals =
     jobsResult.status === "fulfilled"
-      ? jobsResult.value.data.filter((job) => job.stage === "PENDING_APPROVAL").length
+      ? jobsResult.value.filter((job) => job.stage === "PENDING_APPROVAL").length
       : 0;
 
   return unreadConversations + pendingApprovals;
@@ -155,7 +169,7 @@ export function useNotifications() {
     syncingBadge.current = true;
     try {
       if (role === "staff") {
-        await setBadgeCount(await getStaffBadgeCount());
+        await setBadgeCount(await getStaffBadgeCount(queryClient));
       } else if (role === "customer") {
         await setBadgeCount(0);
       } else {
@@ -164,7 +178,7 @@ export function useNotifications() {
     } finally {
       syncingBadge.current = false;
     }
-  }, [role]);
+  }, [role, queryClient]);
 
   useEffect(() => {
     if (!role) {
@@ -209,10 +223,14 @@ export function useNotifications() {
     return () => clearInterval(id);
   }, [role, syncBadgeCount, prefetchPresentedChatNotifications]);
 
-  // Warm the message cache on cold start (navigation is handled in app/index.tsx).
+  // Warm caches on cold start (navigation is handled in app/index.tsx).
   useEffect(() => {
     if (!role || coldStartPrefetchDone.current) return;
     coldStartPrefetchDone.current = true;
+
+    if (role === "staff") {
+      void prefetchStaffHomeData(queryClient);
+    }
 
     Notifications.getLastNotificationResponseAsync().then((response) => {
       if (!response) return;
@@ -221,7 +239,7 @@ export function useNotifications() {
       );
       void prefetchChatForNotification(data);
     });
-  }, [role, prefetchChatForNotification]);
+  }, [role, prefetchChatForNotification, queryClient]);
 
   useEffect(() => {
     if (role !== "staff") return;

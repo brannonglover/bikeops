@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Redirect } from "expo-router";
 import * as Notifications from "expo-notifications";
+import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import {
@@ -8,11 +9,13 @@ import {
   normalizeNotificationData,
   routeForNotification,
 } from "@/lib/notification-routing";
+import { prefetchStaffHomeData } from "@/lib/staff-queries";
 
 type LaunchRoute = string | null | "pending";
 
 export default function Index() {
   const { role, loading } = useAuth();
+  const queryClient = useQueryClient();
   const [launchRoute, setLaunchRoute] = useState<LaunchRoute>("pending");
 
   useEffect(() => {
@@ -21,6 +24,10 @@ export default function Index() {
     if (!role) {
       setLaunchRoute("/(auth)/login");
       return;
+    }
+
+    if (role === "staff") {
+      void prefetchStaffHomeData(queryClient);
     }
 
     let cancelled = false;
@@ -40,7 +47,7 @@ export default function Index() {
     return () => {
       cancelled = true;
     };
-  }, [role, loading]);
+  }, [role, loading, queryClient]);
 
   if (loading || launchRoute === "pending") {
     return <LoadingScreen message="Starting BikeOps..." />;

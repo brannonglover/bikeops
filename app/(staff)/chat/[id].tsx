@@ -998,6 +998,9 @@ export default function ConversationScreen() {
     setPendingImages([]);
     isAtBottomRef.current = true;
     setShowScrollButton(false);
+    requestAnimationFrame(() => {
+      flatListRef.current?.scrollToEnd({ animated: true });
+    });
     setSending(true);
 
     try {
@@ -1178,7 +1181,7 @@ export default function ConversationScreen() {
             : [
                 ...withoutMine,
                 {
-                  id: `temp-${Date.now()}`,
+                  id: `temp-reaction-${messageId}`,
                   messageId,
                   emoji,
                   reactorType: "STAFF" as const,
@@ -1188,10 +1191,24 @@ export default function ConversationScreen() {
           return { ...m, reactions };
         });
 
+      const seedMessages = (): ChatMessage[] => {
+        if (previousData) {
+          return Array.isArray(previousData)
+            ? previousData
+            : previousData.messages;
+        }
+        return messages;
+      };
+
+      const withReaction = (msgs: ChatMessage[]) => applyReaction(msgs);
+
       queryClient.setQueryData<MessagesData>(["messages", id], (old) => {
-        if (!old) return old;
-        if (Array.isArray(old)) return applyReaction(old);
-        return { ...old, messages: applyReaction(old.messages) };
+        if (!old) {
+          const seeded = withReaction(seedMessages());
+          return seeded;
+        }
+        if (Array.isArray(old)) return withReaction(old);
+        return { ...old, messages: withReaction(old.messages) };
       });
 
       try {
@@ -1205,7 +1222,6 @@ export default function ConversationScreen() {
             { emoji }
           );
         }
-        queryClient.invalidateQueries({ queryKey: ["messages", id] });
       } catch {
         queryClient.setQueryData(["messages", id], previousData);
       }
@@ -1372,8 +1388,13 @@ export default function ConversationScreen() {
           onScroll={handleScroll}
           scrollEventThrottle={100}
           onContentSizeChange={() => {
-            // Ensures we scroll after layout (more reliable than timeouts).
-            requestAnimationFrame(() => ensureInitialScroll());
+            requestAnimationFrame(() => {
+              if (isAtBottomRef.current && didInitialAutoScrollRef.current) {
+                flatListRef.current?.scrollToEnd({ animated: false });
+              } else {
+                ensureInitialScroll();
+              }
+            });
           }}
           onScrollToIndexFailed={(info) => {
             // Retry after RN measures more items.

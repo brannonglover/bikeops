@@ -1,6 +1,8 @@
 import { useCallback, useEffect } from "react";
 import { InteractionManager } from "react-native";
 import { Tabs, useRouter } from "expo-router";
+import { useQueryClient } from "@tanstack/react-query";
+import { prefetchStaffHomeData } from "@/lib/staff-queries";
 import { Ionicons } from "@expo/vector-icons";
 import { StripeTerminalProvider, useStripeTerminal } from "@stripe/stripe-terminal-react-native";
 import { colors, spacing } from "@/lib/theme";
@@ -13,6 +15,11 @@ function StaffTabs() {
   const { theme } = useTheme();
   const { initialize } = useStripeTerminal();
   const router = useRouter();
+  const queryClient = useQueryClient();
+
+  useEffect(() => {
+    void prefetchStaffHomeData(queryClient);
+  }, [queryClient]);
 
   useEffect(() => {
     // Defer until after the first screen has finished rendering so the

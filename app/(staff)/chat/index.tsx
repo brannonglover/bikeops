@@ -9,16 +9,21 @@ import {
   Alert,
   TextInput,
   Modal,
+  ActivityIndicator,
 } from "react-native";
 import { useRouter, useLocalSearchParams } from "expo-router";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/lib/api";
 import { type Conversation, type Customer } from "@/lib/types";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
-import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { EmptyState } from "@/components/ui/EmptyState";
+import {
+  conversationsQueryKey,
+  fetchStaffConversations,
+  prefetchConversationMessages,
+} from "@/lib/staff-queries";
 import { customerName, formatDateTime } from "@/lib/format";
 
 function paramToString(v: string | string[] | undefined): string | undefined {
@@ -68,13 +73,11 @@ export default function ChatListScreen() {
     isLoading,
     refetch,
   } = useQuery({
-    queryKey: ["conversations"],
-    queryFn: async () => {
-      const { data } = await api.get<Conversation[]>("/api/conversations");
-      return data;
-    },
+    queryKey: conversationsQueryKey,
+    queryFn: fetchStaffConversations,
     refetchInterval: 15_000,
     staleTime: 10_000,
+    placeholderData: keepPreviousData,
   });
 
   useEffect(() => {
@@ -118,7 +121,12 @@ export default function ChatListScreen() {
   }, [refetch]);
 
   useEffect(() => {
-    if (!customerId || isLoading || hasNavigatedRef.current) return;
+    if (
+      !customerId ||
+      (isLoading && conversations.length === 0) ||
+      hasNavigatedRef.current
+    )
+      return;
     const existing = pickConversationForCustomer(
       conversations,
       customerId,
@@ -180,7 +188,7 @@ export default function ChatListScreen() {
     );
   });
 
-  if (isLoading) return <LoadingScreen message="Loading chats..." />;
+  const showInitialLoad = isLoading && conversations.length === 0;
 
   const getLastMessage = (conv: Conversation) => {
     if (!conv.messages || conv.messages.length === 0) return null;
@@ -211,7 +219,11 @@ export default function ChatListScreen() {
         </TouchableOpacity>
       </View>
 
-      {conversations.length === 0 ? (
+      {showInitialLoad ? (
+        <View style={styles.initialLoad}>
+          <ActivityIndicator size="large" color={colors.amber[600]} />
+        </View>
+      ) : conversations.length === 0 ? (
         <EmptyState
           icon="chatbubbles-outline"
           title="No conversations"
@@ -229,6 +241,9 @@ export default function ChatListScreen() {
             const unread = hasUnread(item);
             return (
               <TouchableOpacity
+                onPressIn={() => {
+                  void prefetchConversationMessages(queryClient, item.id);
+                }}
                 onPress={() => router.push(`/(staff)/chat/${item.id}`)}
                 onLongPress={() => {
                   Alert.alert("Archive", "Archive this conversation?", [
@@ -378,6 +393,12 @@ export default function ChatListScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  initialLoad: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    paddingVertical: spacing[12],
   },
   toolbar: {
     padding: spacing[3],

@@ -8,6 +8,7 @@ import {
   RefreshControl,
   Alert,
   StyleSheet,
+  ActivityIndicator,
   type StyleProp,
   type ViewStyle,
 } from "react-native";
@@ -19,8 +20,8 @@ import { type Job, type Stage, DISPLAY_STAGES, STAGE_LABELS, STAGE_COLORS } from
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { JobCard } from "@/components/jobs/JobCard";
-import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { fetchStaffJobs, jobsQueryKey } from "@/lib/staff-queries";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { customerName, formatDate, getJobBikeDisplayTitle } from "@/lib/format";
 
@@ -55,11 +56,8 @@ export default function JobBoardScreen() {
   const [cancelledExpanded, setCancelledExpanded] = useState(false);
 
   const { data: jobs = [], isLoading, refetch } = useQuery({
-    queryKey: ["jobs"],
-    queryFn: async () => {
-      const { data } = await api.get<Job[]>("/api/jobs");
-      return data;
-    },
+    queryKey: jobsQueryKey,
+    queryFn: fetchStaffJobs,
     refetchInterval: 15_000,
   });
 
@@ -251,7 +249,7 @@ export default function JobBoardScreen() {
     [renderJobCard]
   );
 
-  if (isLoading) return <LoadingScreen message="Loading jobs..." />;
+  const showInitialLoad = isLoading && jobs.length === 0;
 
   const pendingApprovalPanel =
     useColumnBoard && pendingApprovals.length > 0 ? (
@@ -427,7 +425,11 @@ export default function JobBoardScreen() {
         </TouchableOpacity>
       </View>
 
-      {jobs.length === 0 ? (
+      {showInitialLoad ? (
+        <View style={styles.initialLoad}>
+          <ActivityIndicator size="large" color={colors.amber[600]} />
+        </View>
+      ) : jobs.length === 0 ? (
         <EmptyState
           icon="construct-outline"
           title="No jobs yet"
@@ -900,5 +902,11 @@ const styles = StyleSheet.create({
     ...fontSize.sm,
     fontWeight: "600",
     color: colors.red[600],
+  },
+  initialLoad: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    paddingVertical: spacing[12],
   },
 });
