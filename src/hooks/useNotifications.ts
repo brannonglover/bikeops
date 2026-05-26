@@ -43,11 +43,18 @@ function normalizeNotificationData(raw: unknown): NotificationData | null {
       ? ((candidate as Record<string, unknown>).conversation_id as string)
       : undefined);
 
+  const messageId =
+    (typeof candidate.messageId === "string" ? candidate.messageId : undefined) ??
+    (typeof (candidate as Record<string, unknown>).message_id === "string"
+      ? ((candidate as Record<string, unknown>).message_id as string)
+      : undefined);
+
   return {
     ...(candidate as Record<string, unknown>),
     type,
     ...(jobId ? { jobId } : null),
     ...(conversationId ? { conversationId } : null),
+    ...(messageId ? { messageId } : null),
   } as NotificationData;
 }
 
@@ -64,9 +71,12 @@ function routeForNotification(
       case "booking_request":
         return data.jobId ? `/(staff)/(jobs)/${data.jobId}` : null;
       case "new_message":
-        return data.conversationId
-          ? `/(staff)/chat/${data.conversationId}`
-          : null;
+        if (!data.conversationId) return null;
+        return data.messageId
+          ? `/(staff)/chat/${data.conversationId}?messageId=${encodeURIComponent(
+              data.messageId
+            )}`
+          : `/(staff)/chat/${data.conversationId}`;
     }
   }
 
@@ -75,7 +85,9 @@ function routeForNotification(
       case "job_update":
         return data.jobId ? `/(customer)/status/${data.jobId}` : null;
       case "new_message":
-        return "/(customer)/chat";
+        return data.messageId
+          ? `/(customer)/chat?messageId=${encodeURIComponent(data.messageId)}`
+          : "/(customer)/chat";
     }
   }
 

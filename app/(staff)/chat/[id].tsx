@@ -118,13 +118,17 @@ export default function ConversationScreen() {
   const params = useLocalSearchParams<{
     id?: string | string[];
     fromJobId?: string | string[];
+    messageId?: string | string[];
   }>();
   const id = paramToString(params.id);
   const fromJobId = paramToString(params.fromJobId);
+  const messageId = paramToString(params.messageId);
   const queryClient = useQueryClient();
   const headerHeight = useHeaderHeight();
   const flatListRef = useRef<FlatList<ChatMessage>>(null);
   const isAtBottomRef = useRef(true);
+  const didInitialAutoScrollRef = useRef(false);
+  const pendingScrollToMessageIdRef = useRef<string | null>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
@@ -779,10 +783,56 @@ export default function ConversationScreen() {
   }, [messages, customerLastReadAt]);
 
   useEffect(() => {
-    if (messages.length > 0 && isAtBottomRef.current) {
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: false }), 100);
+    // If we deep-linked to a specific message, prioritize scrolling to that.
+    if (messageId) {
+      pendingScrollToMessageIdRef.current = messageId;
+      didInitialAutoScrollRef.current = false;
+      return;
     }
-  }, [messages.length]);
+    // Otherwise, ensure first render lands at the bottom.
+    if (messages.length > 0) pendingScrollToMessageIdRef.current = null;
+  }, [messageId, messages.length]);
+
+  const scrollToMessageId = useCallback(
+    (targetMessageId: string, opts?: { animated?: boolean }) => {
+      const index = messages.findIndex((m) => m.id === targetMessageId);
+      if (index < 0) return false;
+      try {
+        flatListRef.current?.scrollToIndex({
+          index,
+          animated: opts?.animated ?? false,
+          viewPosition: 0.5,
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [messages]
+  );
+
+  const ensureInitialScroll = useCallback(() => {
+    if (didInitialAutoScrollRef.current) return;
+    if (!flatListRef.current) return;
+    if (messages.length === 0) return;
+
+    const target = pendingScrollToMessageIdRef.current;
+    if (target) {
+      const ok = scrollToMessageId(target, { animated: false });
+      if (ok) {
+        didInitialAutoScrollRef.current = true;
+        return;
+      }
+      // If the message isn't in the current page of messages, fall back to bottom.
+      flatListRef.current.scrollToEnd({ animated: false });
+      didInitialAutoScrollRef.current = true;
+      return;
+    }
+
+    // Default: land at bottom.
+    flatListRef.current.scrollToEnd({ animated: false });
+    didInitialAutoScrollRef.current = true;
+  }, [messages.length, scrollToMessageId]);
 
   useEffect(() => {
     const sub = Keyboard.addListener("keyboardDidShow", () => {
@@ -1316,6 +1366,29 @@ export default function ConversationScreen() {
           contentContainerStyle={styles.messageList}
           onScroll={handleScroll}
           scrollEventThrottle={100}
+          onContentSizeChange={() => {
+            // Ensures we scroll after layout (more reliable than timeouts).
+            requestAnimationFrame(() => ensureInitialScroll());
+          }}
+          onScrollToIndexFailed={(info) => {
+            // Retry after RN measures more items.
+            setTimeout(() => {
+              if (!flatListRef.current) return;
+              const target = pendingScrollToMessageIdRef.current;
+              if (target) {
+                const ok = scrollToMessageId(target, { animated: false });
+                if (ok) return;
+              }
+              try {
+                flatListRef.current?.scrollToOffset({
+                  offset: Math.max(0, info.averageItemLength * info.index),
+                  animated: false,
+                });
+              } catch {
+                // ignore
+              }
+            }, 250);
+          }}
           renderItem={({ item }) => {
             const isOwn = item.sender === "STAFF";
             const hasAttachments = (item.attachments?.length ?? 0) > 0;

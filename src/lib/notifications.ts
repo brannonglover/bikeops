@@ -23,6 +23,7 @@ export interface NotificationData {
   type: NotificationType;
   jobId?: string;
   conversationId?: string;
+  messageId?: string;
   [key: string]: unknown;
 }
 

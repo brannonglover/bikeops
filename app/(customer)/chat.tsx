@@ -18,7 +18,7 @@ import {
   type NativeSyntheticEvent,
   type NativeScrollEvent,
 } from "react-native";
-import { Stack } from "expo-router";
+import { Stack, useLocalSearchParams } from "expo-router";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useQueryClient } from "@tanstack/react-query";
 import * as ImagePicker from "expo-image-picker";
@@ -61,6 +61,15 @@ export default function CustomerChatScreen() {
   const headerHeight = useHeaderHeight();
   const flatListRef = useRef<FlatList<ChatMessage>>(null);
   const isAtBottomRef = useRef(true);
+  const didInitialAutoScrollRef = useRef(false);
+  const pendingScrollToMessageIdRef = useRef<string | null>(null);
+  const params = useLocalSearchParams<{ messageId?: string | string[] }>();
+  const messageId =
+    params.messageId === undefined
+      ? undefined
+      : Array.isArray(params.messageId)
+        ? params.messageId[0]
+        : params.messageId;
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [authState, setAuthState] = useState<AuthState>("loading");
   const [email, setEmail] = useState("");
@@ -203,13 +212,52 @@ export default function CustomerChatScreen() {
   }, [authState, fetchMessages]);
 
   useEffect(() => {
-    if (messages.length > 0 && isAtBottomRef.current) {
-      setTimeout(
-        () => flatListRef.current?.scrollToEnd({ animated: false }),
-        100
-      );
+    if (messageId) {
+      pendingScrollToMessageIdRef.current = messageId;
+      didInitialAutoScrollRef.current = false;
+      return;
     }
-  }, [messages.length]);
+    if (messages.length > 0) pendingScrollToMessageIdRef.current = null;
+  }, [messageId, messages.length]);
+
+  const scrollToMessageId = useCallback(
+    (targetMessageId: string, opts?: { animated?: boolean }) => {
+      const index = messages.findIndex((m) => m.id === targetMessageId);
+      if (index < 0) return false;
+      try {
+        flatListRef.current?.scrollToIndex({
+          index,
+          animated: opts?.animated ?? false,
+          viewPosition: 0.5,
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [messages]
+  );
+
+  const ensureInitialScroll = useCallback(() => {
+    if (didInitialAutoScrollRef.current) return;
+    if (!flatListRef.current) return;
+    if (messages.length === 0) return;
+
+    const target = pendingScrollToMessageIdRef.current;
+    if (target) {
+      const ok = scrollToMessageId(target, { animated: false });
+      if (ok) {
+        didInitialAutoScrollRef.current = true;
+        return;
+      }
+      flatListRef.current.scrollToEnd({ animated: false });
+      didInitialAutoScrollRef.current = true;
+      return;
+    }
+
+    flatListRef.current.scrollToEnd({ animated: false });
+    didInitialAutoScrollRef.current = true;
+  }, [messages.length, scrollToMessageId]);
 
   useEffect(() => {
     const sub = Keyboard.addListener("keyboardDidShow", () => {
@@ -843,6 +891,27 @@ export default function CustomerChatScreen() {
           contentContainerStyle={styles.messageList}
           onScroll={handleScroll}
           scrollEventThrottle={100}
+          onContentSizeChange={() => {
+            requestAnimationFrame(() => ensureInitialScroll());
+          }}
+          onScrollToIndexFailed={(info) => {
+            setTimeout(() => {
+              if (!flatListRef.current) return;
+              const target = pendingScrollToMessageIdRef.current;
+              if (target) {
+                const ok = scrollToMessageId(target, { animated: false });
+                if (ok) return;
+              }
+              try {
+                flatListRef.current?.scrollToOffset({
+                  offset: Math.max(0, info.averageItemLength * info.index),
+                  animated: false,
+                });
+              } catch {
+                // ignore
+              }
+            }, 250);
+          }}
           renderItem={({ item }) => {
             const isOwn = item.sender === "CUSTOMER";
             const hasAttachments = (item.attachments?.length ?? 0) > 0;
