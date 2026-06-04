@@ -146,6 +146,9 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
   const jobServices: JobService[] = job.jobServices ?? [];
   const jobProductsList: JobProduct[] = job.jobProducts ?? [];
 
+  const jobBikesList = job.jobBikes ?? [];
+  const isMultiBike = jobBikesList.length > 1;
+
   const attachedServiceIds = useMemo(
     () =>
       new Set(
@@ -160,32 +163,47 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
     [jobProductsList]
   );
 
-  const availableServices = useMemo(
-    () => services.filter((s) => !attachedServiceIds.has(s.id)),
-    [services, attachedServiceIds]
+  const canAddCatalogService = useCallback(
+    (serviceId: string) => {
+      if (!isMultiBike) {
+        return !attachedServiceIds.has(serviceId);
+      }
+      return true;
+    },
+    [isMultiBike, attachedServiceIds]
   );
-  const availableProducts = useMemo(
-    () => products.filter((p) => !attachedProductIds.has(p.id)),
-    [products, attachedProductIds]
+
+  const defaultJobBikeIdForCatalogService = useCallback(
+    (serviceId: string): string | undefined => {
+      if (!isMultiBike) return undefined;
+      const bike = jobBikesList.find(
+        (b) =>
+          !jobServices.some(
+            (js) => js.serviceId === serviceId && js.jobBikeId === b.id
+          )
+      );
+      return bike?.id;
+    },
+    [isMultiBike, jobBikesList, jobServices]
   );
 
   const filteredServices = useMemo(() => {
     const q = serviceSearch.trim().toLowerCase();
     return q
-      ? availableServices.filter((s) => s.name.toLowerCase().includes(q))
-      : availableServices;
-  }, [availableServices, serviceSearch]);
+      ? services.filter((s) => s.name.toLowerCase().includes(q))
+      : services;
+  }, [services, serviceSearch]);
 
   const filteredProducts = useMemo(() => {
     const q = productSearch.trim().toLowerCase();
-    if (!q) return availableProducts;
-    return availableProducts.filter(
+    if (!q) return products;
+    return products.filter(
       (p) =>
         p.name.toLowerCase().includes(q) ||
         (p.description?.toLowerCase().includes(q) ?? false) ||
         (p.supplier?.toLowerCase().includes(q) ?? false)
     );
-  }, [availableProducts, productSearch]);
+  }, [products, productSearch]);
 
   const total = computeJobSubtotal({
     jobServices,
@@ -278,8 +296,10 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
       setAdding(true);
       try {
         await waitForPickerDismiss();
+        const jobBikeId = defaultJobBikeIdForCatalogService(serviceId);
         const res = await api.post<JobService>(`/api/jobs/${job.id}/services`, {
           serviceId,
+          ...(jobBikeId ? { jobBikeId } : {}),
         });
         if (res.response.ok) {
           const created = enrichJobService(res.data, services);
@@ -299,7 +319,15 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
         setAdding(false);
       }
     },
-    [closeServicePicker, job, onJobUpdated, services, products, refetchJob]
+    [
+      closeServicePicker,
+      defaultJobBikeIdForCatalogService,
+      job,
+      onJobUpdated,
+      services,
+      products,
+      refetchJob,
+    ]
   );
 
   const handleAddCustomService = useCallback(
@@ -1029,6 +1057,16 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
           ...fontSize.xs,
           color: theme.textSecondary,
           fontVariant: ["tabular-nums"],
+        },
+        pickerItemDisabled: {
+          opacity: 0.45,
+        },
+        pickerItemNameDisabled: {
+          color: theme.textMuted,
+        },
+        pickerItemHint: {
+          ...fontSize.xs,
+          color: theme.textMuted,
         },
         customServiceOption: {
           flexDirection: "row",
@@ -1859,17 +1897,38 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
               <FlatList
                 data={filteredServices}
                 keyExtractor={(item) => item.id}
-                renderItem={({ item }) => (
-                  <TouchableOpacity
-                    style={styles.pickerItem}
-                    onPress={() => handleAddService(item.id)}
-                  >
-                    <Text style={styles.pickerItemName}>{item.name}</Text>
-                    <Text style={styles.pickerItemPrice}>
-                      {formatCurrency(item.price)}
-                    </Text>
-                  </TouchableOpacity>
-                )}
+                renderItem={({ item }) => {
+                  const canAdd = canAddCatalogService(item.id);
+                  const isAttached = attachedServiceIds.has(item.id);
+                  return (
+                    <TouchableOpacity
+                      style={[styles.pickerItem, !canAdd && styles.pickerItemDisabled]}
+                      onPress={() => {
+                        if (canAdd && !adding) handleAddService(item.id);
+                      }}
+                      disabled={!canAdd || adding}
+                    >
+                      <View style={styles.pickerItemInfo}>
+                        <Text
+                          style={[
+                            styles.pickerItemName,
+                            !canAdd && styles.pickerItemNameDisabled,
+                          ]}
+                        >
+                          {item.name}
+                        </Text>
+                        {isAttached && isMultiBike && canAdd ? (
+                          <Text style={styles.pickerItemHint}>Add to another bike</Text>
+                        ) : !canAdd ? (
+                          <Text style={styles.pickerItemHint}>Already added</Text>
+                        ) : null}
+                      </View>
+                      <Text style={styles.pickerItemPrice}>
+                        {formatCurrency(item.price)}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                }}
                 ListEmptyComponent={
                   serviceSearch.trim() ? (
                     <TouchableOpacity
@@ -1887,7 +1946,7 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
                     </TouchableOpacity>
                   ) : (
                     <Text style={styles.pickerEmpty}>
-                      No available services. Type a name to add a custom one.
+                      No services found. Type a name to add a custom one.
                     </Text>
                   )
                 }
@@ -1931,22 +1990,44 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
               <FlatList
                 data={filteredProducts}
                 keyExtractor={(item) => item.id}
-                renderItem={({ item }) => (
-                  <TouchableOpacity
-                    style={styles.pickerItem}
-                    onPress={() => handleAddProduct(item.id)}
-                  >
-                    <View style={styles.pickerItemInfo}>
-                      <Text style={styles.pickerItemName}>{item.name}</Text>
-                      <Text style={styles.pickerItemMeta}>
-                        Stock: {item.stockQuantity}
+                renderItem={({ item }) => {
+                  const isAttached = attachedProductIds.has(item.id);
+                  const canAddProduct = isMultiBike || !isAttached;
+                  return (
+                    <TouchableOpacity
+                      style={[
+                        styles.pickerItem,
+                        !canAddProduct && styles.pickerItemDisabled,
+                      ]}
+                      onPress={() => {
+                        if (canAddProduct && !addingProduct) handleAddProduct(item.id);
+                      }}
+                      disabled={!canAddProduct || addingProduct}
+                    >
+                      <View style={styles.pickerItemInfo}>
+                        <Text
+                          style={[
+                            styles.pickerItemName,
+                            !canAddProduct && styles.pickerItemNameDisabled,
+                          ]}
+                        >
+                          {item.name}
+                        </Text>
+                        <Text style={styles.pickerItemMeta}>
+                          Stock: {item.stockQuantity}
+                          {!canAddProduct
+                            ? " · Already added"
+                            : isAttached
+                              ? " · Add another"
+                              : ""}
+                        </Text>
+                      </View>
+                      <Text style={styles.pickerItemPrice}>
+                        {formatCurrency(item.price)}
                       </Text>
-                    </View>
-                    <Text style={styles.pickerItemPrice}>
-                      {formatCurrency(item.price)}
-                    </Text>
-                  </TouchableOpacity>
-                )}
+                    </TouchableOpacity>
+                  );
+                }}
                 ListEmptyComponent={
                   <Text style={styles.pickerEmpty}>No matching products</Text>
                 }

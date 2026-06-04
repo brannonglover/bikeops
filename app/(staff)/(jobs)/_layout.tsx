@@ -1,13 +1,10 @@
-import { Stack, useRouter } from "expo-router";
-import { TouchableOpacity, View } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
+import { Stack } from "expo-router";
 import { useTheme } from "@/lib/ThemeContext";
 import { HamburgerMenu } from "@/components/ui/HamburgerMenu";
 import { ShopLogo } from "@/components/ui/ShopLogo";
 
 export default function JobsLayout() {
   const { theme } = useTheme();
-  const router = useRouter();
 
   return (
     <Stack
@@ -30,18 +27,7 @@ export default function JobsLayout() {
         options={{
           title: "Job Detail",
           presentation: "card",
-          headerLeft: () => (
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-              <TouchableOpacity
-                onPress={() => router.back()}
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                style={{ padding: 4 }}
-              >
-                <Ionicons name="chevron-back" size={24} color={theme.text} />
-              </TouchableOpacity>
-              <ShopLogo />
-            </View>
-          ),
+          headerBackVisible: false,
         }}
       />
       <Stack.Screen

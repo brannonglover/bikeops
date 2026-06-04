@@ -870,7 +870,7 @@ export default function JobDetailScreen() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      router.back();
+      goBackToJobBoard();
     },
   });
 
@@ -1305,6 +1305,14 @@ export default function JobDetailScreen() {
     }
   }, [job, openingChat, queryClient, router]);
 
+  const goBackToJobBoard = useCallback(() => {
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.navigate("/(staff)/(jobs)" as never);
+    }
+  }, [router]);
+
   const handleBack = useCallback(() => {
     Keyboard.dismiss();
 
@@ -1328,13 +1336,15 @@ export default function JobDetailScreen() {
       closeActionMenu();
       return;
     }
-    if (showStageMenu) {
+    // Stage menu only renders on Details; don't swallow back on Invoice.
+    if (showStageMenu && activeTab === "details") {
       setShowStageMenu(false);
       return;
     }
 
-    router.back();
+    goBackToJobBoard();
   }, [
+    activeTab,
     showRejectModal,
     showCancelModal,
     showDatePicker,
@@ -1342,7 +1352,7 @@ export default function JobDetailScreen() {
     showActionMenu,
     showStageMenu,
     closeActionMenu,
-    router,
+    goBackToJobBoard,
   ]);
 
   useFocusEffect(
@@ -1368,13 +1378,16 @@ export default function JobDetailScreen() {
       <Stack.Screen
         options={{
           title: getJobBikeDisplayTitle(job),
+          headerBackVisible: false,
           headerLeft: () => (
             <TouchableOpacity
               onPress={handleBack}
-              style={{ padding: spacing[2] }}
               hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              style={{ padding: spacing[1] }}
+              accessibilityRole="button"
+              accessibilityLabel="Back to Job Board"
             >
-              <Ionicons name="chevron-back" size={22} color={theme.text} />
+              <Ionicons name="chevron-back" size={24} color={theme.text} />
             </TouchableOpacity>
           ),
           headerRight: () => (
@@ -1397,7 +1410,10 @@ export default function JobDetailScreen() {
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.tab, activeTab === "invoice" && styles.tabActive]}
-          onPress={() => setActiveTab("invoice")}
+          onPress={() => {
+            setShowStageMenu(false);
+            setActiveTab("invoice");
+          }}
           activeOpacity={0.7}
         >
           <Text style={[styles.tabText, activeTab === "invoice" && styles.tabTextActive]}>
