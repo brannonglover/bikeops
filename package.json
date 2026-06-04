@@ -1,6 +1,6 @@
 {
   "name": "bikeops",
-  "version": "1.24.1",
+  "version": "1.25.0",
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
