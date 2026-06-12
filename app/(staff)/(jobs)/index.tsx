@@ -13,7 +13,7 @@ import {
   type ViewStyle,
 } from "react-native";
 import { useRouter, useFocusEffect } from "expo-router";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, replaceEqualDeep } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/lib/api";
 import { type Job, type Stage, DISPLAY_STAGES, STAGE_LABELS, STAGE_COLORS } from "@/lib/types";
@@ -24,6 +24,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { fetchStaffJobs, jobsQueryKey } from "@/lib/staff-queries";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { customerName, formatDate, getJobBikeDisplayTitle } from "@/lib/format";
+import { keepForwardBoardStage } from "@/lib/board-stage-merge";
 
 const COLUMN_STAGES = DISPLAY_STAGES.filter(
   (stage) => stage !== "PENDING_APPROVAL"
@@ -59,6 +60,18 @@ export default function JobBoardScreen() {
     queryKey: jobsQueryKey,
     queryFn: fetchStaffJobs,
     refetchInterval: 15_000,
+    structuralSharing: (prev: unknown, next: unknown) => {
+      if (!Array.isArray(prev) || !Array.isArray(next)) {
+        return replaceEqualDeep(prev, next);
+      }
+      const prevJobs = prev as Job[];
+      const nextJobs = next as Job[];
+      const prevById = new Map(prevJobs.map((j) => [j.id, j]));
+      return nextJobs.map((j) => {
+        const live = prevById.get(j.id);
+        return live ? keepForwardBoardStage(live, j) : j;
+      });
+    },
   });
 
   const [isManualRefresh, setIsManualRefresh] = useState(false);

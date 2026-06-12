@@ -19,7 +19,7 @@ import {
   TextInput,
 } from "react-native";
 import { useLocalSearchParams, useRouter, Stack, useFocusEffect } from "expo-router";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, replaceEqualDeep } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/lib/api";
 import { type Job, type Stage, type DeliveryType, type BikeType, type Conversation, STAGES, STAGE_LABELS, STAGE_COLORS } from "@/lib/types";
@@ -33,6 +33,8 @@ import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { ImageViewer } from "@/components/ui/ImageViewer";
 import { InvoiceTab } from "@/components/jobs/InvoiceTab";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
+import { keepForwardBoardStage } from "@/lib/board-stage-merge";
+import { syncJobToCaches } from "@/lib/job-cache-sync";
 import {
   customerName,
   getJobBikeDisplayTitle,
@@ -744,6 +746,10 @@ export default function JobDetailScreen() {
       return data;
     },
     enabled: !!id,
+    structuralSharing: (prev: unknown, next: unknown) => {
+      if (!prev || !next) return replaceEqualDeep(prev, next);
+      return keepForwardBoardStage(prev as Job, next as Job);
+    },
   });
 
   const [isManualRefresh, setIsManualRefresh] = useState(false);
@@ -1247,14 +1253,7 @@ export default function JobDetailScreen() {
 
   const handleInvoiceJobUpdated = useCallback(
     (updated: Job) => {
-      queryClient.setQueryData(["job", id], updated);
-      const prevJobs = queryClient.getQueryData<Job[]>(["jobs"]);
-      if (prevJobs && Array.isArray(prevJobs)) {
-        queryClient.setQueryData(
-          ["jobs"],
-          prevJobs.map((j) => (j.id === updated.id ? updated : j))
-        );
-      }
+      syncJobToCaches(queryClient, id, updated);
     },
     [queryClient, id]
   );
