@@ -795,12 +795,16 @@ export default function JobDetailScreen() {
       if (ctx.prevJobs) queryClient.setQueryData(["jobs"], ctx.prevJobs);
     },
     onSuccess: (updated) => {
-      queryClient.setQueryData(["job", id], updated);
+      const liveJob = queryClient.getQueryData<Job>(["job", id]);
+      const merged = liveJob ? keepForwardBoardStage(liveJob, updated) : updated;
+      queryClient.setQueryData(["job", id], merged);
       const prevJobs = queryClient.getQueryData<Job[]>(["jobs"]);
       if (prevJobs && Array.isArray(prevJobs)) {
         queryClient.setQueryData(
           ["jobs"],
-          prevJobs.map((j) => (j.id === updated.id ? updated : j))
+          prevJobs.map((j) =>
+            j.id === merged.id ? keepForwardBoardStage(j, merged) : j
+          )
         );
       }
     },
