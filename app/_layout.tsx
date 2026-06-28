@@ -49,7 +49,7 @@ function MagicLinkHandler() {
       api
         .post("/api/chat/verify", { token }, { role: "customer" })
         .then(() => setCustomerAuthenticated())
-        .then(() => router.replace("/(customer)/"))
+        .then(() => router.replace("/(customer)/chat"))
         .catch(() => Alert.alert("Error", "Invalid or expired link. Please try again."));
     };
 

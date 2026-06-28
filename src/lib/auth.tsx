@@ -61,9 +61,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       const customerPersisted = await hasPersistedCustomerRole();
       if (customerPersisted) {
-        setRole("customer");
-        setStaffUser(null);
-        return;
+        const stillAuthed = await isCustomerAuthenticated();
+        if (stillAuthed) {
+          setRole("customer");
+          setStaffUser(null);
+          return;
+        }
+        await clearCustomerRole();
       }
 
       const customerAuth = await isCustomerAuthenticated();

@@ -146,12 +146,28 @@ interface FetchOptions extends Omit<RequestInit, "headers"> {
   role?: "staff" | "customer";
 }
 
-/** Extracts the raw JWT value from a stored cookie string like "cookieName=<jwt>". */
-function extractJwtFromCookie(cookieString: string | null): string | null {
+/** Extracts the raw token value from a stored cookie string like "cookieName=<token>". */
+function extractTokenFromCookie(cookieString: string | null): string | null {
   if (!cookieString) return null;
   const eqIdx = cookieString.indexOf("=");
   if (eqIdx === -1) return null;
   return cookieString.slice(eqIdx + 1) || null;
+}
+
+async function storeCustomerSessionToken(sessionToken: string): Promise<void> {
+  await storeCookie(CUSTOMER_COOKIE_KEY, `${getCustomerSessionCookieName()}=${sessionToken}`);
+}
+
+function getCustomerSessionCookieName(): string {
+  return "chat_session";
+}
+
+function extractCustomerSessionFromResponse(data: unknown): string | null {
+  if (!data || typeof data !== "object" || !("sessionToken" in data)) return null;
+  const sessionToken = (data as { sessionToken?: unknown }).sessionToken;
+  return typeof sessionToken === "string" && sessionToken.length > 0
+    ? sessionToken
+    : null;
 }
 
 async function apiFetch<T = unknown>(
@@ -169,12 +185,10 @@ async function apiFetch<T = unknown>(
 
   if (storedCookie) {
     headers["Cookie"] = storedCookie;
-    // Also send as Bearer so server-side getToken() can authenticate
-    // without relying on cookie header parsing (more reliable in native apps).
-    if (role === "staff") {
-      const jwt = extractJwtFromCookie(storedCookie);
-      if (jwt) headers["Authorization"] = `Bearer ${jwt}`;
-    }
+    // Also send as Bearer so server-side auth works without relying on
+    // cookie header parsing (more reliable in native apps).
+    const token = extractTokenFromCookie(storedCookie);
+    if (token) headers["Authorization"] = `Bearer ${token}`;
   }
 
   if (
@@ -227,6 +241,13 @@ async function apiFetch<T = unknown>(
     data = (await response.json()) as T;
   } else {
     data = (await response.text()) as unknown as T;
+  }
+
+  if (role === "customer") {
+    const sessionToken = extractCustomerSessionFromResponse(data);
+    if (sessionToken) {
+      await storeCustomerSessionToken(sessionToken);
+    }
   }
 
   if (!response.ok) {

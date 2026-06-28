@@ -23,7 +23,7 @@ import { useHeaderHeight } from "@react-navigation/elements";
 import { useQueryClient } from "@tanstack/react-query";
 import * as ImagePicker from "expo-image-picker";
 import { Ionicons } from "@expo/vector-icons";
-import { api, isCustomerAuthenticated, resolveUrl } from "@/lib/api";
+import { api, isCustomerAuthenticated, resolveCustomerUrl } from "@/lib/api";
 import {
   buildPendingChatImage,
   hasUploadingPendingImages,
@@ -936,12 +936,12 @@ export default function CustomerChatScreen() {
                           key={att.id}
                           activeOpacity={0.8}
                           onPress={() =>
-                            setViewingImageUrl(resolveUrl(att.url))
+                            setViewingImageUrl(resolveCustomerUrl(att.url))
                           }
                           onLongPress={() => setActiveMessage(item)}
                         >
                           <Image
-                            source={{ uri: resolveUrl(att.url) }}
+                            source={{ uri: resolveCustomerUrl(att.url) }}
                             style={styles.standaloneImage}
                             resizeMode="cover"
                           />
@@ -1002,12 +1002,12 @@ export default function CustomerChatScreen() {
                           key={att.id}
                           activeOpacity={0.8}
                           onPress={() =>
-                            setViewingImageUrl(resolveUrl(att.url))
+                            setViewingImageUrl(resolveCustomerUrl(att.url))
                           }
                           onLongPress={() => setActiveMessage(item)}
                         >
                           <Image
-                            source={{ uri: resolveUrl(att.url) }}
+                            source={{ uri: resolveCustomerUrl(att.url) }}
                             style={styles.standaloneImage}
                             resizeMode="cover"
                           />
