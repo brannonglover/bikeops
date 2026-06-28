@@ -106,6 +106,12 @@ export function getJobBikeDisplayTitle(job: Job): string {
   return formatMakeModel(job.bikeMake, job.bikeModel);
 }
 
+/** First bike on the job by sort order (primary hero/card bike). */
+export function getPrimaryJobBike(job: Job): JobBike | null {
+  const bikes = [...(job.jobBikes ?? [])].sort((a, b) => a.sortOrder - b.sortOrder);
+  return bikes[0] ?? null;
+}
+
 export function formatPhoneNumber(raw: string): string {
   const normalizedDigits = raw.replace(/\D/g, "");
   const digits =

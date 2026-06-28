@@ -23,16 +23,34 @@ function MagicLinkHandler() {
 
   useEffect(() => {
     const handleUrl = ({ url }: { url: string }) => {
-      const hash = url.split("#")[1] ?? "";
-      const params = new URLSearchParams(hash);
-      const token = params.get("token");
-      if (token) {
-        api
-          .post("/api/chat/verify", { token }, { role: "customer" })
-          .then(() => setCustomerAuthenticated())
-          .then(() => router.replace("/(customer)/"))
-          .catch(() => Alert.alert("Error", "Invalid or expired link. Please try again."));
+      let token: string | null = null;
+      try {
+        const parsed = new URL(url);
+        token =
+          parsed.searchParams.get("token") ??
+          new URLSearchParams(parsed.hash.replace(/^#/, "")).get("token");
+      } catch {
+        const queryPart = url.split("?")[1]?.split("#")[0] ?? "";
+        const hashPart = url.split("#")[1] ?? "";
+        token =
+          new URLSearchParams(queryPart).get("token") ??
+          new URLSearchParams(hashPart).get("token");
       }
+      if (!token) return;
+
+      if (url.includes("/signup/verify")) {
+        router.replace({
+          pathname: "/(auth)/signup/verify",
+          params: { token },
+        });
+        return;
+      }
+
+      api
+        .post("/api/chat/verify", { token }, { role: "customer" })
+        .then(() => setCustomerAuthenticated())
+        .then(() => router.replace("/(customer)/"))
+        .catch(() => Alert.alert("Error", "Invalid or expired link. Please try again."));
     };
 
     Linking.getInitialURL().then((url) => {

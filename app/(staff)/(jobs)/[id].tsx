@@ -10,6 +10,7 @@ import {
   StyleSheet,
   Image,
   Animated,
+  ActivityIndicator,
   Platform,
   Keyboard,
   Linking,
@@ -22,12 +23,11 @@ import { useLocalSearchParams, useRouter, Stack, useFocusEffect } from "expo-rou
 import { useQuery, useMutation, useQueryClient, replaceEqualDeep } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/lib/api";
-import { type Job, type Stage, type DeliveryType, type BikeType, type Conversation, STAGES, STAGE_LABELS, STAGE_COLORS } from "@/lib/types";
+import { type Job, type JobBike, type Stage, type DeliveryType, type Conversation } from "@/lib/types";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
-import { StageBadge, PaymentBadge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { ImageViewer } from "@/components/ui/ImageViewer";
@@ -38,15 +38,69 @@ import { syncJobToCaches } from "@/lib/job-cache-sync";
 import {
   customerName,
   getJobBikeDisplayTitle,
+  getPrimaryJobBike,
   formatDate,
-  formatCurrency,
   formatPhoneNumber,
-  jobTotal,
 } from "@/lib/format";
 import { AppleMaps } from "expo-maps";
 import * as Device from "expo-device";
+import { useJobBikeImageUpload } from "@/hooks/useJobBikeImageUpload";
 
-type Tab = "details" | "invoice";
+type Tab = "overview" | "invoice" | "notes";
+
+function getJobRepairNumber(jobId: string): string {
+  const short = jobId.replace(/-/g, "").slice(-4).toUpperCase();
+  return `R-${short}`;
+}
+
+function formatCheckedIn(dateStr: string | null | undefined): string {
+  if (!dateStr) return "Not checked in";
+  const d = new Date(dateStr);
+  const date = d.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+  const time = d.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  return `${date} • ${time}`;
+}
+
+const HERO_META_SEPARATOR = " · ";
+
+function getJobBikeMetaParts(jb: JobBike): string[] {
+  return [
+    jb.bikeType === "E_BIKE" ? "E-Bike" : jb.bikeType === "REGULAR" ? "Regular" : null,
+    jb.nickname?.trim() || null,
+  ].filter(Boolean) as string[];
+}
+
+type JobBikeStatus = "queued" | "working" | "waiting" | "done";
+
+const JOB_BIKE_STATUSES: JobBikeStatus[] = ["queued", "working", "waiting", "done"];
+
+const JOB_BIKE_STATUS_LABELS: Record<JobBikeStatus, string> = {
+  queued: "Queued",
+  working: "Working on",
+  waiting: "Waiting on parts",
+  done: "Done",
+};
+
+const JOB_BIKE_STATUS_COLORS: Record<JobBikeStatus, string> = {
+  queued: colors.slate[400],
+  working: colors.amber[600],
+  waiting: colors.red[500],
+  done: colors.emerald[600],
+};
+
+function getJobBikeStatus(jb: JobBike, workingOnJobBikeId: string | null): JobBikeStatus {
+  if (jb.completedAt) return "done";
+  if (workingOnJobBikeId === jb.id) return "working";
+  if (jb.waitingOnPartsAt) return "waiting";
+  return "queued";
+}
 
 const MAP_HEIGHT = 150;
 const MAP_ZOOM = 15;
@@ -150,15 +204,12 @@ export default function JobDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const queryClient = useQueryClient();
-  const [showStageMenu, setShowStageMenu] = useState(false);
+  const [openBikeStatusMenuId, setOpenBikeStatusMenuId] = useState<string | null>(null);
   const [viewingImageUrl, setViewingImageUrl] = useState<string | null>(null);
   const [savingWorkingOn, setSavingWorkingOn] = useState(false);
-  const [savingComplete, setSavingComplete] = useState<string | null>(null);
-  const [savingWaiting, setSavingWaiting] = useState<string | null>(null);
+  const [savingBikeStatusId, setSavingBikeStatusId] = useState<string | null>(null);
   const savingTimersRef = useRef<{
     workingOn?: ReturnType<typeof setTimeout>;
-    complete?: ReturnType<typeof setTimeout>;
-    waiting?: ReturnType<typeof setTimeout>;
   }>({});
   const [editAddress, setEditAddress] = useState<string | null>(null);
   const [addressCoords, setAddressCoords] = useState<{ lat: number; lng: number } | null>(null);
@@ -177,16 +228,15 @@ export default function JobDetailScreen() {
   const [collPickupTo, setCollPickupTo] = useState("");
   const [collReturnFrom, setCollReturnFrom] = useState("");
   const [collReturnTo, setCollReturnTo] = useState("");
-  const [activeTab, setActiveTab] = useState<Tab>("details");
+  const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [internalNotesValue, setInternalNotesValue] = useState("");
   const [savingInternalNotes, setSavingInternalNotes] = useState(false);
   const [openingChat, setOpeningChat] = useState(false);
+  const { uploadingBikeImageId, showBikeImageActionSheet } = useJobBikeImageUpload(id ?? "");
 
   useEffect(() => {
     return () => {
       if (savingTimersRef.current.workingOn) clearTimeout(savingTimersRef.current.workingOn);
-      if (savingTimersRef.current.complete) clearTimeout(savingTimersRef.current.complete);
-      if (savingTimersRef.current.waiting) clearTimeout(savingTimersRef.current.waiting);
     };
   }, []);
 
@@ -224,19 +274,6 @@ export default function JobDetailScreen() {
           ...fontSize.sm,
           color: theme.textSecondary,
         },
-        value: {
-          ...fontSize.sm,
-          color: theme.text,
-          fontWeight: "500",
-          flex: 1,
-          textAlign: "right",
-          marginLeft: spacing[4],
-        },
-        stageSelector: {
-          flexDirection: "row",
-          alignItems: "center",
-          gap: spacing[1],
-        },
         stageMenu: {
           backgroundColor: theme.background,
           borderRadius: borderRadius.lg,
@@ -265,72 +302,6 @@ export default function JobDetailScreen() {
         stageOptionTextActive: {
           fontWeight: "600",
           color: theme.text,
-        },
-        customerNameText: {
-          ...fontSize.base,
-          fontWeight: "600",
-          color: theme.text,
-        },
-        meta: {
-          ...fontSize.sm,
-          color: theme.textSecondary,
-        },
-        bikeRow: {
-          flexDirection: "row",
-          gap: spacing[3],
-          alignItems: "flex-start",
-          borderWidth: 1,
-          borderRadius: borderRadius.xl,
-          padding: spacing[3],
-        },
-        bikeRowDefault: {
-          borderColor: theme.surfaceBorder,
-          backgroundColor: theme.surface,
-        },
-        bikeRowCompleted: {
-          borderColor: theme.dark ? colors.emerald[700] : colors.emerald[300],
-          backgroundColor: theme.dark ? colors.emerald[800] + "80" : colors.emerald[50] + "80",
-        },
-        bikeRowWorkingOn: {
-          borderColor: theme.dark ? colors.amber[600] : colors.amber[400],
-          backgroundColor: theme.dark ? colors.amber[800] + "99" : colors.amber[50] + "99",
-        },
-        bikeRowWaiting: {
-          borderColor: theme.dark ? colors.red[700] : colors.red[300],
-          backgroundColor: theme.dark ? colors.red[800] + "80" : colors.red[50] + "80",
-        },
-        bikeImage: {
-          width: 56,
-          height: 56,
-          borderRadius: borderRadius.lg,
-          backgroundColor: theme.placeholderBg,
-        },
-        bikePlaceholder: {
-          width: 56,
-          height: 56,
-          borderRadius: borderRadius.lg,
-          backgroundColor: theme.placeholderBg,
-          justifyContent: "center",
-          alignItems: "center",
-        },
-        bikeInfo: {
-          flex: 1,
-          gap: 2,
-        },
-        bikeNameRow: {
-          flexDirection: "row",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: spacing[1],
-        },
-        bikeName: {
-          ...fontSize.sm,
-          fontWeight: "600",
-          color: theme.text,
-          flex: 1,
-        },
-        bikeNameCompleted: {
-          color: theme.textSecondary,
         },
         doneBadge: {
           flexDirection: "row",
@@ -380,170 +351,43 @@ export default function JobDetailScreen() {
           textTransform: "uppercase",
           letterSpacing: 0.5,
         },
-        bikeNickname: {
-          ...fontSize.xs,
-          color: theme.textSecondary,
-        },
-        bikeTypeRow: {
-          flexDirection: "row",
-          gap: spacing[1],
-          marginTop: spacing[1],
-        },
-        bikeTypeOption: {
+        queuedBadge: {
           flexDirection: "row",
           alignItems: "center",
-          gap: 4,
-          paddingHorizontal: spacing[2],
-          paddingVertical: 4,
+          gap: 3,
+          backgroundColor: theme.dark ? colors.slate[700] : colors.slate[200],
+          paddingHorizontal: spacing[1.5],
+          paddingVertical: 2,
           borderRadius: borderRadius.md,
-          backgroundColor: theme.subtleBg,
         },
-        bikeTypeOptionActive: {
-          backgroundColor: theme.dark ? colors.slate[600] : colors.slate[200],
+        queuedBadgeText: {
+          fontSize: 10,
+          fontWeight: "700",
+          color: theme.dark ? colors.slate[300] : colors.slate[600],
+          textTransform: "uppercase",
+          letterSpacing: 0.5,
         },
-        bikeTypeOptionEBikeActive: {
-          backgroundColor: theme.dark ? colors.blue[600] : colors.blue[100],
-        },
-        bikeTypeText: {
-          ...fontSize.xs,
-          color: theme.textMuted,
-        },
-        bikeTypeTextActive: {
-          fontWeight: "600",
-          color: theme.dark ? colors.slate[100] : colors.slate[700],
-        },
-        bikeTypeTextEBikeActive: {
-          fontWeight: "600",
-          color: theme.dark ? colors.white : colors.blue[600],
-        },
-        bikeActions: {
-          marginTop: spacing[2],
-        },
-        bikeActionsRow: {
+        bikeStatusSelector: {
           flexDirection: "row",
-          gap: spacing[2],
+          alignItems: "center",
+          gap: spacing[1],
+          flexShrink: 0,
+        },
+        bikeStatusMenu: {
+          marginTop: spacing[1.5],
+          backgroundColor: theme.background,
+          borderRadius: borderRadius.lg,
+          padding: spacing[1],
+          gap: spacing[0.5],
+        },
+        heroBikeModelRow: {
+          flexDirection: "row",
+          alignItems: "center",
           flexWrap: "wrap",
-        },
-        workOnButton: {
-          flexDirection: "row",
-          alignItems: "center",
-          gap: spacing[1],
-          paddingHorizontal: spacing[2.5],
-          paddingVertical: spacing[1.5],
-          borderRadius: borderRadius.lg,
-          backgroundColor: theme.subtleBg,
-          minHeight: 32,
-        },
-        workOnText: {
-          ...fontSize.xs,
-          fontWeight: "600",
-          color: theme.textTertiary,
-        },
-        markDoneButton: {
-          flexDirection: "row",
-          alignItems: "center",
-          gap: spacing[1],
-          paddingHorizontal: spacing[2.5],
-          paddingVertical: spacing[1.5],
-          borderRadius: borderRadius.lg,
-          backgroundColor: colors.emerald[600],
-          minHeight: 32,
-        },
-        markDoneText: {
-          ...fontSize.xs,
-          fontWeight: "600",
-          color: colors.white,
-        },
-        undoDoneButton: {
-          flexDirection: "row",
-          alignItems: "center",
-          gap: spacing[1],
-          paddingHorizontal: spacing[2.5],
-          paddingVertical: spacing[1.5],
-          borderRadius: borderRadius.lg,
-          backgroundColor: theme.dark ? colors.emerald[800] : colors.emerald[100],
-          minHeight: 32,
-        },
-        undoDoneText: {
-          ...fontSize.xs,
-          fontWeight: "600",
-          color: theme.dark ? colors.emerald[300] : colors.emerald[700],
-        },
-        waitForPartsButton: {
-          flexDirection: "row",
-          alignItems: "center",
-          gap: spacing[1],
-          paddingHorizontal: spacing[2.5],
-          paddingVertical: spacing[1.5],
-          borderRadius: borderRadius.lg,
-          backgroundColor: theme.dark ? colors.slate[600] : colors.slate[200],
-          minHeight: 32,
-        },
-        waitForPartsText: {
-          ...fontSize.xs,
-          fontWeight: "600",
-          color: theme.dark ? colors.slate[100] : colors.slate[700],
-        },
-        resumeWorkButton: {
-          flexDirection: "row",
-          alignItems: "center",
-          gap: spacing[1],
-          paddingHorizontal: spacing[2.5],
-          paddingVertical: spacing[1.5],
-          borderRadius: borderRadius.lg,
-          backgroundColor: theme.dark ? colors.amber[800] : colors.amber[100],
-          minHeight: 32,
-        },
-        resumeWorkText: {
-          ...fontSize.xs,
-          fontWeight: "600",
-          color: theme.dark ? colors.amber[300] : colors.amber[800],
+          gap: spacing[2],
         },
         buttonDisabled: {
           opacity: 0.5,
-        },
-        lineItem: {
-          flexDirection: "row",
-          justifyContent: "space-between",
-          alignItems: "center",
-          paddingVertical: spacing[1],
-        },
-        lineItemLeft: {
-          flexDirection: "row",
-          alignItems: "center",
-          gap: spacing[2],
-          flex: 1,
-        },
-        lineItemName: {
-          ...fontSize.sm,
-          color: theme.text,
-          flex: 1,
-        },
-        lineItemQty: {
-          ...fontSize.xs,
-          color: theme.textSecondary,
-        },
-        lineItemPrice: {
-          ...fontSize.sm,
-          fontWeight: "600",
-          color: theme.text,
-          fontVariant: ["tabular-nums"],
-        },
-        totalRow: {
-          flexDirection: "row",
-          justifyContent: "space-between",
-          alignItems: "center",
-        },
-        totalLabel: {
-          ...fontSize.base,
-          fontWeight: "700",
-          color: theme.text,
-        },
-        totalAmount: {
-          ...fontSize.xl,
-          fontWeight: "700",
-          color: theme.text,
-          fontVariant: ["tabular-nums"],
         },
         noteBlock: {
           gap: spacing[1],
@@ -702,6 +546,7 @@ export default function JobDetailScreen() {
         },
         tabBar: {
           flexDirection: "row",
+          marginTop: spacing[4],
           borderBottomWidth: 1,
           borderBottomColor: theme.surfaceBorder,
           backgroundColor: theme.background,
@@ -718,11 +563,184 @@ export default function JobDetailScreen() {
         },
         tabActive: {
           borderBottomWidth: 2,
-          borderBottomColor: colors.blue[500],
+          borderBottomColor: colors.emerald[500],
         },
         tabTextActive: {
-          color: colors.blue[500],
+          color: colors.emerald[500],
           fontWeight: "600",
+        },
+        heroSection: {
+          gap: spacing[3],
+        },
+        heroImage: {
+          width: "100%",
+          height: 200,
+          borderRadius: borderRadius.xl,
+          backgroundColor: theme.placeholderBg,
+        },
+        heroImagePlaceholder: {
+          width: "100%",
+          height: 200,
+          borderRadius: borderRadius.xl,
+          backgroundColor: theme.placeholderBg,
+          alignItems: "center",
+          justifyContent: "center",
+        },
+        heroBrand: {
+          ...fontSize.xs,
+          fontWeight: "600",
+          color: theme.text,
+          letterSpacing: 2,
+          textTransform: "uppercase",
+        },
+        heroTitleRow: {
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: spacing[3],
+        },
+        heroModel: {
+          ...fontSize["2xl"],
+          fontWeight: "700",
+          color: theme.text,
+          flexShrink: 1,
+        },
+        heroModelBlock: {
+          flex: 1,
+          gap: spacing[1],
+        },
+        heroMetaRow: {
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: spacing[3],
+        },
+        heroMeta: {
+          ...fontSize.sm,
+          fontWeight: "400",
+          color: theme.textSecondary,
+          flex: 1,
+        },
+        heroRepairId: {
+          ...fontSize.xs,
+          color: theme.textMuted,
+          textAlign: "right",
+        },
+        heroBikeRow: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: spacing[3],
+        },
+        heroBikeThumb: {
+          width: 88,
+          height: 88,
+          borderRadius: borderRadius.xl,
+          backgroundColor: theme.placeholderBg,
+        },
+        heroBikeThumbPlaceholder: {
+          width: 88,
+          height: 88,
+          borderRadius: borderRadius.xl,
+          backgroundColor: theme.placeholderBg,
+          alignItems: "center",
+          justifyContent: "center",
+        },
+        heroImageWrap: {
+          position: "relative",
+        },
+        heroImageBadge: {
+          position: "absolute",
+          bottom: spacing[2],
+          right: spacing[2],
+          width: 32,
+          height: 32,
+          borderRadius: borderRadius.full,
+          backgroundColor: "rgba(0,0,0,0.55)",
+          alignItems: "center",
+          justifyContent: "center",
+          borderWidth: 1,
+          borderColor: "rgba(255,255,255,0.25)",
+        },
+        heroThumbBadge: {
+          position: "absolute",
+          bottom: spacing[1],
+          right: spacing[1],
+          width: 26,
+          height: 26,
+          borderRadius: borderRadius.full,
+          backgroundColor: "rgba(0,0,0,0.55)",
+          alignItems: "center",
+          justifyContent: "center",
+          borderWidth: 1,
+          borderColor: "rgba(255,255,255,0.25)",
+        },
+        heroImageUploadOverlay: {
+          ...StyleSheet.absoluteFillObject,
+          borderRadius: borderRadius.xl,
+          backgroundColor: "rgba(0,0,0,0.45)",
+          alignItems: "center",
+          justifyContent: "center",
+        },
+        heroBikeList: {
+          gap: spacing[3],
+        },
+        overviewCustomerBlock: {
+          gap: spacing[2],
+        },
+        priorityBadge: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: spacing[1],
+          backgroundColor: theme.dark ? colors.amber[800] : colors.amber[100],
+          paddingHorizontal: spacing[2.5],
+          paddingVertical: spacing[1],
+          borderRadius: borderRadius.full,
+        },
+        priorityBadgeText: {
+          ...fontSize.xs,
+          fontWeight: "700",
+          color: theme.dark ? colors.amber[300] : colors.amber[800],
+        },
+        overviewField: {
+          gap: spacing[1],
+        },
+        overviewLabel: {
+          ...fontSize.xs,
+          fontWeight: "600",
+          color: theme.textMuted,
+          textTransform: "uppercase",
+          letterSpacing: 0.5,
+        },
+        overviewValue: {
+          ...fontSize.base,
+          color: theme.text,
+        },
+        overviewValueRow: {
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: spacing[2],
+        },
+        footer: {
+          padding: spacing[4],
+          paddingBottom: spacing[6],
+          borderTopWidth: 1,
+          borderTopColor: theme.surfaceBorder,
+          backgroundColor: theme.background,
+        },
+        startRepairButton: {
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: spacing[2],
+          backgroundColor: colors.emerald[500],
+          paddingVertical: spacing[4],
+          borderRadius: borderRadius.xl,
+        },
+        startRepairButtonText: {
+          ...fontSize.base,
+          fontWeight: "700",
+          color: colors.white,
         },
         invoiceContainer: {
           padding: layout.isTablet ? spacing[6] : spacing[4],
@@ -913,7 +931,6 @@ export default function JobDetailScreen() {
       }
 
       patchJob.mutate(patch as unknown as Partial<Job>);
-      setShowStageMenu(false);
     },
     [job, patchJob]
   );
@@ -1028,52 +1045,17 @@ export default function JobDetailScreen() {
     [job, savingWorkingOn, patchJob]
   );
 
-  const handleToggleComplete = useCallback(
-    (bikeId: string, isCompleted: boolean) => {
-      if (savingComplete || !job) return;
-      setSavingComplete(bikeId);
-      if (savingTimersRef.current.complete) clearTimeout(savingTimersRef.current.complete);
-      savingTimersRef.current.complete = setTimeout(() => setSavingComplete(null), 350);
-      const patch: Record<string, unknown> = isCompleted
-        ? { uncompleteJobBikeId: bikeId }
-        : { completeJobBikeId: bikeId };
-
-      if (!isCompleted) {
-        const allCompletedAfter = (job.jobBikes ?? []).every(
-          (jb) => !!jb.completedAt || jb.id === bikeId
-        );
-        if (allCompletedAfter) {
-          patch.stage = "BIKE_READY";
-          patch.workingOnJobBikeId = null;
-          patch.completedAt = null;
-        } else if (job.workingOnJobBikeId === bikeId) {
-          const nextActive = (job.jobBikes ?? []).find(
-            (jb) => jb.id !== bikeId && !jb.completedAt
-          );
-          patch.workingOnJobBikeId = nextActive?.id ?? null;
-        }
-      }
-
-      patchJob.mutate(patch as unknown as Partial<Job>, {
-        onSettled: () => setSavingComplete(null),
-      });
-    },
-    [job, savingComplete, patchJob]
-  );
-
-  const handleWaitForParts = useCallback(
-    (bikeId: string) => {
-      if (savingWaiting) return;
-      setSavingWaiting(bikeId);
-      if (savingTimersRef.current.waiting) clearTimeout(savingTimersRef.current.waiting);
-      savingTimersRef.current.waiting = setTimeout(() => setSavingWaiting(null), 350);
-      patchJob.mutate(
-        { waitForPartsJobBikeId: bikeId } as unknown as Partial<Job>,
-        { onSettled: () => setSavingWaiting(null) }
-      );
-    },
-    [savingWaiting, patchJob]
-  );
+  const handleStartRepair = useCallback(() => {
+    if (!job || savingWorkingOn) return;
+    const firstActive = (job.jobBikes ?? []).find((jb) => !jb.completedAt);
+    if (firstActive) {
+      handleToggleWorkingOn(firstActive.id);
+      return;
+    }
+    if (job.stage !== "WORKING_ON") {
+      handleStageChange("WORKING_ON");
+    }
+  }, [job, savingWorkingOn, handleToggleWorkingOn, handleStageChange]);
 
   const isCollection = job?.deliveryType === "COLLECTION_SERVICE";
 
@@ -1108,38 +1090,74 @@ export default function JobDetailScreen() {
     [job, patchJob]
   );
 
-  const handleBikeTypeChange = useCallback(
-    (jobBikeId: string, bikeType: BikeType) => {
-      if (!job) return;
-      const bikes = (job.jobBikes ?? []).map((jb) => ({
-        make: jb.make,
-        model: jb.model,
-        nickname: jb.nickname,
-        imageUrl: jb.imageUrl,
-        bikeId: jb.bikeId,
-        bikeType: jb.id === jobBikeId ? bikeType : jb.bikeType,
-      }));
-      patchJob.mutate({ bikes } as unknown as Partial<Job>);
-    },
-    [job, patchJob]
-  );
+  const handleBikeStatusChange = useCallback(
+    (bikeId: string, targetStatus: JobBikeStatus) => {
+      if (!job || savingBikeStatusId) return;
+      const jb = (job.jobBikes ?? []).find((b) => b.id === bikeId);
+      if (!jb) return;
 
-  const handleResumeWork = useCallback(
-    (bikeId: string) => {
-      if (savingWaiting) return;
-      setSavingWaiting(bikeId);
-      if (savingTimersRef.current.waiting) clearTimeout(savingTimersRef.current.waiting);
-      savingTimersRef.current.waiting = setTimeout(() => setSavingWaiting(null), 350);
-      patchJob.mutate(
-        {
-          stage: "WORKING_ON",
-          unwaitForPartsJobBikeId: bikeId,
-          workingOnJobBikeId: bikeId,
-        } as unknown as Partial<Job>,
-        { onSettled: () => setSavingWaiting(null) }
-      );
+      const currentStatus = getJobBikeStatus(jb, job.workingOnJobBikeId);
+      if (currentStatus === targetStatus) {
+        setOpenBikeStatusMenuId(null);
+        return;
+      }
+
+      setSavingBikeStatusId(bikeId);
+      const patch: Record<string, unknown> = {};
+
+      switch (targetStatus) {
+        case "queued":
+          if (jb.completedAt) patch.uncompleteJobBikeId = bikeId;
+          if (jb.waitingOnPartsAt) patch.unwaitForPartsJobBikeId = bikeId;
+          if (job.workingOnJobBikeId === bikeId) patch.workingOnJobBikeId = null;
+          break;
+        case "working":
+          if (jb.completedAt) patch.uncompleteJobBikeId = bikeId;
+          if (jb.waitingOnPartsAt) patch.unwaitForPartsJobBikeId = bikeId;
+          patch.workingOnJobBikeId = bikeId;
+          if (
+            job.stage !== "WORKING_ON" &&
+            job.stage !== "CANCELLED" &&
+            job.stage !== "COMPLETED"
+          ) {
+            patch.stage = "WORKING_ON";
+            patch.notifyCustomer = false;
+          }
+          break;
+        case "waiting":
+          if (jb.completedAt) {
+            setSavingBikeStatusId(null);
+            return;
+          }
+          patch.waitForPartsJobBikeId = bikeId;
+          if (job.workingOnJobBikeId === bikeId) patch.workingOnJobBikeId = null;
+          break;
+        case "done":
+          patch.completeJobBikeId = bikeId;
+          {
+            const allCompletedAfter = (job.jobBikes ?? []).every(
+              (b) => !!b.completedAt || b.id === bikeId
+            );
+            if (allCompletedAfter) {
+              patch.stage = "BIKE_READY";
+              patch.workingOnJobBikeId = null;
+              patch.completedAt = null;
+            } else if (job.workingOnJobBikeId === bikeId) {
+              const nextActive = (job.jobBikes ?? []).find(
+                (b) => b.id !== bikeId && !b.completedAt
+              );
+              patch.workingOnJobBikeId = nextActive?.id ?? null;
+            }
+          }
+          break;
+      }
+
+      patchJob.mutate(patch as unknown as Partial<Job>, {
+        onSettled: () => setSavingBikeStatusId(null),
+      });
+      setOpenBikeStatusMenuId(null);
     },
-    [savingWaiting, patchJob]
+    [job, savingBikeStatusId, patchJob]
   );
 
   const openDatePicker = useCallback(
@@ -1236,6 +1254,26 @@ export default function JobDetailScreen() {
     }
   }, [job?.collectionAddress]);
 
+  const openCustomerAddressMaps = useCallback(() => {
+    const address = job?.customer?.address;
+    if (!address) return;
+    const encoded = encodeURIComponent(address);
+    Alert.alert("Open in Maps", address, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Apple Maps",
+        onPress: () => Linking.openURL(`http://maps.apple.com/?q=${encoded}`),
+      },
+      {
+        text: "Google Maps",
+        onPress: () =>
+          Linking.openURL(
+            `https://www.google.com/maps/search/?api=1&query=${encoded}`
+          ),
+      },
+    ]);
+  }, [job?.customer?.address]);
+
   const mapTiles = useMemo(() => {
     if (!addressCoords || mapWidth <= 0) return null;
     const info = getTileInfo(addressCoords.lat, addressCoords.lng, MAP_ZOOM);
@@ -1308,6 +1346,13 @@ export default function JobDetailScreen() {
     }
   }, [job, openingChat, queryClient, router]);
 
+  const handleBikeImagePress = useCallback(
+    (jb: JobBike) => {
+      showBikeImageActionSheet(jb, setViewingImageUrl);
+    },
+    [showBikeImageActionSheet]
+  );
+
   const goBackToJobBoard = useCallback(() => {
     if (router.canGoBack()) {
       router.back();
@@ -1339,9 +1384,8 @@ export default function JobDetailScreen() {
       closeActionMenu();
       return;
     }
-    // Stage menu only renders on Details; don't swallow back on Invoice.
-    if (showStageMenu && activeTab === "details") {
-      setShowStageMenu(false);
+    if (openBikeStatusMenuId && activeTab === "overview") {
+      setOpenBikeStatusMenuId(null);
       return;
     }
 
@@ -1353,7 +1397,7 @@ export default function JobDetailScreen() {
     showDatePicker,
     viewingImageUrl,
     showActionMenu,
-    showStageMenu,
+    openBikeStatusMenuId,
     closeActionMenu,
     goBackToJobBoard,
   ]);
@@ -1372,25 +1416,171 @@ export default function JobDetailScreen() {
   if (isLoading || !job) return <LoadingScreen message="Loading job..." />;
 
   const jobBikes = job.jobBikes ?? [];
-  const jobServices = job.jobServices ?? [];
-  const jobProducts = job.jobProducts ?? [];
-  const total = jobTotal(jobServices, jobProducts);
+  const sortedJobBikes = [...jobBikes].sort((a, b) => a.sortOrder - b.sortOrder);
+  const hasMultipleBikes = sortedJobBikes.length > 1;
+  const primaryBike = getPrimaryJobBike(job);
+  const heroMake = (primaryBike?.make ?? job.bikeMake ?? "Bike").toUpperCase();
+  const heroModel = primaryBike?.model ?? job.bikeModel ?? "";
+  const heroImageUrl = primaryBike?.imageUrl ?? jobBikes.find((b) => b.imageUrl)?.imageUrl ?? null;
+  const heroMetaParts = primaryBike ? getJobBikeMetaParts(primaryBike) : [];
+  const checkedInDate = job.dropOffDate ?? (job.stage === "RECEIVED" || job.stage === "WORKING_ON" ? job.createdAt : null);
+  const showStartRepair =
+    job.stage !== "CANCELLED" &&
+    job.stage !== "COMPLETED" &&
+    job.stage !== "WORKING_ON" &&
+    job.stage !== "BIKE_READY";
+  const canEditBikeStatus = job.stage !== "CANCELLED" && job.stage !== "COMPLETED";
+
+  const renderHeroBikeImage = (
+    jb: JobBike,
+    variant: "hero" | "thumb",
+    imageUrl: string | null
+  ) => {
+    const isUploading = uploadingBikeImageId === jb.id;
+    const imageStyle = variant === "hero" ? styles.heroImage : styles.heroBikeThumb;
+    const placeholderStyle =
+      variant === "hero" ? styles.heroImagePlaceholder : styles.heroBikeThumbPlaceholder;
+    const badgeStyle = variant === "hero" ? styles.heroImageBadge : styles.heroThumbBadge;
+    const badgeIconSize = variant === "hero" ? 16 : 14;
+    const placeholderIconSize = variant === "hero" ? 48 : 28;
+
+    return (
+      <TouchableOpacity
+        activeOpacity={0.9}
+        onPress={() => handleBikeImagePress(jb)}
+        disabled={!!isUploading}
+        accessibilityRole="button"
+        accessibilityLabel={imageUrl ? "Change bike photo" : "Add bike photo"}
+      >
+        <View style={styles.heroImageWrap}>
+          {imageUrl ? (
+            <Image source={{ uri: imageUrl }} style={imageStyle} />
+          ) : (
+            <View style={placeholderStyle}>
+              <Ionicons name="bicycle" size={placeholderIconSize} color={theme.iconMuted} />
+            </View>
+          )}
+          {isUploading ? (
+            <View style={[styles.heroImageUploadOverlay, imageStyle]}>
+              <ActivityIndicator size="small" color={colors.white} />
+            </View>
+          ) : (
+            <View style={badgeStyle}>
+              <Ionicons name="camera" size={badgeIconSize} color={colors.white} />
+            </View>
+          )}
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
+  const renderBikeStatusBadge = (status: JobBikeStatus, compact?: boolean) => {
+    switch (status) {
+      case "done":
+        return (
+          <View style={styles.doneBadge}>
+            <Ionicons name="checkmark" size={compact ? 9 : 10} color={colors.emerald[700]} />
+            <Text style={styles.doneBadgeText}>{JOB_BIKE_STATUS_LABELS.done}</Text>
+          </View>
+        );
+      case "waiting":
+        return (
+          <View style={styles.waitingBadge}>
+            <Ionicons name="time" size={compact ? 9 : 10} color={colors.red[700]} />
+            <Text style={styles.waitingBadgeText}>{JOB_BIKE_STATUS_LABELS.waiting}</Text>
+          </View>
+        );
+      case "working":
+        return (
+          <View style={styles.workingOnBadge}>
+            {!compact ? <PulsingDot color={colors.amber[600]} /> : null}
+            <Text style={styles.workingOnBadgeText}>{JOB_BIKE_STATUS_LABELS.working}</Text>
+          </View>
+        );
+      default:
+        return (
+          <View style={styles.queuedBadge}>
+            <Ionicons name="ellipse-outline" size={compact ? 9 : 10} color={theme.dark ? colors.slate[400] : colors.slate[500]} />
+            <Text style={styles.queuedBadgeText}>{JOB_BIKE_STATUS_LABELS.queued}</Text>
+          </View>
+        );
+    }
+  };
+
+  const renderBikeStatusBadgeControl = (jb: JobBike, compact = true) => {
+    const bikeStatus = getJobBikeStatus(jb, job.workingOnJobBikeId);
+    const isStatusMenuOpen = openBikeStatusMenuId === jb.id;
+    const isSavingStatus = savingBikeStatusId === jb.id;
+
+    if (!canEditBikeStatus) {
+      return renderBikeStatusBadge(bikeStatus, compact);
+    }
+
+    return (
+      <TouchableOpacity
+        onPress={() => {
+          setOpenBikeStatusMenuId(isStatusMenuOpen ? null : jb.id);
+        }}
+        disabled={!!isSavingStatus}
+        style={[styles.bikeStatusSelector, isSavingStatus && styles.buttonDisabled]}
+        activeOpacity={0.7}
+      >
+        {renderBikeStatusBadge(bikeStatus, compact)}
+        <Ionicons name="chevron-down" size={compact ? 12 : 14} color={theme.textMuted} />
+      </TouchableOpacity>
+    );
+  };
+
+  const renderBikeStatusMenu = (jb: JobBike) => {
+    if (!canEditBikeStatus || openBikeStatusMenuId !== jb.id) return null;
+
+    const bikeStatus = getJobBikeStatus(jb, job.workingOnJobBikeId);
+    const isSavingStatus = savingBikeStatusId === jb.id;
+
+    return (
+      <View style={styles.bikeStatusMenu}>
+        {JOB_BIKE_STATUSES.map((status) => (
+          <TouchableOpacity
+            key={status}
+            onPress={() => handleBikeStatusChange(jb.id, status)}
+            disabled={!!isSavingStatus}
+            style={[
+              styles.stageOption,
+              bikeStatus === status && styles.stageOptionActive,
+              isSavingStatus && styles.buttonDisabled,
+            ]}
+          >
+            <View style={[styles.stageDot, { backgroundColor: JOB_BIKE_STATUS_COLORS[status] }]} />
+            <Text
+              style={[
+                styles.stageOptionText,
+                bikeStatus === status && styles.stageOptionTextActive,
+              ]}
+            >
+              {JOB_BIKE_STATUS_LABELS[status]}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+    );
+  };
 
   return (
     <>
       <Stack.Screen
         options={{
-          title: getJobBikeDisplayTitle(job),
+          title: "Edit Repair",
           headerBackVisible: false,
           headerLeft: () => (
             <TouchableOpacity
               onPress={handleBack}
               hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              style={{ padding: spacing[1] }}
+              style={{ flexDirection: "row", alignItems: "center", gap: spacing[0.5], padding: spacing[1] }}
               accessibilityRole="button"
               accessibilityLabel="Back to Job Board"
             >
               <Ionicons name="chevron-back" size={24} color={theme.text} />
+              <Text style={{ ...fontSize.base, color: theme.text }}>Back</Text>
             </TouchableOpacity>
           ),
           headerRight: () => (
@@ -1400,41 +1590,265 @@ export default function JobDetailScreen() {
           ),
         }}
       />
-      {/* Tab bar */}
-      <View style={styles.tabBar}>
-        <TouchableOpacity
-          style={[styles.tab, activeTab === "details" && styles.tabActive]}
-          onPress={() => setActiveTab("details")}
-          activeOpacity={0.7}
-        >
-          <Text style={[styles.tabText, activeTab === "details" && styles.tabTextActive]}>
-            Details
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.tab, activeTab === "invoice" && styles.tabActive]}
-          onPress={() => {
-            setShowStageMenu(false);
-            setActiveTab("invoice");
-          }}
-          activeOpacity={0.7}
-        >
-          <Text style={[styles.tabText, activeTab === "invoice" && styles.tabTextActive]}>
-            Invoice
-          </Text>
-        </TouchableOpacity>
-      </View>
+      <View style={{ flex: 1 }}>
       <ScrollView
         style={styles.container}
-        contentContainerStyle={activeTab === "invoice" ? styles.invoiceContainer : styles.content}
+        contentContainerStyle={
+          activeTab === "invoice" ? styles.invoiceContainer : styles.content
+        }
         refreshControl={
           <RefreshControl refreshing={isManualRefresh} onRefresh={handleRefresh} />
         }
       >
+        {/* Hero */}
+        <View style={styles.heroSection}>
+          {hasMultipleBikes ? (
+            <>
+              <View style={styles.heroTitleRow}>
+                <Text style={styles.heroBrand}>{sortedJobBikes.length} BIKES</Text>
+                {job.stage === "PENDING_APPROVAL" ? (
+                  <View style={styles.priorityBadge}>
+                    <Ionicons name="notifications" size={12} color={theme.dark ? colors.amber[300] : colors.amber[800]} />
+                    <Text style={styles.priorityBadgeText}>Priority</Text>
+                  </View>
+                ) : null}
+              </View>
+              <View style={styles.heroBikeList}>
+                {sortedJobBikes.map((jb) => {
+                  const metaParts = getJobBikeMetaParts(jb);
+                  return (
+                    <View key={jb.id} style={styles.heroBikeRow}>
+                      {renderHeroBikeImage(jb, "thumb", jb.imageUrl)}
+                      <View style={{ flex: 1, gap: spacing[1] }}>
+                        <Text style={styles.heroBrand}>{(jb.make ?? "Bike").toUpperCase()}</Text>
+                        <View style={styles.heroBikeModelRow}>
+                          <Text style={styles.heroModel} numberOfLines={2}>
+                            {jb.model || jb.make}
+                          </Text>
+                          {renderBikeStatusBadgeControl(jb)}
+                        </View>
+                        {renderBikeStatusMenu(jb)}
+                        {metaParts.length > 0 ? (
+                          <Text style={styles.heroMeta} numberOfLines={1}>
+                            {metaParts.join(HERO_META_SEPARATOR)}
+                          </Text>
+                        ) : null}
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+              <View style={styles.heroMetaRow}>
+                <View style={{ flex: 1 }} />
+                <Text style={styles.heroRepairId}>Repair #{getJobRepairNumber(job.id)}</Text>
+              </View>
+            </>
+          ) : (
+            <>
+              {primaryBike ? (
+                renderHeroBikeImage(primaryBike, "hero", heroImageUrl)
+              ) : heroImageUrl ? (
+                <TouchableOpacity
+                  activeOpacity={0.9}
+                  onPress={() => setViewingImageUrl(heroImageUrl)}
+                >
+                  <Image source={{ uri: heroImageUrl }} style={styles.heroImage} />
+                </TouchableOpacity>
+              ) : (
+                <View style={styles.heroImagePlaceholder}>
+                  <Ionicons name="bicycle" size={48} color={theme.iconMuted} />
+                </View>
+              )}
+              <Text style={styles.heroBrand}>{heroMake}</Text>
+              <View style={styles.heroTitleRow}>
+                <View style={styles.heroModelBlock}>
+                  <View style={styles.heroBikeModelRow}>
+                    <Text style={styles.heroModel} numberOfLines={2}>
+                      {heroModel || getJobBikeDisplayTitle(job)}
+                    </Text>
+                    {primaryBike ? renderBikeStatusBadgeControl(primaryBike) : null}
+                  </View>
+                  {primaryBike ? renderBikeStatusMenu(primaryBike) : null}
+                </View>
+                {job.stage === "PENDING_APPROVAL" ? (
+                  <View style={styles.priorityBadge}>
+                    <Ionicons name="notifications" size={12} color={theme.dark ? colors.amber[300] : colors.amber[800]} />
+                    <Text style={styles.priorityBadgeText}>Priority</Text>
+                  </View>
+                ) : null}
+              </View>
+              <View style={styles.heroMetaRow}>
+                {heroMetaParts.length > 0 ? (
+                  <Text style={styles.heroMeta} numberOfLines={1}>
+                    {heroMetaParts.join(HERO_META_SEPARATOR)}
+                  </Text>
+                ) : (
+                  <View style={{ flex: 1 }} />
+                )}
+                <Text style={styles.heroRepairId}>Repair #{getJobRepairNumber(job.id)}</Text>
+              </View>
+            </>
+          )}
+        </View>
+
+        {/* Tab bar */}
+        <View style={styles.tabBar}>
+          <TouchableOpacity
+            style={[styles.tab, activeTab === "overview" && styles.tabActive]}
+            onPress={() => {
+              setOpenBikeStatusMenuId(null);
+              setActiveTab("overview");
+            }}
+            activeOpacity={0.7}
+          >
+            <Text style={[styles.tabText, activeTab === "overview" && styles.tabTextActive]}>
+              Overview
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tab, activeTab === "invoice" && styles.tabActive]}
+            onPress={() => {
+              setOpenBikeStatusMenuId(null);
+              setActiveTab("invoice");
+            }}
+            activeOpacity={0.7}
+          >
+            <Text style={[styles.tabText, activeTab === "invoice" && styles.tabTextActive]}>
+              Invoice
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tab, activeTab === "notes" && styles.tabActive]}
+            onPress={() => {
+              setOpenBikeStatusMenuId(null);
+              setActiveTab("notes");
+            }}
+            activeOpacity={0.7}
+          >
+            <Text style={[styles.tabText, activeTab === "notes" && styles.tabTextActive]}>
+              Notes
+            </Text>
+          </TouchableOpacity>
+        </View>
+
         {activeTab === "invoice" ? (
           <InvoiceTab job={job} onJobUpdated={handleInvoiceJobUpdated} />
+        ) : activeTab === "notes" ? (
+          <>
+            {job.notes || job.customerNotes ? (
+              <Card style={styles.section}>
+                <Text style={styles.sectionTitle}>Notes</Text>
+                {job.notes ? (
+                  <View style={styles.noteBlock}>
+                    <Text style={styles.noteLabel}>Notes</Text>
+                    <Text style={styles.noteText}>{job.notes}</Text>
+                  </View>
+                ) : null}
+                {job.customerNotes ? (
+                  <View style={styles.noteBlock}>
+                    <Text style={styles.noteLabel}>Customer Notes</Text>
+                    <Text style={styles.noteText}>{job.customerNotes}</Text>
+                  </View>
+                ) : null}
+              </Card>
+            ) : null}
+            <Card style={styles.section}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: spacing[2] }}>
+                <Text style={styles.sectionTitle}>Internal Notes</Text>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: spacing[1], backgroundColor: colors.amber[100], paddingHorizontal: spacing[2], paddingVertical: 2, borderRadius: borderRadius.full }}>
+                  <Ionicons name="lock-closed" size={10} color={colors.amber[700]} />
+                  <Text style={{ fontSize: 10, lineHeight: 14, fontWeight: "700", color: colors.amber[700], textTransform: "uppercase", letterSpacing: 0.5 }}>Staff only</Text>
+                </View>
+              </View>
+              <TextInput
+                value={internalNotesValue}
+                onChangeText={setInternalNotesValue}
+                onBlur={handleSaveInternalNotes}
+                placeholder="Add private notes about this job…"
+                placeholderTextColor={theme.textSecondary}
+                multiline
+                numberOfLines={3}
+                style={{
+                  ...fontSize.sm,
+                  color: theme.inputText,
+                  backgroundColor: theme.inputBg,
+                  borderWidth: 1,
+                  borderColor: theme.inputBorder,
+                  borderRadius: borderRadius.lg,
+                  padding: spacing[3],
+                  minHeight: 80,
+                  textAlignVertical: "top",
+                }}
+                editable={!savingInternalNotes}
+              />
+              {savingInternalNotes ? (
+                <Text style={{ ...fontSize.xs, color: theme.textSecondary }}>Saving…</Text>
+              ) : null}
+            </Card>
+          </>
         ) : (
         <>
+        {/* Overview fields */}
+        <View style={{ gap: spacing[5] }}>
+          {job.customer ? (
+            <View style={styles.overviewField}>
+              <Text style={styles.overviewLabel}>Customer</Text>
+              <View style={styles.overviewCustomerBlock}>
+                <Text style={styles.overviewValue}>{customerName(job.customer)}</Text>
+                {job.customer.email ? (
+                  <TouchableOpacity onPress={() => Linking.openURL(`mailto:${job.customer!.email}`)}>
+                    <Text style={[styles.overviewValue, { color: colors.emerald[500] }]}>
+                      {job.customer.email}
+                    </Text>
+                  </TouchableOpacity>
+                ) : null}
+                {job.customer.phone ? (
+                  <View style={styles.overviewValueRow}>
+                    <TouchableOpacity onPress={() => Linking.openURL(`tel:${job.customer!.phone}`)}>
+                      <Text style={styles.overviewValue}>
+                        {formatPhoneNumber(job.customer.phone)}
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => Linking.openURL(`tel:${job.customer!.phone}`)}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Ionicons name="call" size={18} color={colors.emerald[500]} />
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
+                {job.customer.address ? (
+                  <View style={styles.overviewValueRow}>
+                    <TouchableOpacity
+                      onPress={openCustomerAddressMaps}
+                      style={{ flex: 1 }}
+                    >
+                      <Text style={[styles.overviewValue, { color: colors.emerald[500] }]}>
+                        {job.customer.address}
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={openCustomerAddressMaps}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Ionicons name="map-outline" size={18} color={colors.emerald[500]} />
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
+              </View>
+            </View>
+          ) : null}
+          <View style={styles.overviewField}>
+            <Text style={styles.overviewLabel}>Checked In</Text>
+            <Text style={styles.overviewValue}>{formatCheckedIn(checkedInDate)}</Text>
+          </View>
+          {job.cancellationReason ? (
+            <View style={styles.overviewField}>
+              <Text style={styles.overviewLabel}>Cancellation Reason</Text>
+              <Text style={styles.overviewValue}>{job.cancellationReason}</Text>
+            </View>
+          ) : null}
+        </View>
         {/* Booking Request Banner */}
         {job.stage === "PENDING_APPROVAL" ? (
           <Card
@@ -1506,258 +1920,6 @@ export default function JobDetailScreen() {
             </View>
           </Card>
         ) : null}
-
-        {/* Stage and Status */}
-        <Card style={styles.section}>
-          <View style={styles.row}>
-            <Text style={styles.label}>Status</Text>
-            <TouchableOpacity
-              onPress={() => setShowStageMenu(!showStageMenu)}
-              style={styles.stageSelector}
-            >
-              <StageBadge stage={job.stage} />
-              <Ionicons name="chevron-down" size={14} color={theme.textMuted} />
-            </TouchableOpacity>
-          </View>
-          {showStageMenu ? (
-            <View style={styles.stageMenu}>
-              {STAGES.map((stage) => (
-                <TouchableOpacity
-                  key={stage}
-                  onPress={() => handleStageChange(stage)}
-                  style={[
-                    styles.stageOption,
-                    job.stage === stage && styles.stageOptionActive,
-                  ]}
-                >
-                  <View
-                    style={[
-                      styles.stageDot,
-                      { backgroundColor: STAGE_COLORS[stage] },
-                    ]}
-                  />
-                  <Text
-                    style={[
-                      styles.stageOptionText,
-                      job.stage === stage && styles.stageOptionTextActive,
-                    ]}
-                  >
-                    {STAGE_LABELS[stage]}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          ) : null}
-          <View style={styles.row}>
-            <Text style={styles.label}>Payment</Text>
-            <PaymentBadge status={job.paymentStatus} />
-          </View>
-          {job.cancellationReason ? (
-            <View style={styles.row}>
-              <Text style={styles.label}>Cancellation Reason</Text>
-              <Text style={styles.value}>{job.cancellationReason}</Text>
-            </View>
-          ) : null}
-        </Card>
-
-        {/* Customer */}
-        {job.customer ? (
-          <Card style={styles.section}>
-            <Text style={styles.sectionTitle}>Customer</Text>
-            <Text style={styles.customerNameText}>
-              {customerName(job.customer)}
-            </Text>
-            {job.customer.email ? (
-              <TouchableOpacity
-                onPress={() => Linking.openURL(`mailto:${job.customer!.email}`)}
-                activeOpacity={0.6}
-              >
-                <Text style={[styles.meta, { color: colors.blue[500] }]}>
-                  {job.customer.email}
-                </Text>
-              </TouchableOpacity>
-            ) : null}
-            {job.customer.phone ? (
-              <TouchableOpacity
-                onPress={() => Linking.openURL(`tel:${job.customer!.phone}`)}
-                activeOpacity={0.6}
-              >
-                <Text style={[styles.meta, { color: colors.blue[500] }]}>
-                  {formatPhoneNumber(job.customer.phone)}
-                </Text>
-              </TouchableOpacity>
-            ) : null}
-          </Card>
-        ) : null}
-
-        {/* Bikes */}
-        <Card style={styles.section}>
-          <Text style={styles.sectionTitle}>
-            {jobBikes.length === 1 ? "Bike" : `Bikes (${jobBikes.length})`}
-          </Text>
-          {jobBikes.map((jb) => {
-            const isWorkingOn = job.workingOnJobBikeId === jb.id;
-            const isCompleted = !!jb.completedAt;
-            // Never show "waiting on parts" for the bike currently being worked on —
-            // waitingOnPartsAt may still be set from a previous state.
-            const isWaitingOnParts = !!jb.waitingOnPartsAt && !isCompleted && !isWorkingOn;
-
-            return (
-              <View
-                key={jb.id}
-                style={[
-                  styles.bikeRow,
-                  isCompleted
-                    ? styles.bikeRowCompleted
-                    : isWaitingOnParts
-                      ? styles.bikeRowWaiting
-                      : isWorkingOn
-                        ? styles.bikeRowWorkingOn
-                        : styles.bikeRowDefault,
-                ]}
-              >
-                {jb.imageUrl ? (
-                  <TouchableOpacity
-                    activeOpacity={0.8}
-                    onPress={() => setViewingImageUrl(jb.imageUrl!)}
-                  >
-                    <Image source={{ uri: jb.imageUrl }} style={styles.bikeImage} />
-                  </TouchableOpacity>
-                ) : (
-                  <View style={styles.bikePlaceholder}>
-                    <Ionicons name="bicycle" size={24} color={theme.iconMuted} />
-                  </View>
-                )}
-                <View style={styles.bikeInfo}>
-                  <View style={styles.bikeNameRow}>
-                    <Text
-                      style={[
-                        styles.bikeName,
-                        (isCompleted || isWaitingOnParts) && styles.bikeNameCompleted,
-                      ]}
-                      numberOfLines={1}
-                    >
-                      {jb.make} {jb.model}
-                    </Text>
-                    {isCompleted ? (
-                      <View style={styles.doneBadge}>
-                        <Ionicons name="checkmark" size={10} color={colors.emerald[700]} />
-                        <Text style={styles.doneBadgeText}>Done</Text>
-                      </View>
-                    ) : isWaitingOnParts ? (
-                      <View style={styles.waitingBadge}>
-                        <Ionicons name="time" size={10} color={colors.red[700]} />
-                        <Text style={styles.waitingBadgeText}>Waiting on parts</Text>
-                      </View>
-                    ) : isWorkingOn ? (
-                      <View style={styles.workingOnBadge}>
-                        <PulsingDot color={colors.amber[600]} />
-                        <Text style={styles.workingOnBadgeText}>Working on</Text>
-                      </View>
-                    ) : null}
-                  </View>
-                  {jb.nickname ? (
-                    <Text style={styles.bikeNickname}>{jb.nickname}</Text>
-                  ) : null}
-                  <View style={styles.bikeTypeRow}>
-                    <TouchableOpacity
-                      onPress={() => handleBikeTypeChange(jb.id, "REGULAR")}
-                      style={[
-                        styles.bikeTypeOption,
-                        jb.bikeType !== "E_BIKE" && styles.bikeTypeOptionActive,
-                      ]}
-                    >
-                      <Ionicons
-                        name="bicycle"
-                        size={12}
-                        color={jb.bikeType !== "E_BIKE" ? colors.slate[700] : theme.textMuted}
-                      />
-                      <Text
-                        style={[
-                          styles.bikeTypeText,
-                          jb.bikeType !== "E_BIKE" && styles.bikeTypeTextActive,
-                        ]}
-                      >
-                        Regular
-                      </Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      onPress={() => handleBikeTypeChange(jb.id, "E_BIKE")}
-                      style={[
-                        styles.bikeTypeOption,
-                        jb.bikeType === "E_BIKE" && styles.bikeTypeOptionEBikeActive,
-                      ]}
-                    >
-                      <Ionicons
-                        name="flash"
-                        size={12}
-                        color={jb.bikeType === "E_BIKE" ? colors.blue[600] : theme.textMuted}
-                      />
-                      <Text
-                        style={[
-                          styles.bikeTypeText,
-                          jb.bikeType === "E_BIKE" && styles.bikeTypeTextEBikeActive,
-                        ]}
-                      >
-                        E-Bike
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-
-                  <View style={styles.bikeActions}>
-                    {isCompleted ? (
-                      <TouchableOpacity
-                        onPress={() => handleToggleComplete(jb.id, true)}
-                        disabled={!!savingComplete}
-                        style={[styles.undoDoneButton, !!savingComplete && styles.buttonDisabled]}
-                      >
-                        <Ionicons name="arrow-undo" size={13} color={colors.emerald[700]} />
-                        <Text style={styles.undoDoneText}>Undo done</Text>
-                      </TouchableOpacity>
-                    ) : isWaitingOnParts ? (
-                      <TouchableOpacity
-                        onPress={() => handleResumeWork(jb.id)}
-                        disabled={!!savingWaiting}
-                        style={[styles.resumeWorkButton, !!savingWaiting && styles.buttonDisabled]}
-                      >
-                        <Ionicons name="build" size={13} color={colors.amber[800]} />
-                        <Text style={styles.resumeWorkText}>Resume work</Text>
-                      </TouchableOpacity>
-                    ) : isWorkingOn ? (
-                      <View style={styles.bikeActionsRow}>
-                        <TouchableOpacity
-                          onPress={() => handleToggleComplete(jb.id, false)}
-                          disabled={!!savingComplete}
-                          style={[styles.markDoneButton, !!savingComplete && styles.buttonDisabled]}
-                        >
-                          <Ionicons name="checkmark" size={13} color={colors.white} />
-                          <Text style={styles.markDoneText}>Mark done</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                          onPress={() => handleWaitForParts(jb.id)}
-                          disabled={!!savingWaiting}
-                          style={[styles.waitForPartsButton, !!savingWaiting && styles.buttonDisabled]}
-                        >
-                          <Ionicons name="time" size={13} color={theme.dark ? colors.slate[100] : colors.slate[700]} />
-                          <Text style={styles.waitForPartsText}>Need parts</Text>
-                        </TouchableOpacity>
-                      </View>
-                    ) : (
-                      <TouchableOpacity
-                        onPress={() => handleToggleWorkingOn(jb.id)}
-                        disabled={savingWorkingOn}
-                        style={[styles.workOnButton, savingWorkingOn && styles.buttonDisabled]}
-                      >
-                        <Ionicons name="build" size={13} color={theme.textTertiary} />
-                        <Text style={styles.workOnText}>Work on this</Text>
-                      </TouchableOpacity>
-                    )}
-                  </View>
-                </View>
-              </View>
-            );
-          })}
-        </Card>
 
         {/* Dates & Delivery */}
         <Card style={styles.section}>
@@ -2074,115 +2236,6 @@ export default function JobDetailScreen() {
           ) : null}
         </Card>
 
-        {/* Services */}
-        {jobServices.length > 0 ? (
-          <Card style={styles.section}>
-            <Text style={styles.sectionTitle}>Services</Text>
-            {jobServices.map((js) => {
-              const serviceName =
-                js.service?.name ?? js.customServiceName ?? null;
-              if (!serviceName) return null;
-              return (
-                <View key={js.id} style={styles.lineItem}>
-                  <View style={styles.lineItemLeft}>
-                    <Text style={styles.lineItemName}>{serviceName}</Text>
-                    {js.quantity > 1 ? (
-                      <Text style={styles.lineItemQty}>x{js.quantity}</Text>
-                    ) : null}
-                  </View>
-                  <Text style={styles.lineItemPrice}>
-                    {formatCurrency(parseFloat(js.unitPrice) * js.quantity)}
-                  </Text>
-                </View>
-              );
-            })}
-          </Card>
-        ) : null}
-
-        {/* Products */}
-        {jobProducts.length > 0 ? (
-          <Card style={styles.section}>
-            <Text style={styles.sectionTitle}>Products</Text>
-            {jobProducts.map((jp) =>
-              jp?.product ? (
-                <View key={jp.id} style={styles.lineItem}>
-                  <View style={styles.lineItemLeft}>
-                    <Text style={styles.lineItemName}>{jp.product.name}</Text>
-                    {jp.quantity > 1 ? (
-                      <Text style={styles.lineItemQty}>x{jp.quantity}</Text>
-                    ) : null}
-                  </View>
-                  <Text style={styles.lineItemPrice}>
-                    {formatCurrency(parseFloat(jp.unitPrice) * jp.quantity)}
-                  </Text>
-                </View>
-              ) : null
-            )}
-          </Card>
-        ) : null}
-
-        {/* Total */}
-        <Card style={styles.section}>
-          <View style={styles.totalRow}>
-            <Text style={styles.totalLabel}>Total</Text>
-            <Text style={styles.totalAmount}>{formatCurrency(total)}</Text>
-          </View>
-        </Card>
-
-        {/* Notes */}
-        {job.notes || job.customerNotes ? (
-          <Card style={styles.section}>
-            <Text style={styles.sectionTitle}>Notes</Text>
-            {job.notes ? (
-              <View style={styles.noteBlock}>
-                <Text style={styles.noteLabel}>Notes</Text>
-                <Text style={styles.noteText}>{job.notes}</Text>
-              </View>
-            ) : null}
-            {job.customerNotes ? (
-              <View style={styles.noteBlock}>
-                <Text style={styles.noteLabel}>Customer Notes</Text>
-                <Text style={styles.noteText}>{job.customerNotes}</Text>
-              </View>
-            ) : null}
-          </Card>
-        ) : null}
-
-        {/* Internal Notes */}
-        <Card style={styles.section}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: spacing[2] }}>
-            <Text style={styles.sectionTitle}>Internal Notes</Text>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: spacing[1], backgroundColor: colors.amber[100], paddingHorizontal: spacing[2], paddingVertical: 2, borderRadius: borderRadius.full }}>
-              <Ionicons name="lock-closed" size={10} color={colors.amber[700]} />
-              <Text style={{ fontSize: 10, lineHeight: 14, fontWeight: "700", color: colors.amber[700], textTransform: "uppercase", letterSpacing: 0.5 }}>Staff only</Text>
-            </View>
-          </View>
-          <TextInput
-            value={internalNotesValue}
-            onChangeText={setInternalNotesValue}
-            onBlur={handleSaveInternalNotes}
-            placeholder="Add private notes about this job…"
-            placeholderTextColor={theme.textSecondary}
-            multiline
-            numberOfLines={3}
-            style={{
-              ...fontSize.sm,
-              color: theme.inputText,
-              backgroundColor: theme.inputBg,
-              borderWidth: 1,
-              borderColor: theme.inputBorder,
-              borderRadius: borderRadius.lg,
-              padding: spacing[3],
-              minHeight: 80,
-              textAlignVertical: "top",
-            }}
-            editable={!savingInternalNotes}
-          />
-          {savingInternalNotes ? (
-            <Text style={{ ...fontSize.xs, color: theme.textSecondary }}>Saving…</Text>
-          ) : null}
-        </Card>
-
         {/* Actions */}
         <View style={styles.actionsSection}>
           {job.customer ? (
@@ -2209,6 +2262,22 @@ export default function JobDetailScreen() {
         </>
         )}
       </ScrollView>
+      {showStartRepair ? (
+        <View style={styles.footer}>
+          <TouchableOpacity
+            onPress={handleStartRepair}
+            disabled={savingWorkingOn || patchJob.isPending}
+            style={[styles.startRepairButton, (savingWorkingOn || patchJob.isPending) && styles.buttonDisabled]}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="play" size={18} color={colors.white} />
+            <Text style={styles.startRepairButtonText}>
+              {savingWorkingOn ? "Starting…" : "Start Repair"}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+      </View>
       <ImageViewer uri={viewingImageUrl} onClose={() => setViewingImageUrl(null)} />
 
       {/* Action menu dropdown */}

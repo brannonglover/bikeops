@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
+import { useLocalSearchParams } from "expo-router";
 import {
   View,
   Text,
@@ -20,6 +21,12 @@ import { useTheme } from "@/lib/ThemeContext";
 export default function LoginScreen() {
   const { theme } = useTheme();
   const router = useRouter();
+  const params = useLocalSearchParams<{
+    mode?: string;
+    shopSubdomain?: string;
+    email?: string;
+    verified?: string;
+  }>();
   const { staffLogin } = useAuth();
   const [mode, setMode] = useState<"pick" | "staff" | "customer">("pick");
   const [shopSubdomain, setShopSubdomain] = useState("");
@@ -38,6 +45,18 @@ export default function LoginScreen() {
       })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (params.mode === "staff") {
+      setMode("staff");
+    }
+    if (typeof params.shopSubdomain === "string" && params.shopSubdomain) {
+      setShopSubdomain(params.shopSubdomain);
+    }
+    if (typeof params.email === "string" && params.email) {
+      setEmail(params.email);
+    }
+  }, [params.mode, params.shopSubdomain, params.email]);
 
 
   const handleCustomerLogin = async () => {
@@ -123,6 +142,29 @@ export default function LoginScreen() {
           ...fontSize.sm,
           color: theme.textSecondary,
           fontWeight: "500",
+        },
+        registerLink: {
+          alignItems: "center",
+          marginTop: spacing[5],
+          padding: spacing[2],
+          gap: spacing[1],
+        },
+        registerText: {
+          ...fontSize.sm,
+          color: theme.textSecondary,
+          textAlign: "center",
+        },
+        registerAction: {
+          ...fontSize.sm,
+          color: colors.amber[600],
+          fontWeight: "600",
+          textAlign: "center",
+        },
+        verifiedBanner: {
+          ...fontSize.sm,
+          color: colors.emerald[600],
+          textAlign: "center",
+          marginBottom: spacing[3],
         },
       }),
     [theme]
@@ -252,6 +294,11 @@ export default function LoginScreen() {
             autoComplete="password"
             containerStyle={styles.inputContainer}
           />
+          {params.verified === "1" ? (
+            <Text style={styles.verifiedBanner}>
+              Your workspace is ready. Sign in to get started.
+            </Text>
+          ) : null}
           {error ? <Text style={styles.error}>{error}</Text> : null}
           <Button
             title={loading ? "Signing in..." : "Sign In"}
@@ -292,6 +339,13 @@ export default function LoginScreen() {
             style={styles.roleButton}
           />
         </View>
+        <TouchableOpacity
+          onPress={() => router.push("/(auth)/signup")}
+          style={styles.registerLink}
+        >
+          <Text style={styles.registerText}>Not a customer yet?</Text>
+          <Text style={styles.registerAction}>Register your shop</Text>
+        </TouchableOpacity>
       </View>
     </View>
   );

@@ -36,28 +36,38 @@ export function Button({
 
   const variantStyles: Record<
     Variant,
-    { bg: string; bgDisabled: string; text: string; border?: string }
+    {
+      bg: string;
+      bgDisabled: string;
+      text: string;
+      textDisabled: string;
+      border?: string;
+    }
   > = {
     primary: {
-      bg: colors.amber[500],
-      bgDisabled: colors.amber[500] + "80",
+      bg: colors.amber[600],
+      bgDisabled: theme.subtleBg,
       text: colors.white,
+      textDisabled: theme.textMuted,
     },
     secondary: {
       bg: theme.surface,
       bgDisabled: theme.subtleBg,
       text: theme.textTertiary,
+      textDisabled: theme.textMuted,
       border: theme.inputBorder,
     },
     danger: {
       bg: colors.red[600],
-      bgDisabled: colors.red[600] + "80",
+      bgDisabled: theme.subtleBg,
       text: colors.white,
+      textDisabled: theme.textMuted,
     },
     ghost: {
       bg: colors.transparent,
       bgDisabled: colors.transparent,
       text: theme.textTertiary,
+      textDisabled: theme.textMuted,
     },
   };
 
@@ -95,7 +105,7 @@ export function Button({
       {loading ? (
         <ActivityIndicator
           size="small"
-          color={v.text}
+          color={isDisabled ? v.textDisabled : v.text}
           style={{ marginRight: spacing[2] }}
         />
       ) : null}
@@ -103,7 +113,7 @@ export function Button({
         style={[
           styles.text,
           fontSizes[size],
-          { color: isDisabled ? v.text + "CC" : v.text },
+          { color: isDisabled ? v.textDisabled : v.text },
           textStyle,
         ]}
       >

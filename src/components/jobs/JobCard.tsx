@@ -1,11 +1,20 @@
-import { View, Text, TouchableOpacity, StyleSheet, Image } from "react-native";
+import { useState } from "react";
+import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
-import { StageBadge, PaymentBadge } from "@/components/ui/Badge";
-import { type Job, STAGE_LABELS, type Stage } from "@/lib/types";
-import { customerName, getJobBikeDisplayTitle, formatDate } from "@/lib/format";
+import { PaymentBadge } from "@/components/ui/Badge";
+import { type Job, type Stage } from "@/lib/types";
+import {
+  customerName,
+  getJobBikeDisplayTitle,
+  getPrimaryJobBike,
+  formatDate,
+} from "@/lib/format";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
+import { useJobBikeImageUpload } from "@/hooks/useJobBikeImageUpload";
+import { JobBikeImageThumb } from "@/components/jobs/JobBikeImageThumb";
+import { ImageViewer } from "@/components/ui/ImageViewer";
 
 interface JobCardProps {
   job: Job;
@@ -14,6 +23,8 @@ interface JobCardProps {
   onReject?: () => void;
   showStageSelect?: boolean;
   onStageChange?: (jobId: string, stage: Stage) => void;
+  /** When true, staff can tap the bike thumbnail to add or change the photo. */
+  editableBikeImage?: boolean;
 }
 
 export function JobCard({
@@ -21,174 +32,190 @@ export function JobCard({
   onPress,
   onAccept,
   onReject,
+  editableBikeImage = true,
 }: JobCardProps) {
   const { theme } = useTheme();
   const layout = useResponsiveLayout();
   const showPortraitThumb = layout.isTabletPortrait;
   const jobBikes = job.jobBikes ?? [];
   const jobServices = job.jobServices ?? [];
-  const bikeImageUrl = jobBikes.find((bike) => bike.imageUrl)?.imageUrl;
+  const primaryBike = getPrimaryJobBike(job);
+  const bikeImageUrl =
+    primaryBike?.imageUrl ?? jobBikes.find((bike) => bike.imageUrl)?.imageUrl ?? null;
+  const showBikeThumb = showPortraitThumb || editableBikeImage;
+  const thumbSize = showPortraitThumb ? "regular" : "compact";
+
+  const [viewingImageUrl, setViewingImageUrl] = useState<string | null>(null);
+  const { uploadingBikeImageId, showBikeImageActionSheet } = useJobBikeImageUpload(job.id);
+
+  const handleBikeImagePress = () => {
+    if (!editableBikeImage || !primaryBike) return;
+    showBikeImageActionSheet(primaryBike, setViewingImageUrl);
+  };
 
   return (
-    <TouchableOpacity
-      onPress={onPress}
-      activeOpacity={0.7}
-      style={[
-        styles.card,
-        showPortraitThumb && styles.cardTabletPortrait,
-        { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
-      ]}
-    >
-      <View style={showPortraitThumb && styles.tabletRow}>
-        {showPortraitThumb ? (
-          bikeImageUrl ? (
-            <Image
-              source={{ uri: bikeImageUrl }}
-              style={[styles.bikeThumb, { backgroundColor: theme.placeholderBg }]}
+    <>
+      <TouchableOpacity
+        onPress={onPress}
+        activeOpacity={0.7}
+        style={[
+          styles.card,
+          showPortraitThumb && styles.cardTabletPortrait,
+          { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
+        ]}
+      >
+        <View style={showBikeThumb && styles.thumbRow}>
+          {showBikeThumb ? (
+            <JobBikeImageThumb
+              imageUrl={bikeImageUrl}
+              isUploading={!!primaryBike && uploadingBikeImageId === primaryBike.id}
+              editable={editableBikeImage && !!primaryBike}
+              size={thumbSize}
+              onPress={handleBikeImagePress}
             />
-          ) : (
-            <View style={[styles.bikeThumbPlaceholder, { backgroundColor: theme.placeholderBg }]}>
-              <Ionicons name="bicycle" size={28} color={theme.iconMuted} />
-            </View>
-          )
-        ) : null}
+          ) : null}
 
-        <View style={styles.cardBody}>
-          <View style={styles.header}>
-            <View style={styles.headerLeft}>
-              <Ionicons
-                name="bicycle"
-                size={showPortraitThumb ? 18 : 16}
-                color={theme.textMuted}
-              />
+          <View style={styles.cardBody}>
+            <View style={styles.header}>
+              <View style={styles.headerLeft}>
+                {!showBikeThumb ? (
+                  <Ionicons
+                    name="bicycle"
+                    size={showPortraitThumb ? 18 : 16}
+                    color={theme.textMuted}
+                  />
+                ) : null}
+                <Text
+                  style={[
+                    styles.bikeLabel,
+                    showPortraitThumb && styles.bikeLabelTabletPortrait,
+                    { color: theme.text },
+                  ]}
+                  numberOfLines={1}
+                >
+                  {getJobBikeDisplayTitle(job)}
+                </Text>
+              </View>
+              <PaymentBadge status={job.paymentStatus} />
+            </View>
+
+            {job.customer ? (
               <Text
                 style={[
-                  styles.bikeLabel,
-                  showPortraitThumb && styles.bikeLabelTabletPortrait,
-                  { color: theme.text },
+                  styles.customerName,
+                  showPortraitThumb && styles.customerNameTabletPortrait,
+                  { color: theme.textTertiary },
                 ]}
                 numberOfLines={1}
               >
-                {getJobBikeDisplayTitle(job)}
+                {customerName(job.customer)}
               </Text>
+            ) : null}
+
+            {job.stage !== "COMPLETED" && job.stage !== "CANCELLED" && (() => {
+              const hasWaitingBike = jobBikes.some(
+                (b) => b.waitingOnPartsAt && !b.completedAt && b.id !== job.workingOnJobBikeId
+              );
+              if (!hasWaitingBike) return null;
+              return (
+                <Text
+                  style={[
+                    styles.waitingLabel,
+                    showPortraitThumb && styles.metaTabletPortrait,
+                  ]}
+                >
+                  <Ionicons name="time-outline" size={showPortraitThumb ? 13 : 11} /> Waiting on parts
+                </Text>
+              );
+            })()}
+
+            {jobBikes.length > 1 ? (
+              <Text
+                style={[
+                  styles.meta,
+                  showPortraitThumb && styles.metaTabletPortrait,
+                  { color: theme.textSecondary },
+                ]}
+              >
+                {jobBikes.length} bikes
+              </Text>
+            ) : null}
+
+            {jobServices.length > 0 ? (
+              <Text
+                style={[
+                  styles.meta,
+                  showPortraitThumb && styles.metaTabletPortrait,
+                  { color: theme.textSecondary },
+                ]}
+                numberOfLines={1}
+              >
+                {jobServices
+                  .map((s) => s.service?.name ?? s.customServiceName)
+                  .filter(Boolean)
+                  .join(", ")}
+              </Text>
+            ) : null}
+
+            <View style={styles.footer}>
+              {job.dropOffDate ? (
+                <Text
+                  style={[
+                    styles.date,
+                    showPortraitThumb && styles.metaTabletPortrait,
+                    { color: theme.textMuted },
+                  ]}
+                >
+                  {job.deliveryType === "COLLECTION_SERVICE" ? "Collection pickup" : "Drop-off"}:{" "}
+                  {formatDate(job.dropOffDate)}
+                </Text>
+              ) : null}
+              {job.pickupDate ? (
+                <Text
+                  style={[
+                    styles.date,
+                    showPortraitThumb && styles.metaTabletPortrait,
+                    { color: theme.textMuted },
+                  ]}
+                >
+                  {job.deliveryType === "COLLECTION_SERVICE" ? "Collection return" : "Pickup"}:{" "}
+                  {formatDate(job.pickupDate)}
+                </Text>
+              ) : null}
             </View>
-            <PaymentBadge status={job.paymentStatus} />
-          </View>
-
-          {job.customer ? (
-            <Text
-              style={[
-                styles.customerName,
-                showPortraitThumb && styles.customerNameTabletPortrait,
-                { color: theme.textTertiary },
-              ]}
-              numberOfLines={1}
-            >
-              {customerName(job.customer)}
-            </Text>
-          ) : null}
-
-          {job.stage !== "COMPLETED" && job.stage !== "CANCELLED" && (() => {
-            const hasWaitingBike = jobBikes.some(
-              (b) => b.waitingOnPartsAt && !b.completedAt && b.id !== job.workingOnJobBikeId
-            );
-            if (!hasWaitingBike) return null;
-            return (
-              <Text
-                style={[
-                  styles.waitingLabel,
-                  showPortraitThumb && styles.metaTabletPortrait,
-                ]}
-              >
-                <Ionicons name="time-outline" size={showPortraitThumb ? 13 : 11} /> Waiting on parts
-              </Text>
-            );
-          })()}
-
-          {jobBikes.length > 1 ? (
-            <Text
-              style={[
-                styles.meta,
-                showPortraitThumb && styles.metaTabletPortrait,
-                { color: theme.textSecondary },
-              ]}
-            >
-              {jobBikes.length} bikes
-            </Text>
-          ) : null}
-
-          {jobServices.length > 0 ? (
-            <Text
-              style={[
-                styles.meta,
-                showPortraitThumb && styles.metaTabletPortrait,
-                { color: theme.textSecondary },
-              ]}
-              numberOfLines={1}
-            >
-              {jobServices
-                .map((s) => s.service?.name ?? s.customServiceName)
-                .filter(Boolean)
-                .join(", ")}
-            </Text>
-          ) : null}
-
-          <View style={styles.footer}>
-            {job.dropOffDate ? (
-              <Text
-                style={[
-                  styles.date,
-                  showPortraitThumb && styles.metaTabletPortrait,
-                  { color: theme.textMuted },
-                ]}
-              >
-                {job.deliveryType === "COLLECTION_SERVICE" ? "Collection pickup" : "Drop-off"}:{" "}
-                {formatDate(job.dropOffDate)}
-              </Text>
-            ) : null}
-            {job.pickupDate ? (
-              <Text
-                style={[
-                  styles.date,
-                  showPortraitThumb && styles.metaTabletPortrait,
-                  { color: theme.textMuted },
-                ]}
-              >
-                {job.deliveryType === "COLLECTION_SERVICE" ? "Collection return" : "Pickup"}:{" "}
-                {formatDate(job.pickupDate)}
-              </Text>
-            ) : null}
           </View>
         </View>
-      </View>
 
-      {job.stage === "PENDING_APPROVAL" && (onAccept || onReject) ? (
-        <View style={[styles.actions, { borderTopColor: theme.surfaceBorderSubtle }]}>
-          {onAccept ? (
-            <TouchableOpacity
-              onPress={(e) => {
-                e.stopPropagation?.();
-                onAccept();
-              }}
-              style={styles.acceptButton}
-            >
-              <Text style={styles.acceptText}>Accept</Text>
-            </TouchableOpacity>
-          ) : null}
-          {onReject ? (
-            <TouchableOpacity
-              onPress={(e) => {
-                e.stopPropagation?.();
-                onReject();
-              }}
-              style={styles.rejectButton}
-            >
-              <Text style={styles.rejectText}>Reject</Text>
-            </TouchableOpacity>
-          ) : null}
-        </View>
-      ) : null}
-    </TouchableOpacity>
+        {job.stage === "PENDING_APPROVAL" && (onAccept || onReject) ? (
+          <View style={[styles.actions, { borderTopColor: theme.surfaceBorderSubtle }]}>
+            {onAccept ? (
+              <TouchableOpacity
+                onPress={(e) => {
+                  e.stopPropagation?.();
+                  onAccept();
+                }}
+                style={styles.acceptButton}
+              >
+                <Text style={styles.acceptText}>Accept</Text>
+              </TouchableOpacity>
+            ) : null}
+            {onReject ? (
+              <TouchableOpacity
+                onPress={(e) => {
+                  e.stopPropagation?.();
+                  onReject();
+                }}
+                style={styles.rejectButton}
+              >
+                <Text style={styles.rejectText}>Reject</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        ) : null}
+      </TouchableOpacity>
+
+      <ImageViewer uri={viewingImageUrl} onClose={() => setViewingImageUrl(null)} />
+    </>
   );
 }
 
@@ -207,22 +234,10 @@ const styles = StyleSheet.create({
   cardTabletPortrait: {
     padding: spacing[4],
   },
-  tabletRow: {
+  thumbRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing[4],
-  },
-  bikeThumb: {
-    width: 84,
-    height: 84,
-    borderRadius: borderRadius.xl,
-  },
-  bikeThumbPlaceholder: {
-    width: 84,
-    height: 84,
-    borderRadius: borderRadius.xl,
-    alignItems: "center",
-    justifyContent: "center",
+    gap: spacing[3],
   },
   cardBody: {
     flex: 1,

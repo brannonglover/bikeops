@@ -49,6 +49,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     bundleIdentifier: IS_DEV ? "com.brannonglover.bikeops.app.dev" : "com.brannonglover.bikeops.app",
     buildNumber,
     userInterfaceStyle: "automatic",
+    deploymentTarget: "16.0",
     associatedDomains: ["applinks:bikeops.co", "applinks:*.bikeops.co"],
     infoPlist: {
       UIBackgroundModes: ["remote-notification", "fetch", "processing"],
@@ -92,6 +93,16 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     "expo-secure-store",
     "expo-font",
     "expo-system-ui",
+    "expo-iap",
+    [
+      "expo-build-properties",
+      {
+        ios: {
+          deploymentTarget: "16.0",
+          buildReactNativeFromSource: true,
+        },
+      },
+    ],
     ["expo-notifications", { sounds: [], mode: IS_DEV ? "development" : "production" }],
     "./plugins/withDynamicVersioning",
     ["@stripe/stripe-terminal-react-native", {

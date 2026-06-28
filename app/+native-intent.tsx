@@ -36,6 +36,11 @@ export function redirectSystemPath({
       return `/(staff)/chat/${decodeURIComponent(openStaffChat[1])}${search}`;
     }
 
+    const signupVerify = pathname.match(/\/signup\/verify\/?$/);
+    if (signupVerify) {
+      return `/(auth)/signup/verify${search}`;
+    }
+
     const jobsMatch = pathname.match(/\/jobs\/([^/]+)$/);
     if (jobsMatch) {
       return `/(staff)/(jobs)/${decodeURIComponent(jobsMatch[1])}${search}`;
