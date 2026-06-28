@@ -55,6 +55,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       UIBackgroundModes: ["remote-notification", "fetch", "processing"],
       ITSAppUsesNonExemptEncryption: false,
       LSApplicationCategoryType: "public.app-category.utilities",
+      LSApplicationQueriesSchemes: ["googlegmail"],
       BGTaskSchedulerPermittedIdentifiers: [
         IS_DEV
           ? "com.brannonglover.bikeops.app.dev.notifications"

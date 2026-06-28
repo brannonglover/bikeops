@@ -91,6 +91,7 @@ export default function NewJobScreen() {
     setCustomerSearch("");
     setCustomers([]);
     setSelectedCustomer(c);
+    setSelectedCustomerBikeIds([]);
     setLoadingCustomer(true);
     try {
       const { data } = await api.get<Customer>(`/api/customers/${c.id}`);
@@ -110,7 +111,6 @@ export default function NewJobScreen() {
 
       setSelectedCustomer(data);
       if (data.bikes && data.bikes.length > 0) {
-        setSelectedCustomerBikeIds(data.bikes.map((b) => b.id));
         setManualBikes([]);
       }
     } catch {

@@ -45,6 +45,7 @@ import {
 import { AppleMaps } from "expo-maps";
 import * as Device from "expo-device";
 import { useJobBikeImageUpload } from "@/hooks/useJobBikeImageUpload";
+import { showEmailAppPicker } from "@/lib/open-email";
 
 type Tab = "overview" | "invoice" | "notes";
 
@@ -1796,7 +1797,7 @@ export default function JobDetailScreen() {
               <View style={styles.overviewCustomerBlock}>
                 <Text style={styles.overviewValue}>{customerName(job.customer)}</Text>
                 {job.customer.email ? (
-                  <TouchableOpacity onPress={() => Linking.openURL(`mailto:${job.customer!.email}`)}>
+                  <TouchableOpacity onPress={() => showEmailAppPicker(job.customer!.email!)}>
                     <Text style={[styles.overviewValue, { color: colors.emerald[500] }]}>
                       {job.customer.email}
                     </Text>
