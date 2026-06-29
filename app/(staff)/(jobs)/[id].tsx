@@ -79,6 +79,31 @@ function getJobBikeMetaParts(jb: JobBike): string[] {
   ].filter(Boolean) as string[];
 }
 
+type JobBikeStatus = "queued" | "working" | "waiting" | "done";
+
+const JOB_BIKE_STATUSES: JobBikeStatus[] = ["queued", "working", "waiting", "done"];
+
+const JOB_BIKE_STATUS_LABELS: Record<JobBikeStatus, string> = {
+  queued: "Queued",
+  working: "Working on",
+  waiting: "Waiting on parts",
+  done: "Done",
+};
+
+const JOB_BIKE_STATUS_COLORS: Record<JobBikeStatus, string> = {
+  queued: colors.slate[400],
+  working: colors.amber[600],
+  waiting: colors.red[500],
+  done: colors.emerald[600],
+};
+
+function getJobBikeStatus(jb: JobBike, workingOnJobBikeId: string | null): JobBikeStatus {
+  if (jb.completedAt) return "done";
+  if (workingOnJobBikeId === jb.id) return "working";
+  if (jb.waitingOnPartsAt) return "waiting";
+  return "queued";
+}
+
 /** Stages the PATCH API accepts (excludes CANCELLED — needs reason via cancel flow). */
 const PATCHABLE_STAGES: Stage[] = [
   "BOOKED_IN",
@@ -156,6 +181,43 @@ function getTileInfo(lat: number, lng: number, zoom: number) {
   };
 }
 
+function PulsingDot({ color }: { color: string }) {
+  const opacity = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    const animation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(opacity, {
+          toValue: 0.3,
+          duration: 800,
+          useNativeDriver: true,
+        }),
+        Animated.timing(opacity, {
+          toValue: 1,
+          duration: 800,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    animation.start();
+    return () => animation.stop();
+  }, [opacity]);
+
+  return (
+    <View style={{ width: 8, height: 8 }}>
+      <Animated.View
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: 4,
+          backgroundColor: color,
+          opacity,
+        }}
+      />
+    </View>
+  );
+}
+
 export default function JobDetailScreen() {
   const { theme } = useTheme();
   const layout = useResponsiveLayout();
@@ -163,6 +225,8 @@ export default function JobDetailScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [openStageMenu, setOpenStageMenu] = useState(false);
+  const [openBikeStatusMenuId, setOpenBikeStatusMenuId] = useState<string | null>(null);
+  const [savingBikeStatusId, setSavingBikeStatusId] = useState<string | null>(null);
   const [viewingImageUrl, setViewingImageUrl] = useState<string | null>(null);
   const [editAddress, setEditAddress] = useState<string | null>(null);
   const [addressCoords, setAddressCoords] = useState<{ lat: number; lng: number } | null>(null);
@@ -249,6 +313,70 @@ export default function JobDetailScreen() {
         stageOptionTextActive: {
           fontWeight: "600",
           color: theme.text,
+        },
+        doneBadge: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 3,
+          backgroundColor: theme.dark ? colors.emerald[800] : colors.emerald[200],
+          paddingHorizontal: spacing[1.5],
+          paddingVertical: 2,
+          borderRadius: borderRadius.md,
+        },
+        doneBadgeText: {
+          fontSize: 10,
+          fontWeight: "700",
+          color: theme.dark ? colors.emerald[300] : colors.emerald[700],
+          textTransform: "uppercase",
+          letterSpacing: 0.5,
+        },
+        workingOnBadge: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: spacing[1],
+          backgroundColor: theme.dark ? colors.amber[800] : colors.amber[200],
+          paddingHorizontal: spacing[1.5],
+          paddingVertical: 2,
+          borderRadius: borderRadius.md,
+        },
+        workingOnBadgeText: {
+          fontSize: 10,
+          fontWeight: "700",
+          color: theme.dark ? colors.amber[300] : colors.amber[700],
+          textTransform: "uppercase",
+          letterSpacing: 0.5,
+        },
+        waitingBadge: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 3,
+          backgroundColor: theme.dark ? colors.red[800] : colors.red[100],
+          paddingHorizontal: spacing[1.5],
+          paddingVertical: 2,
+          borderRadius: borderRadius.md,
+        },
+        waitingBadgeText: {
+          fontSize: 10,
+          fontWeight: "700",
+          color: theme.dark ? colors.red[300] : colors.red[700],
+          textTransform: "uppercase",
+          letterSpacing: 0.5,
+        },
+        queuedBadge: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 3,
+          backgroundColor: theme.dark ? colors.slate[700] : colors.slate[200],
+          paddingHorizontal: spacing[1.5],
+          paddingVertical: 2,
+          borderRadius: borderRadius.md,
+        },
+        queuedBadgeText: {
+          fontSize: 10,
+          fontWeight: "700",
+          color: theme.dark ? colors.slate[300] : colors.slate[600],
+          textTransform: "uppercase",
+          letterSpacing: 0.5,
         },
         bikeStatusSelector: {
           flexDirection: "row",
@@ -911,6 +1039,76 @@ export default function JobDetailScreen() {
     [job, patchJob]
   );
 
+  const handleBikeStatusChange = useCallback(
+    (bikeId: string, targetStatus: JobBikeStatus) => {
+      if (!job || savingBikeStatusId) return;
+      const jb = (job.jobBikes ?? []).find((b) => b.id === bikeId);
+      if (!jb) return;
+
+      const currentStatus = getJobBikeStatus(jb, job.workingOnJobBikeId);
+      if (currentStatus === targetStatus) {
+        setOpenBikeStatusMenuId(null);
+        return;
+      }
+
+      setSavingBikeStatusId(bikeId);
+      const patch: Record<string, unknown> = {};
+
+      switch (targetStatus) {
+        case "queued":
+          if (jb.completedAt) patch.uncompleteJobBikeId = bikeId;
+          if (jb.waitingOnPartsAt) patch.unwaitForPartsJobBikeId = bikeId;
+          if (job.workingOnJobBikeId === bikeId) patch.workingOnJobBikeId = null;
+          break;
+        case "working":
+          if (jb.completedAt) patch.uncompleteJobBikeId = bikeId;
+          if (jb.waitingOnPartsAt) patch.unwaitForPartsJobBikeId = bikeId;
+          patch.workingOnJobBikeId = bikeId;
+          if (
+            job.stage !== "WORKING_ON" &&
+            job.stage !== "CANCELLED" &&
+            job.stage !== "COMPLETED"
+          ) {
+            patch.stage = "WORKING_ON";
+            patch.notifyCustomer = false;
+          }
+          break;
+        case "waiting":
+          if (jb.completedAt) {
+            setSavingBikeStatusId(null);
+            return;
+          }
+          patch.waitForPartsJobBikeId = bikeId;
+          if (job.workingOnJobBikeId === bikeId) patch.workingOnJobBikeId = null;
+          break;
+        case "done":
+          patch.completeJobBikeId = bikeId;
+          {
+            const allCompletedAfter = (job.jobBikes ?? []).every(
+              (b) => !!b.completedAt || b.id === bikeId
+            );
+            if (allCompletedAfter) {
+              patch.stage = "BIKE_READY";
+              patch.workingOnJobBikeId = null;
+              patch.completedAt = null;
+            } else if (job.workingOnJobBikeId === bikeId) {
+              const nextActive = (job.jobBikes ?? []).find(
+                (b) => b.id !== bikeId && !b.completedAt
+              );
+              patch.workingOnJobBikeId = nextActive?.id ?? null;
+            }
+          }
+          break;
+      }
+
+      patchJob.mutate(patch as unknown as Partial<Job>, {
+        onSettled: () => setSavingBikeStatusId(null),
+      });
+      setOpenBikeStatusMenuId(null);
+    },
+    [job, savingBikeStatusId, patchJob]
+  );
+
   const openDatePicker = useCallback(
     (field: "dropOff" | "pickup") => {
       if (!job) return;
@@ -1139,6 +1337,10 @@ export default function JobDetailScreen() {
       setOpenStageMenu(false);
       return;
     }
+    if (openBikeStatusMenuId && activeTab === "overview") {
+      setOpenBikeStatusMenuId(null);
+      return;
+    }
 
     goBackToJobBoard();
   }, [
@@ -1149,6 +1351,7 @@ export default function JobDetailScreen() {
     viewingImageUrl,
     showActionMenu,
     openStageMenu,
+    openBikeStatusMenuId,
     closeActionMenu,
     goBackToJobBoard,
   ]);
@@ -1176,6 +1379,7 @@ export default function JobDetailScreen() {
   const heroMetaParts = primaryBike ? getJobBikeMetaParts(primaryBike) : [];
   const checkedInDate = job.dropOffDate ?? (job.stage === "RECEIVED" || job.stage === "WORKING_ON" ? job.createdAt : null);
   const canEditStage = job.stage !== "CANCELLED" && job.stage !== "COMPLETED";
+  const canEditBikeStatus = job.stage !== "CANCELLED" && job.stage !== "COMPLETED";
   const stageOptions = stageOptionsForJob(job);
 
   const renderHeroBikeImage = (
@@ -1228,7 +1432,10 @@ export default function JobDetailScreen() {
 
     return (
       <TouchableOpacity
-        onPress={() => setOpenStageMenu((open) => !open)}
+        onPress={() => {
+          setOpenBikeStatusMenuId(null);
+          setOpenStageMenu((open) => !open);
+        }}
         disabled={patchJob.isPending}
         style={[styles.bikeStatusSelector, patchJob.isPending && styles.buttonDisabled]}
         activeOpacity={0.7}
@@ -1268,6 +1475,100 @@ export default function JobDetailScreen() {
               ]}
             >
               {STAGE_LABELS[stage]}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+    );
+  };
+
+  const renderBikeStatusBadge = (status: JobBikeStatus, compact?: boolean) => {
+    switch (status) {
+      case "done":
+        return (
+          <View style={styles.doneBadge}>
+            <Ionicons name="checkmark" size={compact ? 9 : 10} color={colors.emerald[700]} />
+            <Text style={styles.doneBadgeText}>{JOB_BIKE_STATUS_LABELS.done}</Text>
+          </View>
+        );
+      case "waiting":
+        return (
+          <View style={styles.waitingBadge}>
+            <Ionicons name="time" size={compact ? 9 : 10} color={colors.red[700]} />
+            <Text style={styles.waitingBadgeText}>{JOB_BIKE_STATUS_LABELS.waiting}</Text>
+          </View>
+        );
+      case "working":
+        return (
+          <View style={styles.workingOnBadge}>
+            {!compact ? <PulsingDot color={colors.amber[600]} /> : null}
+            <Text style={styles.workingOnBadgeText}>{JOB_BIKE_STATUS_LABELS.working}</Text>
+          </View>
+        );
+      default:
+        return (
+          <View style={styles.queuedBadge}>
+            <Ionicons name="ellipse-outline" size={compact ? 9 : 10} color={theme.dark ? colors.slate[400] : colors.slate[500]} />
+            <Text style={styles.queuedBadgeText}>{JOB_BIKE_STATUS_LABELS.queued}</Text>
+          </View>
+        );
+    }
+  };
+
+  const renderBikeStatusBadgeControl = (jb: JobBike, compact = true) => {
+    const bikeStatus = getJobBikeStatus(jb, job.workingOnJobBikeId);
+    const isStatusMenuOpen = openBikeStatusMenuId === jb.id;
+    const isSavingStatus = savingBikeStatusId === jb.id;
+
+    if (!canEditBikeStatus) {
+      return renderBikeStatusBadge(bikeStatus, compact);
+    }
+
+    return (
+      <TouchableOpacity
+        onPress={() => {
+          setOpenStageMenu(false);
+          setOpenBikeStatusMenuId(isStatusMenuOpen ? null : jb.id);
+        }}
+        disabled={!!isSavingStatus}
+        style={[styles.bikeStatusSelector, isSavingStatus && styles.buttonDisabled]}
+        activeOpacity={0.7}
+        accessibilityRole="button"
+        accessibilityLabel="Change bike status"
+      >
+        {renderBikeStatusBadge(bikeStatus, compact)}
+        <Ionicons name="chevron-down" size={compact ? 12 : 14} color={theme.textMuted} />
+      </TouchableOpacity>
+    );
+  };
+
+  const renderBikeStatusMenu = (jb: JobBike) => {
+    if (!canEditBikeStatus || openBikeStatusMenuId !== jb.id) return null;
+
+    const bikeStatus = getJobBikeStatus(jb, job.workingOnJobBikeId);
+    const isSavingStatus = savingBikeStatusId === jb.id;
+
+    return (
+      <View style={styles.bikeStatusMenu}>
+        {JOB_BIKE_STATUSES.map((status) => (
+          <TouchableOpacity
+            key={status}
+            onPress={() => handleBikeStatusChange(jb.id, status)}
+            disabled={!!isSavingStatus}
+            style={[
+              styles.stageOption,
+              bikeStatus === status && styles.stageOptionActive,
+              isSavingStatus && styles.buttonDisabled,
+            ]}
+          >
+            <View style={[styles.stageDot, { backgroundColor: JOB_BIKE_STATUS_COLORS[status] }]} />
+            <Text
+              style={[
+                styles.stageOptionText,
+                bikeStatus === status && styles.stageOptionTextActive,
+              ]}
+            >
+              {JOB_BIKE_STATUS_LABELS[status]}
             </Text>
           </TouchableOpacity>
         ))}
@@ -1339,7 +1640,9 @@ export default function JobDetailScreen() {
                           <Text style={styles.heroModel} numberOfLines={2}>
                             {jb.model || jb.make}
                           </Text>
+                          {renderBikeStatusBadgeControl(jb)}
                         </View>
+                        {renderBikeStatusMenu(jb)}
                         {metaParts.length > 0 ? (
                           <Text style={styles.heroMeta} numberOfLines={1}>
                             {metaParts.join(HERO_META_SEPARATOR)}
@@ -1378,17 +1681,21 @@ export default function JobDetailScreen() {
                     <Text style={styles.heroModel} numberOfLines={2}>
                       {heroModel || getJobBikeDisplayTitle(job)}
                     </Text>
-                    {renderStageSelector()}
+                    {primaryBike ? renderBikeStatusBadgeControl(primaryBike) : null}
                   </View>
-                  {renderStageMenu()}
+                  {primaryBike ? renderBikeStatusMenu(primaryBike) : null}
                 </View>
-                {job.stage === "PENDING_APPROVAL" ? (
-                  <View style={styles.priorityBadge}>
-                    <Ionicons name="notifications" size={12} color={theme.dark ? colors.amber[300] : colors.amber[800]} />
-                    <Text style={styles.priorityBadgeText}>Priority</Text>
-                  </View>
-                ) : null}
+                <View style={{ flexDirection: "row", alignItems: "center", gap: spacing[2], flexShrink: 0 }}>
+                  {renderStageSelector()}
+                  {job.stage === "PENDING_APPROVAL" ? (
+                    <View style={styles.priorityBadge}>
+                      <Ionicons name="notifications" size={12} color={theme.dark ? colors.amber[300] : colors.amber[800]} />
+                      <Text style={styles.priorityBadgeText}>Priority</Text>
+                    </View>
+                  ) : null}
+                </View>
               </View>
+              {renderStageMenu()}
               <View style={styles.heroMetaRow}>
                 {heroMetaParts.length > 0 ? (
                   <Text style={styles.heroMeta} numberOfLines={1}>
@@ -1409,6 +1716,7 @@ export default function JobDetailScreen() {
             style={[styles.tab, activeTab === "overview" && styles.tabActive]}
             onPress={() => {
               setOpenStageMenu(false);
+              setOpenBikeStatusMenuId(null);
               setActiveTab("overview");
             }}
             activeOpacity={0.7}
@@ -1421,6 +1729,7 @@ export default function JobDetailScreen() {
             style={[styles.tab, activeTab === "invoice" && styles.tabActive]}
             onPress={() => {
               setOpenStageMenu(false);
+              setOpenBikeStatusMenuId(null);
               setActiveTab("invoice");
             }}
             activeOpacity={0.7}
@@ -1433,6 +1742,7 @@ export default function JobDetailScreen() {
             style={[styles.tab, activeTab === "notes" && styles.tabActive]}
             onPress={() => {
               setOpenStageMenu(false);
+              setOpenBikeStatusMenuId(null);
               setActiveTab("notes");
             }}
             activeOpacity={0.7}

@@ -94,7 +94,9 @@ export function getJobBikeDisplayTitle(job: Job): string {
   );
 
   if (rows.length === 0) {
-    if (job.bikeMake === "Multiple") return (job.bikeModel ?? "").trim() || "Multiple";
+    if (job.bikeMake === "Multiple") {
+      return `Multiple - ${job.bikeModel}`.trim();
+    }
     const leg = resolveLegacyJobMakeModel(job);
     return formatMakeModel(leg.make, leg.model);
   }
@@ -102,8 +104,7 @@ export function getJobBikeDisplayTitle(job: Job): string {
     const dp = resolveJobBikeMakeModel(job, rows[0]);
     return formatMakeModel(dp.make, dp.model);
   }
-  if (job.bikeMake === "Multiple") return (job.bikeModel ?? "").trim() || "Multiple";
-  return formatMakeModel(job.bikeMake, job.bikeModel);
+  return `Multiple - ${rows.length} bikes`;
 }
 
 /** First bike on the job by sort order (primary hero/card bike). */
