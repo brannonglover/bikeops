@@ -6,6 +6,7 @@ export const BOARD_STAGE_FLOW: Stage[] = [
   "BOOKED_IN",
   "RECEIVED",
   "WORKING_ON",
+  "WAITING_ON_CUSTOMER",
   "WAITING_ON_PARTS",
   "BIKE_READY",
   "COMPLETED",

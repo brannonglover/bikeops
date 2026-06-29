@@ -35,6 +35,7 @@ const WEB_STAGE_HEADER_COLORS: Record<Stage, string> = {
   BOOKED_IN: colors.slate[500],
   RECEIVED: colors.slate[600],
   WORKING_ON: colors.amber[500],
+  WAITING_ON_CUSTOMER: "#8b5cf6",
   WAITING_ON_PARTS: colors.amber[400],
   BIKE_READY: colors.emerald[500],
   COMPLETED: "#6366f1",

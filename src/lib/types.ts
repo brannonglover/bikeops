@@ -3,6 +3,7 @@ export type Stage =
   | "BOOKED_IN"
   | "RECEIVED"
   | "WORKING_ON"
+  | "WAITING_ON_CUSTOMER"
   | "WAITING_ON_PARTS"
   | "BIKE_READY"
   | "COMPLETED"
@@ -232,6 +233,7 @@ export const STAGE_LABELS: Record<Stage, string> = {
   BOOKED_IN: "Booked In",
   RECEIVED: "Received",
   WORKING_ON: "Working On",
+  WAITING_ON_CUSTOMER: "Waiting on Customer",
   WAITING_ON_PARTS: "Waiting on Parts",
   BIKE_READY: "Bike Ready",
   COMPLETED: "Completed",
@@ -243,6 +245,7 @@ export const STAGE_COLORS: Record<Stage, string> = {
   BOOKED_IN: "#3b82f6",
   RECEIVED: "#8b5cf6",
   WORKING_ON: "#f97316",
+  WAITING_ON_CUSTOMER: "#8b5cf6",
   WAITING_ON_PARTS: "#ef4444",
   BIKE_READY: "#10b981",
   COMPLETED: "#6b7280",
@@ -254,6 +257,7 @@ export const STAGES: Stage[] = [
   "BOOKED_IN",
   "RECEIVED",
   "WORKING_ON",
+  "WAITING_ON_CUSTOMER",
   "WAITING_ON_PARTS",
   "BIKE_READY",
   "COMPLETED",
