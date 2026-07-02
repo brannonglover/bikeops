@@ -30,6 +30,14 @@ const COLUMN_STAGES = DISPLAY_STAGES.filter(
   (stage) => stage !== "PENDING_APPROVAL"
 );
 
+// When the bike was received/checked in. Falls back to job creation time when
+// no drop-off date is recorded. Used to sort the Received column oldest-first.
+function receivedTime(job: Job): number {
+  const value = job.dropOffDate ?? job.createdAt;
+  const time = value ? new Date(value).getTime() : NaN;
+  return Number.isNaN(time) ? Number.POSITIVE_INFINITY : time;
+}
+
 const WEB_STAGE_HEADER_COLORS: Record<Stage, string> = {
   PENDING_APPROVAL: colors.amber[600],
   BOOKED_IN: colors.slate[500],
@@ -199,10 +207,17 @@ export default function JobBoardScreen() {
 
   const jobsByStage = useMemo(
     () =>
-      DISPLAY_STAGES.reduce(
-        (acc, stage) => ({ ...acc, [stage]: jobs.filter((j) => j.stage === stage) }),
-        {} as Record<Stage, Job[]>
-      ),
+      DISPLAY_STAGES.reduce((acc, stage) => {
+        const stageJobs = jobs.filter((j) => j.stage === stage);
+        // Order the Received column first-come, first-served (oldest intake first)
+        // so staff can service bikes in the order they arrived.
+        if (stage === "RECEIVED") {
+          stageJobs.sort(
+            (a, b) => receivedTime(a) - receivedTime(b)
+          );
+        }
+        return { ...acc, [stage]: stageJobs };
+      }, {} as Record<Stage, Job[]>),
     [jobs]
   );
 
