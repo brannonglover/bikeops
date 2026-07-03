@@ -5,6 +5,7 @@ import React, {
   useEffect,
   useCallback,
 } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   staffLogin as apiStaffLogin,
   staffLogout as apiStaffLogout,
@@ -45,6 +46,7 @@ interface AuthState {
 const AuthContext = createContext<AuthState | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const queryClient = useQueryClient();
   const [role, setRole] = useState<AuthRole>(null);
   const [staffUser, setStaffUser] = useState<StaffUser | null>(null);
   const [loading, setLoading] = useState(true);
@@ -93,6 +95,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     async (email: string, password: string, shopSubdomain: string) => {
       const result = await apiStaffLogin(email, password, shopSubdomain);
       if (result.ok) {
+        // Drop any previous tenant's cached data before showing this shop, so a
+        // different bike shop's content can never flash on screen after login.
+        queryClient.clear();
         const user = result.user ?? { id: "", email, name: "" };
         const session = { user };
         await cacheStaffSession(session);
@@ -102,32 +107,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       return result;
     },
-    []
+    [queryClient]
   );
 
   const staffLogout = useCallback(async () => {
     await unregisterPushToken("staff");
     await apiStaffLogout();
+    queryClient.clear();
     setRole(null);
     setStaffUser(null);
-  }, []);
+  }, [queryClient]);
 
   const customerLogin = useCallback(async () => {
+    queryClient.clear();
     await persistCustomerRole();
     setRole("customer");
-  }, []);
+  }, [queryClient]);
 
   const setCustomerAuthenticated = useCallback(async () => {
+    queryClient.clear();
     await persistCustomerRole();
     setRole("customer");
-  }, []);
+  }, [queryClient]);
 
   const customerLogout = useCallback(async () => {
     await unregisterPushToken("customer");
     await apiCustomerLogout();
+    queryClient.clear();
     await clearCustomerRole();
     setRole(null);
-  }, []);
+  }, [queryClient]);
 
   return (
     <AuthContext.Provider

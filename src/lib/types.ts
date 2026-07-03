@@ -214,6 +214,30 @@ export interface Stats {
   topServices: { name: string; count: number; revenue: number }[];
 }
 
+export type WaitlistStatus = "WAITING" | "PROMOTED" | "CANCELLED";
+
+export interface WaitlistBike {
+  id: string;
+  make: string;
+  model: string | null;
+  bikeType: BikeType | null;
+}
+
+export interface WaitlistEntry {
+  id: string;
+  status: WaitlistStatus;
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string;
+  address: string | null;
+  deliveryType: DeliveryType;
+  customerNotes: string | null;
+  createdAt: string;
+  bikes: WaitlistBike[];
+  serviceNames: string[];
+}
+
 export interface EmailTemplate {
   id: string;
   slug: string;

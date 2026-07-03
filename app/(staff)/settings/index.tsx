@@ -101,6 +101,40 @@ export default function SettingsScreen() {
         </View>
       </Card>
 
+      <TouchableOpacity onPress={() => router.push("/(staff)/settings/subscription")}>
+        <Card
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: spacing[3],
+            backgroundColor: theme.surface,
+            borderColor: theme.surfaceBorder,
+          }}
+        >
+          <View
+            style={{
+              width: 40,
+              height: 40,
+              borderRadius: 20,
+              backgroundColor: colors.amber[500] + "22",
+              justifyContent: "center",
+              alignItems: "center",
+            }}
+          >
+            <Ionicons name="card-outline" size={22} color={colors.amber[600]} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={{ ...fontSize.base, fontWeight: "600", color: theme.text }}>
+              Subscription
+            </Text>
+            <Text style={{ ...fontSize.sm, color: theme.textSecondary }}>
+              View your plan or subscribe
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color={theme.textMuted} />
+        </Card>
+      </TouchableOpacity>
+
       <TouchableOpacity
         onPress={handleLogout}
         style={{

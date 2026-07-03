@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, StyleSheet, Platform, Alert } from "react-native";
+import { View, Text, StyleSheet, Platform, Alert, Linking, TouchableOpacity } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import type { Purchase, ProductSubscription } from "expo-iap";
@@ -18,6 +18,9 @@ import {
   purchaseSubscription,
   subscribeToPurchaseEvents,
 } from "@/lib/iap";
+
+const TERMS_URL = "https://bikeops.co/terms";
+const PRIVACY_URL = "https://bikeops.co/privacy";
 
 export default function SignupSubscribeScreen() {
   const { theme } = useTheme();
@@ -195,6 +198,22 @@ export default function SignupSubscribeScreen() {
           marginTop: spacing[4],
           lineHeight: 16,
         },
+        legalRow: {
+          flexDirection: "row",
+          justifyContent: "center",
+          alignItems: "center",
+          gap: spacing[2],
+          marginTop: spacing[5],
+        },
+        legalLink: {
+          ...fontSize.xs,
+          color: theme.textSecondary,
+          textDecorationLine: "underline",
+        },
+        legalDivider: {
+          ...fontSize.xs,
+          color: theme.textMuted,
+        },
       }),
     [theme]
   );
@@ -272,6 +291,16 @@ export default function SignupSubscribeScreen() {
           Payment will be charged to your Apple ID account. Subscription automatically
           renews unless cancelled at least 24 hours before the end of the current period.
         </Text>
+      </View>
+
+      <View style={styles.legalRow}>
+        <TouchableOpacity onPress={() => Linking.openURL(TERMS_URL)}>
+          <Text style={styles.legalLink}>Terms of Service</Text>
+        </TouchableOpacity>
+        <Text style={styles.legalDivider}>·</Text>
+        <TouchableOpacity onPress={() => Linking.openURL(PRIVACY_URL)}>
+          <Text style={styles.legalLink}>Privacy Policy</Text>
+        </TouchableOpacity>
       </View>
     </View>
   );

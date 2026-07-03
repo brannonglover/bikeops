@@ -108,6 +108,13 @@ function StaffTabs() {
         }}
       />
       <Tabs.Screen
+        name="waitlist"
+        options={{
+          href: null,
+          headerShown: false,
+        }}
+      />
+      <Tabs.Screen
         name="stats"
         options={{
           href: null,

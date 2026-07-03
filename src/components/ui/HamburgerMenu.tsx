@@ -15,6 +15,11 @@ import { useTheme } from "@/lib/ThemeContext";
 
 const MENU_ITEMS = [
   {
+    label: "Waitlist",
+    icon: "hourglass" as const,
+    href: "/(staff)/waitlist",
+  },
+  {
     label: "Products",
     icon: "cube" as const,
     href: "/(staff)/settings/products",

@@ -49,7 +49,6 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     bundleIdentifier: IS_DEV ? "com.brannonglover.bikeops.app.dev" : "com.brannonglover.bikeops.app",
     buildNumber,
     userInterfaceStyle: "automatic",
-    deploymentTarget: "16.0",
     associatedDomains: ["applinks:bikeops.co", "applinks:*.bikeops.co"],
     infoPlist: {
       UIBackgroundModes: ["remote-notification", "fetch", "processing"],

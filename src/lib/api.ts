@@ -305,6 +305,29 @@ export const api = {
     }),
 };
 
+export interface StaffBillingStatus {
+  shopId: string;
+  status: string;
+  trialEndsAt: string | null;
+  currentPeriodEnd: string | null;
+  cancelAtPeriodEnd: boolean;
+  hasStripeCustomer: boolean;
+  hasSubscription: boolean;
+  billingProvider: string | null;
+  hasAppleSubscription: boolean;
+  appleCurrentPeriodEnd: string | null;
+  billingExempt: boolean;
+  billingActive: boolean;
+  monthlyPrice: number;
+}
+
+export async function getStaffBillingStatus(): Promise<StaffBillingStatus> {
+  const { data } = await api.get<StaffBillingStatus>("/api/billing/status", {
+    role: "staff",
+  });
+  return data;
+}
+
 export async function persistCustomerRole(): Promise<void> {
   await storeCookie(CUSTOMER_ROLE_KEY, "true");
 }
@@ -371,6 +394,13 @@ export async function staffLogin(
 export async function staffLogout(): Promise<void> {
   await clearCookie(STAFF_COOKIE_KEY);
   await clearCachedStaffSession();
+  await clearStaffApiUrl();
+}
+
+async function clearStaffApiUrl(): Promise<void> {
+  staffApiUrlMemCache = undefined;
+  await clearCookie(STAFF_API_URL_KEY);
+  await clearCookie(STAFF_SHOP_SUBDOMAIN_KEY);
 }
 
 export async function customerLogout(): Promise<void> {
