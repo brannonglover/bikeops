@@ -16,6 +16,31 @@ function boardStageIndex(stage: Stage): number {
   return BOARD_STAGE_FLOW.indexOf(stage);
 }
 
+/** Drop working-on when it points at a missing or completed bike. */
+export function sanitizeWorkingOnJobBikeId(
+  workingOnJobBikeId: string | null | undefined,
+  jobBikes: JobBike[] | undefined
+): string | null {
+  if (!workingOnJobBikeId) return null;
+  const bike = jobBikes?.find((b) => b.id === workingOnJobBikeId);
+  if (!bike || bike.completedAt) return null;
+  return workingOnJobBikeId;
+}
+
+function finalizeJobBoardState(job: Job): Job {
+  if (job.stage === "BIKE_READY" || job.stage === "COMPLETED") {
+    if (job.workingOnJobBikeId == null) return job;
+    return { ...job, workingOnJobBikeId: null };
+  }
+
+  const workingOnJobBikeId = sanitizeWorkingOnJobBikeId(
+    job.workingOnJobBikeId,
+    job.jobBikes
+  );
+  if (workingOnJobBikeId === job.workingOnJobBikeId) return job;
+  return { ...job, workingOnJobBikeId };
+}
+
 function mergeForwardJobBikes(
   liveBikes: JobBike[] | undefined,
   incomingBikes: JobBike[] | undefined,
@@ -49,35 +74,48 @@ function mergeForwardJobBikes(
 }
 
 /** Prefer live working-on selection when a stale GET omitted or regressed it. */
-function mergeWorkingOnJobBikeId(live: Job, incoming: Job): string | null {
+function mergeWorkingOnJobBikeId(
+  live: Job,
+  incoming: Job,
+  jobBikes: JobBike[] | undefined
+): string | null {
+  const bikes = jobBikes ?? incoming.jobBikes ?? live.jobBikes;
+
   if (live.workingOnJobBikeId === incoming.workingOnJobBikeId) {
-    return incoming.workingOnJobBikeId;
+    return sanitizeWorkingOnJobBikeId(incoming.workingOnJobBikeId, bikes);
   }
   if (live.workingOnJobBikeId != null && incoming.workingOnJobBikeId == null) {
-    return live.workingOnJobBikeId;
+    return sanitizeWorkingOnJobBikeId(live.workingOnJobBikeId, bikes);
   }
   if (live.workingOnJobBikeId != null && incoming.workingOnJobBikeId != null) {
-    return live.workingOnJobBikeId;
+    const liveSanitized = sanitizeWorkingOnJobBikeId(live.workingOnJobBikeId, bikes);
+    if (liveSanitized != null) return liveSanitized;
+    return sanitizeWorkingOnJobBikeId(incoming.workingOnJobBikeId, bikes);
   }
-  return incoming.workingOnJobBikeId;
+  return sanitizeWorkingOnJobBikeId(incoming.workingOnJobBikeId, bikes);
 }
 
 function mergeSameStageJob(live: Job, incoming: Job): Job {
-  const workingOnJobBikeId = mergeWorkingOnJobBikeId(live, incoming);
-  const jobBikes = mergeForwardJobBikes(live.jobBikes, incoming.jobBikes, workingOnJobBikeId);
+  const preliminaryWorkingOn = live.workingOnJobBikeId ?? incoming.workingOnJobBikeId;
+  const jobBikes = mergeForwardJobBikes(
+    live.jobBikes,
+    incoming.jobBikes,
+    preliminaryWorkingOn
+  );
+  const workingOnJobBikeId = mergeWorkingOnJobBikeId(live, incoming, jobBikes);
 
   if (
     workingOnJobBikeId === incoming.workingOnJobBikeId &&
     jobBikes === incoming.jobBikes
   ) {
-    return incoming;
+    return finalizeJobBoardState(incoming);
   }
 
-  return {
+  return finalizeJobBoardState({
     ...incoming,
     workingOnJobBikeId,
     ...(jobBikes ? { jobBikes } : {}),
-  };
+  });
 }
 
 /**
@@ -92,17 +130,22 @@ export function keepForwardBoardStage(live: Job, incoming: Job): Job {
   const liveIdx = boardStageIndex(live.stage);
   const incomingIdx = boardStageIndex(incoming.stage);
   if (liveIdx === -1 || incomingIdx === -1 || liveIdx <= incomingIdx) {
-    return incoming;
+    return finalizeJobBoardState(incoming);
   }
 
-  const workingOnJobBikeId = mergeWorkingOnJobBikeId(live, incoming);
-  const jobBikes = mergeForwardJobBikes(live.jobBikes, incoming.jobBikes, workingOnJobBikeId);
+  const preliminaryWorkingOn = live.workingOnJobBikeId ?? incoming.workingOnJobBikeId;
+  const jobBikes = mergeForwardJobBikes(
+    live.jobBikes,
+    incoming.jobBikes,
+    preliminaryWorkingOn
+  );
+  const workingOnJobBikeId = mergeWorkingOnJobBikeId(live, incoming, jobBikes);
 
-  return {
+  return finalizeJobBoardState({
     ...incoming,
     stage: live.stage,
     completedAt: live.completedAt ?? incoming.completedAt,
     workingOnJobBikeId,
     ...(jobBikes ? { jobBikes } : {}),
-  };
+  });
 }

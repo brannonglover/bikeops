@@ -34,7 +34,7 @@ import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { ImageViewer } from "@/components/ui/ImageViewer";
 import { InvoiceTab } from "@/components/jobs/InvoiceTab";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
-import { keepForwardBoardStage } from "@/lib/board-stage-merge";
+import { keepForwardBoardStage, sanitizeWorkingOnJobBikeId } from "@/lib/board-stage-merge";
 import { syncJobToCaches } from "@/lib/job-cache-sync";
 import {
   customerName,
@@ -97,8 +97,18 @@ const JOB_BIKE_STATUS_COLORS: Record<JobBikeStatus, string> = {
   done: colors.emerald[600],
 };
 
-function getJobBikeStatus(jb: JobBike, workingOnJobBikeId: string | null): JobBikeStatus {
+function getEffectiveWorkingOnJobBikeId(job: Job): string | null {
+  if (job.stage === "BIKE_READY" || job.stage === "COMPLETED") return null;
+  return sanitizeWorkingOnJobBikeId(job.workingOnJobBikeId, job.jobBikes);
+}
+
+function getJobBikeStatus(jb: JobBike, job: Job): JobBikeStatus {
   if (jb.completedAt) return "done";
+  if (job.stage === "BIKE_READY" || job.stage === "COMPLETED") {
+    if (jb.waitingOnPartsAt) return "waiting";
+    return "queued";
+  }
+  const workingOnJobBikeId = getEffectiveWorkingOnJobBikeId(job);
   if (workingOnJobBikeId === jb.id) return "working";
   if (jb.waitingOnPartsAt) return "waiting";
   return "queued";
@@ -160,6 +170,15 @@ function applyJobPatchOptimistically(job: Job, patch: JobPatchBody): Job {
       jb.id === patch.unwaitForPartsJobBikeId
         ? { ...jb, waitingOnPartsAt: null }
         : jb
+    );
+  }
+
+  if (next.stage === "BIKE_READY" || next.stage === "COMPLETED") {
+    next.workingOnJobBikeId = null;
+  } else {
+    next.workingOnJobBikeId = sanitizeWorkingOnJobBikeId(
+      next.workingOnJobBikeId,
+      next.jobBikes
     );
   }
 
@@ -918,6 +937,13 @@ export default function JobDetailScreen() {
           (job.jobBikes ?? []).find((jb) => jb.id === job.workingOnJobBikeId) ??
           (job.jobBikes ?? []).find((jb) => !jb.completedAt);
         if (targetBike) patch.waitForPartsJobBikeId = targetBike.id;
+        patch.workingOnJobBikeId = null;
+      } else if (
+        stage === "BIKE_READY" ||
+        stage === "COMPLETED" ||
+        stage === "CANCELLED"
+      ) {
+        patch.workingOnJobBikeId = null;
       }
 
       patchJob.mutate(patch as unknown as Partial<Job>);
@@ -1045,7 +1071,7 @@ export default function JobDetailScreen() {
       const jb = (job.jobBikes ?? []).find((b) => b.id === bikeId);
       if (!jb) return;
 
-      const currentStatus = getJobBikeStatus(jb, job.workingOnJobBikeId);
+      const currentStatus = getJobBikeStatus(jb, job);
       if (currentStatus === targetStatus) {
         setOpenBikeStatusMenuId(null);
         return;
@@ -1053,12 +1079,13 @@ export default function JobDetailScreen() {
 
       setSavingBikeStatusId(bikeId);
       const patch: Record<string, unknown> = {};
+      const effectiveWorkingOn = getEffectiveWorkingOnJobBikeId(job);
 
       switch (targetStatus) {
         case "queued":
           if (jb.completedAt) patch.uncompleteJobBikeId = bikeId;
           if (jb.waitingOnPartsAt) patch.unwaitForPartsJobBikeId = bikeId;
-          if (job.workingOnJobBikeId === bikeId) patch.workingOnJobBikeId = null;
+          if (effectiveWorkingOn === bikeId) patch.workingOnJobBikeId = null;
           break;
         case "working":
           if (jb.completedAt) patch.uncompleteJobBikeId = bikeId;
@@ -1079,21 +1106,30 @@ export default function JobDetailScreen() {
             return;
           }
           patch.waitForPartsJobBikeId = bikeId;
-          if (job.workingOnJobBikeId === bikeId) patch.workingOnJobBikeId = null;
+          if (effectiveWorkingOn === bikeId) patch.workingOnJobBikeId = null;
           break;
         case "done":
           patch.completeJobBikeId = bikeId;
           {
-            const allCompletedAfter = (job.jobBikes ?? []).every(
-              (b) => !!b.completedAt || b.id === bikeId
+            const completedAfterIds = new Set(
+              (job.jobBikes ?? [])
+                .filter((b) => !!b.completedAt || b.id === bikeId)
+                .map((b) => b.id)
+            );
+            const allCompletedAfter = (job.jobBikes ?? []).every((b) =>
+              completedAfterIds.has(b.id)
             );
             if (allCompletedAfter) {
               patch.stage = "BIKE_READY";
               patch.workingOnJobBikeId = null;
               patch.completedAt = null;
-            } else if (job.workingOnJobBikeId === bikeId) {
+            } else if (
+              effectiveWorkingOn === bikeId ||
+              (job.workingOnJobBikeId != null &&
+                completedAfterIds.has(job.workingOnJobBikeId))
+            ) {
               const nextActive = (job.jobBikes ?? []).find(
-                (b) => b.id !== bikeId && !b.completedAt
+                (b) => !completedAfterIds.has(b.id)
               );
               patch.workingOnJobBikeId = nextActive?.id ?? null;
             }
@@ -1516,7 +1552,7 @@ export default function JobDetailScreen() {
   };
 
   const renderBikeStatusBadgeControl = (jb: JobBike, compact = true) => {
-    const bikeStatus = getJobBikeStatus(jb, job.workingOnJobBikeId);
+    const bikeStatus = getJobBikeStatus(jb, job);
     const isStatusMenuOpen = openBikeStatusMenuId === jb.id;
     const isSavingStatus = savingBikeStatusId === jb.id;
 
@@ -1545,7 +1581,7 @@ export default function JobDetailScreen() {
   const renderBikeStatusMenu = (jb: JobBike) => {
     if (!canEditBikeStatus || openBikeStatusMenuId !== jb.id) return null;
 
-    const bikeStatus = getJobBikeStatus(jb, job.workingOnJobBikeId);
+    const bikeStatus = getJobBikeStatus(jb, job);
     const isSavingStatus = savingBikeStatusId === jb.id;
 
     return (

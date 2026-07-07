@@ -122,6 +122,9 @@ export default function JobBoardScreen() {
       const apply = (j: Job): Job => ({
         ...j,
         stage,
+        ...(stage === "BIKE_READY" || stage === "COMPLETED"
+          ? { workingOnJobBikeId: null }
+          : {}),
         ...(typeof notifyCustomer === "boolean" ? { notifyCustomer } : {}),
         ...(typeof completedAt !== "undefined" ? { completedAt } : {}),
       });

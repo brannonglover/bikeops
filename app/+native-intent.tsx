@@ -48,7 +48,13 @@ export function redirectSystemPath({
 
     const openLogin = pathname.match(/\/open\/login\/?$/);
     if (openLogin) {
-      return `/(customer)/chat${search}`;
+      return `/(customer)/${search}`;
+    }
+
+    // bikeops://login#token=… from the /open/login email bridge page
+    const schemeLogin = pathname.match(/^\/login\/?$/);
+    if (schemeLogin) {
+      return `/(customer)/${search}`;
     }
 
     const jobsMatch = pathname.match(/\/jobs\/([^/]+)$/);

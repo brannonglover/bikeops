@@ -46,10 +46,15 @@ function MagicLinkHandler() {
         return;
       }
 
+      const destination =
+        url.includes("/chat/c") || /chat\/c/i.test(url)
+          ? "/(customer)/chat"
+          : "/(customer)/";
+
       api
         .post("/api/chat/verify", { token }, { role: "customer" })
         .then(() => setCustomerAuthenticated())
-        .then(() => router.replace("/(customer)/chat"))
+        .then(() => router.replace(destination))
         .catch(() => Alert.alert("Error", "Invalid or expired link. Please try again."));
     };
 
