@@ -58,12 +58,13 @@ function mergeForwardJobBikes(
     if (liveBike.completedAt && !incomingBike.completedAt) {
       next = { ...next, completedAt: liveBike.completedAt, waitingOnPartsAt: null };
       changed = true;
-    } else if (
-      liveBike.id === workingOnJobBikeId &&
-      !liveBike.waitingOnPartsAt &&
-      incomingBike.waitingOnPartsAt
-    ) {
+    } else if (!liveBike.waitingOnPartsAt && incomingBike.waitingOnPartsAt) {
+      // Optimistic resume-work cleared waiting before the PATCH response landed.
       next = { ...next, waitingOnPartsAt: null };
+      changed = true;
+    } else if (liveBike.waitingOnPartsAt && !incomingBike.waitingOnPartsAt) {
+      // Optimistic wait-for-parts ahead of a stale GET.
+      next = { ...next, waitingOnPartsAt: liveBike.waitingOnPartsAt };
       changed = true;
     }
 
@@ -95,6 +96,27 @@ function mergeWorkingOnJobBikeId(
   return sanitizeWorkingOnJobBikeId(incoming.workingOnJobBikeId, bikes);
 }
 
+function mergeJobBikeState(
+  live: Job,
+  incoming: Job,
+  overrides: Partial<Job> = {}
+): Job {
+  const preliminaryWorkingOn = live.workingOnJobBikeId ?? incoming.workingOnJobBikeId;
+  const jobBikes = mergeForwardJobBikes(
+    live.jobBikes,
+    incoming.jobBikes,
+    preliminaryWorkingOn
+  );
+  const workingOnJobBikeId = mergeWorkingOnJobBikeId(live, incoming, jobBikes);
+
+  return finalizeJobBoardState({
+    ...incoming,
+    ...overrides,
+    workingOnJobBikeId,
+    ...(jobBikes ? { jobBikes } : {}),
+  });
+}
+
 function mergeSameStageJob(live: Job, incoming: Job): Job {
   const preliminaryWorkingOn = live.workingOnJobBikeId ?? incoming.workingOnJobBikeId;
   const jobBikes = mergeForwardJobBikes(
@@ -111,11 +133,7 @@ function mergeSameStageJob(live: Job, incoming: Job): Job {
     return finalizeJobBoardState(incoming);
   }
 
-  return finalizeJobBoardState({
-    ...incoming,
-    workingOnJobBikeId,
-    ...(jobBikes ? { jobBikes } : {}),
-  });
+  return mergeJobBikeState(live, incoming);
 }
 
 /**
@@ -130,22 +148,19 @@ export function keepForwardBoardStage(live: Job, incoming: Job): Job {
   const liveIdx = boardStageIndex(live.stage);
   const incomingIdx = boardStageIndex(incoming.stage);
   if (liveIdx === -1 || incomingIdx === -1 || liveIdx <= incomingIdx) {
-    return finalizeJobBoardState(incoming);
+    const preliminaryWorkingOn = live.workingOnJobBikeId ?? incoming.workingOnJobBikeId;
+    const resumedWork =
+      live.stage === "WORKING_ON" &&
+      incoming.stage === "WAITING_ON_PARTS" &&
+      preliminaryWorkingOn != null;
+
+    return mergeJobBikeState(live, incoming, {
+      stage: resumedWork ? live.stage : incoming.stage,
+    });
   }
 
-  const preliminaryWorkingOn = live.workingOnJobBikeId ?? incoming.workingOnJobBikeId;
-  const jobBikes = mergeForwardJobBikes(
-    live.jobBikes,
-    incoming.jobBikes,
-    preliminaryWorkingOn
-  );
-  const workingOnJobBikeId = mergeWorkingOnJobBikeId(live, incoming, jobBikes);
-
-  return finalizeJobBoardState({
-    ...incoming,
+  return mergeJobBikeState(live, incoming, {
     stage: live.stage,
     completedAt: live.completedAt ?? incoming.completedAt,
-    workingOnJobBikeId,
-    ...(jobBikes ? { jobBikes } : {}),
   });
 }
