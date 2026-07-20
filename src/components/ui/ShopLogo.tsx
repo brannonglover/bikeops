@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Image, StyleSheet, type ImageSourcePropType } from "react-native";
 import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 
 const defaultLogo = require("../../../assets/splash-icon.png");
 
@@ -18,13 +19,17 @@ function resolveBrandingLogoUrl(logoUrl: string | null | undefined, responseUrl:
 }
 
 export function ShopLogo() {
+  const { role, loading } = useAuth();
   const [source, setSource] = useState<ImageSourcePropType>(defaultLogo);
 
   useEffect(() => {
+    if (loading || !role) return;
+
     let cancelled = false;
+    const apiRole = role === "customer" ? "customer" : "staff";
 
     api
-      .get<BrandingResponse>("/api/settings/branding")
+      .get<BrandingResponse>("/api/settings/branding", { role: apiRole })
       .then(({ data, response }) => {
         const logoUrl = resolveBrandingLogoUrl(data.logoUrl, response.url);
         if (!cancelled) {
@@ -38,7 +43,7 @@ export function ShopLogo() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [role, loading]);
 
   return <Image source={source} style={styles.logo} resizeMode="contain" />;
 }

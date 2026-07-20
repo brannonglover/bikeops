@@ -12,7 +12,7 @@ import {
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/lib/auth";
-import { api, getLastStaffShopSubdomain } from "@/lib/api";
+import { api, ApiError, getLastStaffShopSubdomain } from "@/lib/api";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
@@ -72,8 +72,12 @@ export default function LoginScreen() {
       setLoginMessage(
         data.message ?? "Check your email for a login link. It may take a minute."
       );
-    } catch {
-      setLoginMessage("Something went wrong. Please try again.");
+    } catch (err) {
+      const message =
+        err instanceof ApiError
+          ? err.message
+          : "Something went wrong. Please try again.";
+      setLoginMessage(message);
     } finally {
       setRequestingLogin(false);
     }

@@ -20,6 +20,7 @@ import {
 } from "react-native";
 import { Stack, useLocalSearchParams } from "expo-router";
 import { useHeaderHeight } from "@react-navigation/elements";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQueryClient } from "@tanstack/react-query";
 import * as ImagePicker from "expo-image-picker";
 import { Ionicons } from "@expo/vector-icons";
@@ -59,6 +60,7 @@ export default function CustomerChatScreen() {
   const { setCustomerAuthenticated } = useAuth();
   const queryClient = useQueryClient();
   const headerHeight = useHeaderHeight();
+  const insets = useSafeAreaInsets();
   const flatListRef = useRef<FlatList<ChatMessage>>(null);
   const isAtBottomRef = useRef(true);
   const didInitialAutoScrollRef = useRef(false);
@@ -255,6 +257,8 @@ export default function CustomerChatScreen() {
       return;
     }
 
+    // Default: land at the latest message. Later image loads keep us pinned
+    // via onContentSizeChange while isAtBottomRef remains true.
     flatListRef.current.scrollToEnd({ animated: false });
     didInitialAutoScrollRef.current = true;
   }, [messages.length, scrollToMessageId]);
@@ -342,6 +346,11 @@ export default function CustomerChatScreen() {
     setPendingImages([]);
     isAtBottomRef.current = true;
     setShowScrollButton(false);
+    requestAnimationFrame(() => {
+      flatListRef.current?.scrollToEnd({ animated: true });
+      // Images / multi-line layout can settle a frame later.
+      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
+    });
     setSending(true);
 
     try {
@@ -659,7 +668,9 @@ export default function CustomerChatScreen() {
           flexDirection: "row",
           alignItems: "flex-end",
           gap: spacing[2],
-          padding: spacing[3],
+          paddingTop: spacing[3],
+          paddingHorizontal: spacing[4],
+          paddingBottom: spacing[3] + insets.bottom,
           borderTopWidth: 1,
           borderTopColor: theme.surfaceBorder,
           backgroundColor: theme.background,
@@ -832,7 +843,7 @@ export default function CustomerChatScreen() {
           borderColor: theme.surfaceBorder,
         },
       }),
-    [theme]
+    [theme, insets.bottom]
   );
 
   if (authState === "loading" || verifying) {
@@ -892,6 +903,15 @@ export default function CustomerChatScreen() {
           onScroll={handleScroll}
           scrollEventThrottle={100}
           onContentSizeChange={() => {
+            requestAnimationFrame(() => {
+              if (isAtBottomRef.current && didInitialAutoScrollRef.current) {
+                flatListRef.current?.scrollToEnd({ animated: false });
+              } else {
+                ensureInitialScroll();
+              }
+            });
+          }}
+          onLayout={() => {
             requestAnimationFrame(() => ensureInitialScroll());
           }}
           onScrollToIndexFailed={(info) => {

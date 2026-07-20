@@ -11,6 +11,7 @@
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
     "@react-native-community/datetimepicker": "~8.4.4",
+    "@stripe/stripe-react-native": "0.50.3",
     "@stripe/stripe-terminal-react-native": "0.0.1-beta.29",
     "@tanstack/react-query": "^5.96.1",
     "expo": "~54.0.33",
@@ -23,6 +24,7 @@
     "expo-iap": "^4.3.5",
     "expo-image-picker": "~17.0.10",
     "expo-linking": "~8.0.11",
+    "expo-location": "~19.0.8",
     "expo-maps": "^0.12.10",
     "expo-notifications": "^0.32.16",
     "expo-router": "~6.0.23",

@@ -7,11 +7,11 @@ import {
   RefreshControl,
   StyleSheet,
 } from "react-native";
-import { useRouter, Stack } from "expo-router";
+import { useRouter, Stack, useFocusEffect } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/lib/api";
-import { type Job, type Stage, STAGE_LABELS, STAGE_COLORS } from "@/lib/types";
+import { type Job, STAGE_COLORS } from "@/lib/types";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { Card } from "@/components/ui/Card";
@@ -29,6 +29,8 @@ const ACTIVE_STAGES = new Set<string>([
   "BIKE_READY",
 ]);
 
+const CUSTOMER_JOBS_POLL_MS = 60_000;
+
 export default function RepairsScreen() {
   const { theme } = useTheme();
   const router = useRouter();
@@ -45,7 +47,14 @@ export default function RepairsScreen() {
       });
       return data;
     },
+    refetchInterval: CUSTOMER_JOBS_POLL_MS,
   });
+
+  useFocusEffect(
+    useCallback(() => {
+      void refetch();
+    }, [refetch])
+  );
 
   const [isManualRefresh, setIsManualRefresh] = useState(false);
   const handleRefresh = useCallback(async () => {

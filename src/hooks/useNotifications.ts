@@ -78,7 +78,7 @@ export function useNotifications() {
   const { role } = useAuth();
   const router = useRouter();
   const queryClient = useQueryClient();
-  const registered = useRef(false);
+  const registeredForRole = useRef<typeof role>(null);
   const coldStartPrefetchDone = useRef(false);
   const lastRegisteredAt = useRef(0);
   const syncingBadge = useRef(false);
@@ -182,18 +182,28 @@ export function useNotifications() {
 
   useEffect(() => {
     if (!role) {
-      registered.current = false;
+      registeredForRole.current = null;
       lastRegisteredAt.current = 0;
       setBadgeCount(0);
       return;
     }
-    if (registered.current) return;
+    // Re-register whenever the auth role changes (e.g. customer → staff).
+    // Previously we only registered once per app session, so logging into
+    // staff after using customer chat left the Expo token tagged as customer
+    // and staff never received new-message pushes.
+    if (registeredForRole.current === role) return;
+
+    let cancelled = false;
     registerForPushNotifications(role).then((token) => {
+      if (cancelled) return;
       if (token) {
-        registered.current = true;
+        registeredForRole.current = role;
         lastRegisteredAt.current = Date.now();
       }
     });
+    return () => {
+      cancelled = true;
+    };
   }, [role]);
 
   useEffect(() => {
@@ -202,18 +212,27 @@ export function useNotifications() {
     const handleAppStateChange = (nextState: AppStateStatus) => {
       if (nextState === "active") {
         const now = Date.now();
-        if (now - lastRegisteredAt.current > FOREGROUND_REGISTER_INTERVAL_MS) {
+        if (
+          registeredForRole.current !== role ||
+          now - lastRegisteredAt.current > FOREGROUND_REGISTER_INTERVAL_MS
+        ) {
           lastRegisteredAt.current = now;
-          registerForPushNotifications(role);
+          registerForPushNotifications(role).then((token) => {
+            if (token) registeredForRole.current = role;
+          });
         }
         syncBadgeCount();
         prefetchPresentedChatNotifications();
+        if (role === "customer") {
+          queryClient.invalidateQueries({ queryKey: ["customer-jobs"] });
+          queryClient.invalidateQueries({ queryKey: ["job-status"] });
+        }
       }
     };
 
     const subscription = AppState.addEventListener("change", handleAppStateChange);
     return () => subscription.remove();
-  }, [role, syncBadgeCount, prefetchPresentedChatNotifications]);
+  }, [role, queryClient, syncBadgeCount, prefetchPresentedChatNotifications]);
 
   useEffect(() => {
     if (!role) return;
@@ -281,12 +300,22 @@ export function useNotifications() {
 
     const receivedSubscription =
       Notifications.addNotificationReceivedListener((notification) => {
-        prefetchChatForNotification(
-          normalizeNotificationData(notification.request.content.data)
+        const data = normalizeNotificationData(
+          notification.request.content.data
         );
+        prefetchChatForNotification(data);
         syncBadgeCount();
+        if (
+          role === "customer" &&
+          (data?.type === "job_update" || data?.type === "new_message")
+        ) {
+          queryClient.invalidateQueries({ queryKey: ["customer-jobs"] });
+          queryClient.invalidateQueries({
+            queryKey: data.jobId ? ["job-status", data.jobId] : ["job-status"],
+          });
+        }
       });
 
     return () => receivedSubscription.remove();
-  }, [role, syncBadgeCount, prefetchChatForNotification]);
+  }, [role, queryClient, syncBadgeCount, prefetchChatForNotification]);
 }

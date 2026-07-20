@@ -98,6 +98,20 @@ export interface ApplePurchaseVerifyResponse {
   billingActive: boolean;
 }
 
+export interface NearbyShop {
+  id: string;
+  name: string;
+  subdomain: string;
+  address: string | null;
+  distanceKm: number;
+  lat: number;
+  lng: number;
+}
+
+export interface NearbyShopsResponse {
+  shops: NearbyShop[];
+}
+
 export const platformApi = {
   startSignup: (body: SignupPayload) =>
     platformFetch<SignupStartResponse>("/api/signup", {
@@ -122,6 +136,17 @@ export const platformApi = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  getNearbyShops: (lat: number, lng: number, radiusKm = 50) => {
+    const params = new URLSearchParams({
+      lat: String(lat),
+      lng: String(lng),
+      radiusKm: String(radiusKm),
+    });
+    return platformFetch<NearbyShopsResponse>(
+      `/api/shops/nearby?${params.toString()}`
+    );
+  },
 };
 
 export function slugifySubdomain(value: string): string {

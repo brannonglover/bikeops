@@ -113,6 +113,28 @@ export function getPrimaryJobBike(job: Job): JobBike | null {
   return bikes[0] ?? null;
 }
 
+/**
+ * Prefer the linked customer bike photo (what staff edit on the web), then the
+ * jobBike snapshot. Falls back to a make/model match on the customer's bikes.
+ */
+export function getJobBikeImageUrl(
+  jb: Pick<JobBike, "make" | "model" | "imageUrl" | "bike">,
+  customerBikes?: { make: string; model: string | null; imageUrl: string | null }[] | null
+): string | null {
+  const url = jb.bike?.imageUrl ?? jb.imageUrl ?? null;
+  if (url) return url;
+  if (!customerBikes?.length) return null;
+  const makeNorm = (jb.make ?? "").trim().toLowerCase();
+  const modelNorm = (jb.model ?? "").trim().toLowerCase();
+  if (!makeNorm || !modelNorm) return null;
+  const match = customerBikes.find(
+    (cb) =>
+      (cb.make ?? "").trim().toLowerCase() === makeNorm &&
+      (cb.model ?? "").trim().toLowerCase() === modelNorm
+  );
+  return match?.imageUrl ?? null;
+}
+
 export function formatPhoneNumber(raw: string): string {
   const normalizedDigits = raw.replace(/\D/g, "");
   const digits =

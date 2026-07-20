@@ -116,6 +116,12 @@ export interface Payment {
   createdAt: string;
 }
 
+export interface Mechanic {
+  id: string;
+  fullName: string;
+  imageUrl: string | null;
+}
+
 export interface Job {
   id: string;
   bikeMake: string;
@@ -133,6 +139,8 @@ export interface Job {
   collectionReturnWindowTo: string | null;
   customerId: string | null;
   customer: Customer | null;
+  mechanicId?: string | null;
+  mechanic?: Mechanic | null;
   notes: string | null;
   internalNotes: string | null;
   customerNotes: string | null;

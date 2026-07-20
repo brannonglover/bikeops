@@ -3,6 +3,7 @@ import { Linking, Alert } from "react-native";
 import { Stack, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { StripeProvider } from "@stripe/stripe-react-native";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
 import { NotificationProvider } from "@/lib/NotificationProvider";
@@ -16,6 +17,10 @@ const queryClient = new QueryClient({
     },
   },
 });
+
+const STRIPE_PUBLISHABLE_KEY =
+  process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? "";
+const STRIPE_MERCHANT_IDENTIFIER = "merchant.com.brannonglover.bikeops.app";
 
 function MagicLinkHandler() {
   const { setCustomerAuthenticated } = useAuth();
@@ -89,13 +94,19 @@ function RootNav() {
 export default function RootLayout() {
   return (
     <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <NotificationProvider>
-          <ThemeProvider>
-            <RootNav />
-          </ThemeProvider>
-        </NotificationProvider>
-      </AuthProvider>
+      <StripeProvider
+        publishableKey={STRIPE_PUBLISHABLE_KEY}
+        merchantIdentifier={STRIPE_MERCHANT_IDENTIFIER}
+        urlScheme="bikeops"
+      >
+        <AuthProvider>
+          <NotificationProvider>
+            <ThemeProvider>
+              <RootNav />
+            </ThemeProvider>
+          </NotificationProvider>
+        </AuthProvider>
+      </StripeProvider>
     </QueryClientProvider>
   );
 }

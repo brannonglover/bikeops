@@ -1,16 +1,10 @@
-import { useState, useMemo } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  StyleSheet,
-  Alert,
-  Linking,
-} from "react-native";
+import { useState, useMemo, useCallback } from "react";
+import { View, Text, ScrollView, StyleSheet } from "react-native";
 import { useLocalSearchParams, Stack, useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
-import { api, resolveCustomerUrl } from "@/lib/api";
+import { useStripe } from "@stripe/stripe-react-native";
+import { ApiError, api } from "@/lib/api";
 import { type Job } from "@/lib/types";
 import { colors, spacing, fontSize } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
@@ -19,23 +13,57 @@ import { Button } from "@/components/ui/Button";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { formatCurrency, getJobBikeDisplayTitle } from "@/lib/format";
 import { computeJobSubtotal, getJobPaymentSummary } from "@/lib/job-payments";
+import {
+  alertPaymentResult,
+  presentJobPaymentSheet,
+} from "@/lib/customer-payment";
 
 export default function PayScreen() {
   const { theme } = useTheme();
   const { jobId } = useLocalSearchParams<{ jobId: string }>();
   const router = useRouter();
+  const { initPaymentSheet, presentPaymentSheet } = useStripe();
   const [paying, setPaying] = useState(false);
 
-  const { data: job, isLoading } = useQuery({
+  const { data: job, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["pay-job", jobId],
     queryFn: async () => {
-      const { data } = await api.get<Job>(`/api/jobs/${jobId}`, {
+      const { data } = await api.get<Job[]>("/api/customer/jobs", {
         role: "customer",
       });
-      return data;
+      const match = data.find((j) => j.id === jobId);
+      if (!match) throw new ApiError("Job not found", 404);
+      return match;
     },
     enabled: !!jobId,
   });
+
+  const handlePay = useCallback(async () => {
+    if (!jobId || paying) return;
+    setPaying(true);
+    try {
+      const result = await presentJobPaymentSheet(jobId, {
+        initPaymentSheet,
+        presentPaymentSheet,
+      });
+      alertPaymentResult(result, () => {
+        void refetch();
+        router.replace(`/(customer)/status/${jobId}`);
+      });
+      if (result.status === "success") {
+        void refetch();
+      }
+    } finally {
+      setPaying(false);
+    }
+  }, [
+    jobId,
+    paying,
+    initPaymentSheet,
+    presentPaymentSheet,
+    refetch,
+    router,
+  ]);
 
   const styles = useMemo(
     () =>
@@ -137,11 +165,37 @@ export default function PayScreen() {
           color: theme.textTertiary,
           textAlign: "center",
         },
+        errorWrap: {
+          flex: 1,
+          justifyContent: "center",
+          alignItems: "center",
+          padding: spacing[6],
+          gap: spacing[3],
+          backgroundColor: theme.background,
+        },
+        errorText: {
+          ...fontSize.sm,
+          color: theme.textSecondary,
+          textAlign: "center",
+        },
       }),
     [theme]
   );
 
-  if (isLoading || !job) return <LoadingScreen message="Loading payment..." />;
+  if (isLoading) return <LoadingScreen message="Loading payment..." />;
+
+  if (isError || !job) {
+    const message =
+      error instanceof ApiError
+        ? error.message
+        : "Couldn't load this job. Please try again.";
+    return (
+      <View style={styles.errorWrap}>
+        <Text style={styles.errorText}>{message}</Text>
+        <Button title="Try Again" onPress={() => void refetch()} />
+      </View>
+    );
+  }
 
   const subtotal = computeJobSubtotal({
     jobServices: job.jobServices,
@@ -155,7 +209,8 @@ export default function PayScreen() {
         ? job.totalPaid
         : 0,
   });
-  const hasPartialPayment = paymentSummary.totalPaid > 0 && !paymentSummary.isPaidInFull;
+  const hasPartialPayment =
+    paymentSummary.totalPaid > 0 && !paymentSummary.isPaidInFull;
 
   const PAYABLE_STAGES: string[] = [
     "RECEIVED",
@@ -190,14 +245,11 @@ export default function PayScreen() {
   if (!PAYABLE_STAGES.includes(job.stage)) {
     return (
       <View style={styles.paidContainer}>
-        <Ionicons
-          name="time-outline"
-          size={64}
-          color={colors.amber[500]}
-        />
+        <Ionicons name="time-outline" size={64} color={colors.amber[500]} />
         <Text style={styles.paidTitle}>Not Yet Available</Text>
         <Text style={styles.paidMessage}>
-          Payment will be available once the shop has confirmed your booking and received your bike.
+          Payment will be available once the shop has confirmed your booking and
+          received your bike.
         </Text>
         <Button
           title="View Status"
@@ -207,24 +259,6 @@ export default function PayScreen() {
       </View>
     );
   }
-
-  const handlePay = async () => {
-    setPaying(true);
-    try {
-      // Remote customer payments use Stripe's secure online flow.
-      const payUrl = resolveCustomerUrl(`/pay/${jobId}`);
-      const supported = await Linking.canOpenURL(payUrl);
-      if (supported) {
-        await Linking.openURL(payUrl);
-      } else {
-        Alert.alert("Error", "Unable to open payment page.");
-      }
-    } catch {
-      Alert.alert("Error", "Failed to open payment page.");
-    } finally {
-      setPaying(false);
-    }
-  };
 
   return (
     <>
@@ -278,19 +312,18 @@ export default function PayScreen() {
         </Card>
 
         <Text style={styles.info}>
-          You'll be redirected to a secure payment page to complete your
-          payment with Apple Pay, Google Pay, Link, or card.
+          Pay securely in the app with Apple Pay, Google Pay, or card.
         </Text>
 
         <Button
           title={
             paying
-              ? "Opening..."
+              ? "Processing..."
               : hasPartialPayment
                 ? `Pay ${formatCurrency(paymentSummary.remaining)}`
                 : `Pay ${formatCurrency(subtotal)}`
           }
-          onPress={handlePay}
+          onPress={() => void handlePay()}
           loading={paying}
           size="lg"
         />

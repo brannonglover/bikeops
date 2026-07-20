@@ -99,6 +99,13 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     "expo-system-ui",
     "expo-iap",
     [
+      "expo-location",
+      {
+        locationWhenInUsePermission:
+          "Allow BikeOps to use your location to find nearby bike shops.",
+      },
+    ],
+    [
       "expo-build-properties",
       {
         ios: {
@@ -115,6 +122,13 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       bluetoothPeripheralPermission: "Bluetooth access is required in order to connect to supported card readers.",
       bluetoothAlwaysUsagePermission: "This app uses Bluetooth to connect to supported card readers.",
     }],
+    [
+      "@stripe/stripe-react-native",
+      {
+        merchantIdentifier: "merchant.com.brannonglover.bikeops.app",
+        enableGooglePay: true,
+      },
+    ],
   ],
   extra: {
     eas: {

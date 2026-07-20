@@ -26,6 +26,7 @@ export default function CustomerLayout() {
     <Stack
       screenOptions={{
         headerStyle: { backgroundColor: theme.headerBg },
+        headerLeftContainerStyle: { paddingLeft: spacing[4] },
         headerLeft: () => <ShopLogo />,
         headerTitleStyle: { fontWeight: "700", color: theme.text },
       }}

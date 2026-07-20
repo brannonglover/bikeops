@@ -8,11 +8,16 @@ const STAFF_API_URL_KEY = "staff_api_url";
 const STAFF_SHOP_SUBDOMAIN_KEY = "staff_shop_subdomain";
 const CUSTOMER_COOKIE_KEY = "customer_session_cookie";
 const CUSTOMER_ROLE_KEY = "customer_role_persisted";
+const CUSTOMER_SHOP_SUBDOMAIN_KEY = "customer_shop_subdomain";
+const CUSTOMER_SHOP_NAME_KEY = "customer_shop_name";
 
 // In-memory cache so each apiFetch call doesn't hit SecureStore on disk.
 // Values are invalidated on write/delete so they stay consistent.
 const cookieMemCache = new Map<string, string | null>();
 let staffApiUrlMemCache: string | null | undefined;
+let customerApiUrlMemCache: string | null | undefined;
+let customerShopSubdomainMemCache: string | null | undefined;
+let customerShopNameMemCache: string | null | undefined;
 
 async function getStoredCookie(key: string): Promise<string | null> {
   if (cookieMemCache.has(key)) return cookieMemCache.get(key) ?? null;
@@ -92,14 +97,79 @@ export async function getLastStaffShopSubdomain(): Promise<string | null> {
   return getStoredCookie(STAFF_SHOP_SUBDOMAIN_KEY);
 }
 
-function getCustomerApiUrl(): string {
-  const subdomain = process.env.EXPO_PUBLIC_SHOP_SUBDOMAIN;
-  if (subdomain) {
-    const url = new URL(DEFAULT_API_URL);
-    url.hostname = `${subdomain}.${url.hostname}`;
-    return trimTrailingSlash(url.toString());
+function buildCustomerApiUrlFromSubdomain(
+  subdomain: string | null | undefined
+): string {
+  const candidate =
+    subdomain?.trim() || process.env.EXPO_PUBLIC_SHOP_SUBDOMAIN?.trim() || "";
+  if (!candidate) return DEFAULT_API_URL;
+  try {
+    return getShopApiUrl(candidate);
+  } catch {
+    return DEFAULT_API_URL;
   }
-  return DEFAULT_API_URL;
+}
+
+async function getCustomerApiUrl(): Promise<string> {
+  if (customerApiUrlMemCache !== undefined) {
+    return customerApiUrlMemCache ?? buildCustomerApiUrlFromSubdomain(null);
+  }
+  const stored = await getStoredCookie(CUSTOMER_SHOP_SUBDOMAIN_KEY);
+  customerShopSubdomainMemCache = stored;
+  const name = await getStoredCookie(CUSTOMER_SHOP_NAME_KEY);
+  customerShopNameMemCache = name;
+  customerApiUrlMemCache = stored
+    ? buildCustomerApiUrlFromSubdomain(stored)
+    : null;
+  return customerApiUrlMemCache ?? buildCustomerApiUrlFromSubdomain(null);
+}
+
+export async function setCustomerShop(
+  subdomain: string,
+  name?: string
+): Promise<void> {
+  const normalized = normalizeShopSubdomain(subdomain);
+  if (!normalized || !isValidSubdomain(normalized)) {
+    throw new Error("Enter a valid shop subdomain.");
+  }
+  const apiUrl = getShopApiUrl(normalized);
+  const shopName = (name?.trim() || normalized);
+  customerApiUrlMemCache = apiUrl;
+  customerShopSubdomainMemCache = normalized;
+  customerShopNameMemCache = shopName;
+  await storeCookie(CUSTOMER_SHOP_SUBDOMAIN_KEY, normalized);
+  await storeCookie(CUSTOMER_SHOP_NAME_KEY, shopName);
+}
+
+export async function getCustomerShop(): Promise<{
+  subdomain: string | null;
+  name: string | null;
+} | null> {
+  if (customerShopSubdomainMemCache !== undefined) {
+    if (!customerShopSubdomainMemCache) return null;
+    return {
+      subdomain: customerShopSubdomainMemCache,
+      name: customerShopNameMemCache ?? customerShopSubdomainMemCache,
+    };
+  }
+  const subdomain = await getStoredCookie(CUSTOMER_SHOP_SUBDOMAIN_KEY);
+  const name = await getStoredCookie(CUSTOMER_SHOP_NAME_KEY);
+  customerShopSubdomainMemCache = subdomain;
+  customerShopNameMemCache = name;
+  if (subdomain) {
+    customerApiUrlMemCache = buildCustomerApiUrlFromSubdomain(subdomain);
+  }
+  if (!subdomain) return null;
+  return { subdomain, name: name ?? subdomain };
+}
+
+export function getDefaultCustomerShopSubdomain(): string | null {
+  const env = process.env.EXPO_PUBLIC_SHOP_SUBDOMAIN?.trim();
+  return env || null;
+}
+
+export function getDefaultCustomerShopName(): string {
+  return process.env.EXPO_PUBLIC_SHOP_NAME?.trim() || "Bike Shop";
 }
 
 async function getApiUrl(role: "staff" | "customer"): Promise<string> {
@@ -135,7 +205,9 @@ export function resolveUrl(url: string): string {
 
 export function resolveCustomerUrl(url: string): string {
   if (!url || isAbsoluteOrLocalUri(url)) return url;
-  const apiUrl = getCustomerApiUrl();
+  const apiUrl =
+    customerApiUrlMemCache ??
+    buildCustomerApiUrlFromSubdomain(customerShopSubdomainMemCache);
   return `${apiUrl}${url.startsWith("/") ? "" : "/"}${url}`;
 }
 
@@ -170,6 +242,17 @@ function extractCustomerSessionFromResponse(data: unknown): string | null {
     : null;
 }
 
+const DEFAULT_FETCH_TIMEOUT_MS = 20_000;
+
+function createTimeoutSignal(ms: number): { signal: AbortSignal; clear: () => void } {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), ms);
+  return {
+    signal: controller.signal,
+    clear: () => clearTimeout(timeoutId),
+  };
+}
+
 async function apiFetch<T = unknown>(
   path: string,
   options: FetchOptions = {}
@@ -201,11 +284,23 @@ async function apiFetch<T = unknown>(
 
   const apiUrl = await getApiUrl(role);
   const url = `${apiUrl}${path}`;
-  const response = await fetch(url, {
-    ...fetchOptions,
-    headers,
-    credentials: "omit",
-  });
+  const timeout = createTimeoutSignal(DEFAULT_FETCH_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...fetchOptions,
+      headers,
+      credentials: "omit",
+      signal: timeout.signal,
+    });
+  } catch (err) {
+    if (timeout.signal.aborted) {
+      throw new ApiError("Request timed out. Please try again.", 408);
+    }
+    throw err;
+  } finally {
+    timeout.clear();
+  }
 
   const setCookie = response.headers.get("set-cookie");
   if (setCookie) {
