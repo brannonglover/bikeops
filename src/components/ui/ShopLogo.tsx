@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Image, StyleSheet, type ImageSourcePropType } from "react-native";
+import { Image, type ImageSourcePropType } from "react-native";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
@@ -18,12 +18,28 @@ function resolveBrandingLogoUrl(logoUrl: string | null | undefined, responseUrl:
   }
 }
 
-export function ShopLogo() {
+const LOGO_SIZES = {
+  md: { width: 96, height: 48 },
+  /** Tall draw size; negative margin keeps the header chrome tight. */
+  lg: { width: 176, height: 88, marginVertical: -14 },
+} as const;
+
+export function ShopLogo({
+  useShopBranding = true,
+  size = "md",
+}: {
+  /** When false, always show the Bike Ops logo (e.g. customer home). */
+  useShopBranding?: boolean;
+  size?: keyof typeof LOGO_SIZES;
+}) {
   const { role, loading } = useAuth();
   const [source, setSource] = useState<ImageSourcePropType>(defaultLogo);
 
   useEffect(() => {
-    if (loading || !role) return;
+    if (!useShopBranding || loading || !role) {
+      setSource(defaultLogo);
+      return;
+    }
 
     let cancelled = false;
     const apiRole = role === "customer" ? "customer" : "staff";
@@ -43,14 +59,14 @@ export function ShopLogo() {
     return () => {
       cancelled = true;
     };
-  }, [role, loading]);
+  }, [role, loading, useShopBranding]);
 
-  return <Image source={source} style={styles.logo} resizeMode="contain" />;
+  return (
+    <Image
+      source={source}
+      style={LOGO_SIZES[size]}
+      resizeMode="contain"
+      accessibilityLabel="Bike Ops"
+    />
+  );
 }
-
-const styles = StyleSheet.create({
-  logo: {
-    width: 72,
-    height: 36,
-  },
-});

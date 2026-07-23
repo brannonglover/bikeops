@@ -104,12 +104,18 @@ export async function registerForPushNotifications(
   return token;
 }
 
-export async function unregisterPushToken(role: AuthRole): Promise<void> {
+export async function unregisterPushToken(
+  role: AuthRole,
+  options?: { cookie?: string | null }
+): Promise<void> {
   try {
     const token = await getExpoPushToken();
     if (token) {
       await api.delete(`/api/push-tokens?token=${encodeURIComponent(token)}`, {
         role: role ?? "staff",
+        ...(options?.cookie
+          ? { cookie: options.cookie, persistSession: false }
+          : {}),
       });
     }
   } catch {

@@ -338,9 +338,13 @@ export default function ConversationScreen() {
           justifyContent: "space-between",
           paddingHorizontal: spacing[4],
           paddingVertical: spacing[2],
-          backgroundColor: colors.emerald[50],
+          backgroundColor: theme.dark
+            ? colors.emerald[800] + "55"
+            : colors.emerald[50],
           borderTopWidth: 1,
-          borderTopColor: colors.emerald[200],
+          borderTopColor: theme.dark
+            ? colors.emerald[700]
+            : colors.emerald[200],
         },
         editBannerContent: {
           flexDirection: "row",
@@ -349,7 +353,7 @@ export default function ConversationScreen() {
         },
         editBannerText: {
           ...fontSize.sm,
-          color: colors.emerald[700],
+          color: theme.dark ? colors.emerald[400] : colors.emerald[700],
           fontWeight: "500",
         },
         composer: {
@@ -416,14 +420,16 @@ export default function ConversationScreen() {
           elevation: 3,
         },
         reactionPillMine: {
-          backgroundColor: theme.dark ? colors.emerald[800] : colors.emerald[50],
+          backgroundColor: theme.dark
+            ? colors.emerald[800] + "55"
+            : colors.emerald[50],
         },
         reactionPillEmoji: {
           fontSize: 14,
         },
         reactionPillCount: {
           ...fontSize.xs,
-          color: colors.slate[600],
+          color: theme.textSecondary,
         },
         popupBackdrop: {
           flex: 1,

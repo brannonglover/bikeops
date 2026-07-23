@@ -103,7 +103,10 @@ export interface NearbyShop {
   name: string;
   subdomain: string;
   address: string | null;
-  distanceKm: number;
+  /** Distance in miles (preferred). */
+  distanceMiles?: number;
+  /** @deprecated Prefer distanceMiles. Older API responses / clients. */
+  distanceKm?: number;
   lat: number;
   lng: number;
 }
@@ -137,11 +140,11 @@ export const platformApi = {
       body: JSON.stringify(body),
     }),
 
-  getNearbyShops: (lat: number, lng: number, radiusKm = 50) => {
+  getNearbyShops: (lat: number, lng: number, radiusMiles = 100) => {
     const params = new URLSearchParams({
       lat: String(lat),
       lng: String(lng),
-      radiusKm: String(radiusKm),
+      radiusMiles: String(radiusMiles),
     });
     return platformFetch<NearbyShopsResponse>(
       `/api/shops/nearby?${params.toString()}`

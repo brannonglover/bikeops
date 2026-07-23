@@ -14,7 +14,7 @@ import { useLocalSearchParams, Stack, useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { useStripe } from "@stripe/stripe-react-native";
-import { ApiError, api, resolveCustomerUrl } from "@/lib/api";
+import { ApiError, api, getCustomerShop, resolveCustomerUrl } from "@/lib/api";
 import { type Job, type Stage } from "@/lib/types";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme, type AppTheme } from "@/lib/ThemeContext";
@@ -47,6 +47,32 @@ const TRACKER_STEPS: {
 
 function getOrderNumber(jobId: string): string {
   return jobId.replace(/-/g, "").slice(-4).toUpperCase();
+}
+
+function shopContactSubtitle(
+  stage: Stage,
+  hasMechanic: boolean,
+  hasPhone: boolean,
+): string {
+  if (stage === "COMPLETED") {
+    return "This repair is complete. Reach out if you have questions.";
+  }
+  if (stage === "CANCELLED") {
+    return "This booking was cancelled. Message the shop anytime.";
+  }
+  if (hasMechanic) {
+    return hasPhone
+      ? "Call or message with questions about this repair."
+      : "Message with questions about this repair.";
+  }
+  if (stage === "BIKE_READY") {
+    return hasPhone
+      ? "Your bike is ready — call or message to coordinate pickup."
+      : "Your bike is ready — message to coordinate pickup.";
+  }
+  return hasPhone
+    ? "Call or message with questions about this repair."
+    : "Message with questions about this repair.";
 }
 
 /** Maps job stage → tracker step index (0–3). -1 = not yet received. */
@@ -380,6 +406,18 @@ function createStyles(theme: AppTheme) {
       fontWeight: "700",
       color: theme.text,
     },
+    contactSubtitle: {
+      ...fontSize.sm,
+      color: theme.textSecondary,
+      marginTop: 2,
+      lineHeight: 18,
+    },
+    contactShopName: {
+      ...fontSize.xs,
+      fontWeight: "600",
+      color: theme.textTertiary,
+      marginTop: spacing[1],
+    },
     contactActions: {
       flexDirection: "row",
       gap: spacing[2],
@@ -498,11 +536,18 @@ export default function JobStatusScreen() {
   const { data: branding } = useQuery({
     queryKey: ["shop-branding"],
     queryFn: async () => {
-      const { data } = await api.get<{ shopPhone?: string | null }>(
-        "/api/settings/branding",
-        { role: "customer" }
-      );
-      return data;
+      const [{ data }, shop] = await Promise.all([
+        api.get<{
+          shopPhone?: string | null;
+          logoAlt?: string | null;
+          address?: string | null;
+        }>("/api/settings/branding", { role: "customer" }),
+        getCustomerShop(),
+      ]);
+      return {
+        ...data,
+        shopName: data.logoAlt?.trim() || shop?.name?.trim() || null,
+      };
     },
   });
 
@@ -585,6 +630,13 @@ export default function JobStatusScreen() {
     ? resolveCustomerUrl(mechanic.imageUrl)
     : null;
   const shopPhone = branding?.shopPhone?.trim() || null;
+  const shopName = branding?.shopName?.trim() || null;
+  const contactDisplayName = mechanic?.fullName ?? shopName ?? "Your shop";
+  const contactSubtitle = shopContactSubtitle(
+    job.stage,
+    !!mechanic,
+    !!shopPhone,
+  );
 
   const deliveryLabel =
     job.deliveryType === "COLLECTION_SERVICE" ? "Collection" : "Drop-off";
@@ -642,13 +694,19 @@ export default function JobStatusScreen() {
               />
             ) : (
               <View style={styles.contactAvatarPlaceholder}>
-                <Ionicons name="person" size={22} color={theme.iconMuted} />
+                <Ionicons
+                  name={mechanic ? "person" : "storefront-outline"}
+                  size={22}
+                  color={theme.iconMuted}
+                />
               </View>
             )}
             <View style={{ flex: 1 }}>
-              <Text style={styles.contactName}>
-                {mechanic?.fullName ?? "Your shop"}
-              </Text>
+              <Text style={styles.contactName}>{contactDisplayName}</Text>
+              <Text style={styles.contactSubtitle}>{contactSubtitle}</Text>
+              {mechanic && shopName ? (
+                <Text style={styles.contactShopName}>{shopName}</Text>
+              ) : null}
             </View>
             <View style={styles.contactActions}>
               {shopPhone ? (

@@ -1,5 +1,6 @@
-import { View, ActivityIndicator, Text } from "react-native";
+import { View } from "react-native";
 import { useTheme } from "@/lib/ThemeContext";
+import { BikeLoader } from "@/components/ui/BikeLoader";
 
 interface LoadingScreenProps {
   message?: string;
@@ -15,11 +16,9 @@ export function LoadingScreen({ message = "Loading..." }: LoadingScreenProps) {
         justifyContent: "center",
         alignItems: "center",
         backgroundColor: theme.background,
-        gap: 12,
       }}
     >
-      <ActivityIndicator size="large" color={theme.textSecondary} />
-      <Text style={{ color: theme.textSecondary, fontSize: 16 }}>{message}</Text>
+      <BikeLoader label={message} />
     </View>
   );
 }

@@ -1,6 +1,6 @@
 import { Stack } from "expo-router";
 import { useTheme } from "@/lib/ThemeContext";
-import { ShopLogo } from "@/components/ui/ShopLogo";
+import { renderAppHeader } from "@/components/ui/AppHeader";
 
 export default function SettingsLayout() {
   const { theme } = useTheme();
@@ -8,8 +8,9 @@ export default function SettingsLayout() {
   return (
     <Stack
       screenOptions={{
-        headerStyle: { backgroundColor: theme.headerBg },
-        headerLeft: () => <ShopLogo />,
+        header: renderAppHeader,
+        animation: "simple_push",
+        customAnimationOnSwipe: true,
         headerTitleStyle: { fontWeight: "700", color: theme.text },
       }}
     >

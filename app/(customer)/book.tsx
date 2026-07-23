@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import {
   View,
   Text,
@@ -9,19 +9,10 @@ import {
   Switch,
   KeyboardAvoidingView,
   Platform,
-  Modal,
-  ActivityIndicator,
-  Animated,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import {
-  api,
-  setCustomerShop,
-  getCustomerShop,
-  getDefaultCustomerShopSubdomain,
-  getDefaultCustomerShopName,
-} from "@/lib/api";
+import { api, setCustomerShop, getCustomerShop } from "@/lib/api";
 import {
   getCustomerProfile,
   saveContact,
@@ -32,17 +23,19 @@ import {
   type SavedBike,
   type CustomerProfile,
 } from "@/lib/customer-profile";
-import {
-  platformApi,
-  PlatformApiError,
-  type NearbyShop,
-} from "@/lib/platform-api";
+import { setCustomerLoadPriority } from "@/lib/customer-load-priority";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
+import { BikeLoader } from "@/components/ui/BikeLoader";
+import { BottomSheetModal } from "@/components/ui/BottomSheetModal";
+import {
+  ShopPicker,
+  type SelectedShop,
+} from "@/components/customer/ShopPicker";
 import { formatCurrency } from "@/lib/format";
 
 interface BookableService {
@@ -52,98 +45,16 @@ interface BookableService {
   price: number;
 }
 
-type SelectedShop = { subdomain: string; name: string };
-
-function BottomSheetModal({
-  visible,
-  title,
-  onClose,
-  children,
-}: {
-  visible: boolean;
-  title: string;
-  onClose: () => void;
-  children: React.ReactNode;
-}) {
-  const { theme } = useTheme();
-  const translateY = useRef(new Animated.Value(480)).current;
-
-  useEffect(() => {
-    if (!visible) return;
-    translateY.setValue(480);
-    Animated.timing(translateY, {
-      toValue: 0,
-      duration: 260,
-      useNativeDriver: true,
-    }).start();
-  }, [visible, translateY]);
-
-  const styles = useMemo(
-    () =>
-      StyleSheet.create({
-        backdrop: {
-          flex: 1,
-          backgroundColor: "rgba(0,0,0,0.45)",
-          justifyContent: "flex-end",
-        },
-        sheet: {
-          backgroundColor: theme.surface,
-          borderTopLeftRadius: borderRadius.xl,
-          borderTopRightRadius: borderRadius.xl,
-          maxHeight: "80%",
-          paddingBottom: spacing[8],
-        },
-        header: {
-          flexDirection: "row",
-          alignItems: "center",
-          justifyContent: "space-between",
-          paddingHorizontal: spacing[4],
-          paddingVertical: spacing[4],
-          borderBottomWidth: 1,
-          borderBottomColor: theme.surfaceBorder,
-        },
-        title: {
-          ...fontSize.base,
-          fontWeight: "700",
-          color: theme.textHeading,
-        },
-      }),
-    [theme]
-  );
-
-  return (
-    <Modal
-      visible={visible}
-      animationType="none"
-      transparent
-      onRequestClose={onClose}
-    >
-      <View style={styles.backdrop}>
-        <TouchableOpacity
-          style={StyleSheet.absoluteFillObject}
-          activeOpacity={1}
-          onPress={onClose}
-        />
-        <Animated.View
-          style={[styles.sheet, { transform: [{ translateY }] }]}
-        >
-          <View style={styles.header}>
-            <Text style={styles.title}>{title}</Text>
-            <TouchableOpacity onPress={onClose}>
-              <Ionicons name="close" size={24} color={theme.text} />
-            </TouchableOpacity>
-          </View>
-          {children}
-        </Animated.View>
-      </View>
-    </Modal>
-  );
-}
-
 export default function BookScreen() {
   const { theme } = useTheme();
   const router = useRouter();
   const [bootstrapping, setBootstrapping] = useState(true);
+
+  useFocusEffect(
+    useCallback(() => {
+      setCustomerLoadPriority("book");
+    }, [])
+  );
   const [services, setServices] = useState<BookableService[]>([]);
   const [servicesLoading, setServicesLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -151,11 +62,6 @@ export default function BookScreen() {
 
   const [selectedShop, setSelectedShop] = useState<SelectedShop | null>(null);
   const [pastShops, setPastShops] = useState<PastShop[]>([]);
-  const [shopPickerOpen, setShopPickerOpen] = useState(false);
-  const [nearbyShops, setNearbyShops] = useState<NearbyShop[]>([]);
-  const [nearbyLoading, setNearbyLoading] = useState(false);
-  const [nearbyError, setNearbyError] = useState<string | null>(null);
-  const [nearbyFetched, setNearbyFetched] = useState(false);
 
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -182,6 +88,9 @@ export default function BookScreen() {
     setLastName(profile.lastName);
     setEmail(profile.email);
     setPhone(profile.phone);
+    if (profile.address.trim()) {
+      setCollectionAddress(profile.address);
+    }
     setPastShops(profile.pastShops);
     setSavedBikes(profile.bikes);
     setEditingContact(!isContactComplete(profile));
@@ -205,7 +114,6 @@ export default function BookScreen() {
     setPastShops(profile.pastShops);
     setSelectedShop(shop);
     setSelectedServiceIds([]);
-    setShopPickerOpen(false);
   }, []);
 
   useEffect(() => {
@@ -216,21 +124,9 @@ export default function BookScreen() {
         let profile = await getCustomerProfile();
         if (cancelled) return;
 
-        // Seed known shops into history (env default + last selected).
-        // Past shops were previously only written after a booking, so existing
-        // customers would otherwise see an empty list.
-        const envSub = getDefaultCustomerShopSubdomain();
-        if (envSub) {
-          profile = await rememberShop(envSub, getDefaultCustomerShopName());
-        }
-        if (cancelled) return;
-
         const stored = await getCustomerShop();
         if (cancelled) return;
-        if (
-          stored?.subdomain &&
-          stored.subdomain !== envSub?.toLowerCase()
-        ) {
+        if (stored?.subdomain) {
           profile = await rememberShop(
             stored.subdomain,
             stored.name ?? stored.subdomain
@@ -249,11 +145,6 @@ export default function BookScreen() {
           await selectShop({
             subdomain: profile.pastShops[0].subdomain,
             name: profile.pastShops[0].name,
-          });
-        } else if (envSub) {
-          await selectShop({
-            subdomain: envSub,
-            name: getDefaultCustomerShopName(),
           });
         }
       } finally {
@@ -303,10 +194,10 @@ export default function BookScreen() {
     lastName,
     email,
     phone,
+    address: "",
   });
 
-  const shopDisplayName =
-    selectedShop?.name ?? getDefaultCustomerShopName();
+  const shopDisplayName = selectedShop?.name ?? "your bike shop";
 
   const styles = useMemo(
     () =>
@@ -367,7 +258,9 @@ export default function BookScreen() {
           flex: 1,
         },
         selectedBadge: {
-          backgroundColor: colors.amber[100],
+          backgroundColor: theme.dark
+            ? colors.amber[800] + "55"
+            : colors.amber[100],
           borderRadius: borderRadius.full,
           paddingHorizontal: spacing[2],
           paddingVertical: spacing[0.5],
@@ -375,7 +268,7 @@ export default function BookScreen() {
         selectedBadgeText: {
           ...fontSize.xs,
           fontWeight: "600",
-          color: colors.amber[700],
+          color: theme.dark ? colors.amber[400] : colors.amber[700],
         },
         serviceOption: {
           flexDirection: "row",
@@ -386,7 +279,9 @@ export default function BookScreen() {
           borderRadius: borderRadius.lg,
         },
         serviceOptionSelected: {
-          backgroundColor: colors.amber[50],
+          backgroundColor: theme.dark
+            ? colors.amber[500] + "20"
+            : colors.amber[50],
         },
         serviceInfo: {
           flex: 1,
@@ -418,7 +313,9 @@ export default function BookScreen() {
           borderRadius: borderRadius.lg,
         },
         deliveryOptionActive: {
-          backgroundColor: colors.amber[50],
+          backgroundColor: theme.dark
+            ? colors.amber[500] + "20"
+            : colors.amber[50],
         },
         deliveryLabel: {
           ...fontSize.sm,
@@ -464,9 +361,6 @@ export default function BookScreen() {
           flex: 1,
           marginRight: spacing[2],
         },
-        pickerPlaceholder: {
-          color: theme.textMuted,
-        },
         summaryRow: {
           flexDirection: "row",
           alignItems: "center",
@@ -501,7 +395,9 @@ export default function BookScreen() {
           minHeight: 52,
         },
         modalItemSelected: {
-          backgroundColor: colors.amber[50],
+          backgroundColor: theme.dark
+            ? colors.amber[500] + "20"
+            : colors.amber[50],
         },
         modalItemText: {
           flex: 1,
@@ -511,36 +407,6 @@ export default function BookScreen() {
           ...fontSize.sm,
           fontWeight: "600",
           color: theme.text,
-        },
-        modalItemSubtitle: {
-          ...fontSize.xs,
-          color: theme.textSecondary,
-        },
-        modalSectionLabel: {
-          ...fontSize.xs,
-          fontWeight: "700",
-          color: theme.textSecondary,
-          textTransform: "uppercase",
-          letterSpacing: 0.5,
-          paddingHorizontal: spacing[3],
-          paddingTop: spacing[3],
-          paddingBottom: spacing[1],
-        },
-        nearbyButton: {
-          marginHorizontal: spacing[3],
-          marginTop: spacing[2],
-        },
-        nearbyStatus: {
-          ...fontSize.sm,
-          color: theme.textSecondary,
-          paddingHorizontal: spacing[3],
-          paddingVertical: spacing[2],
-        },
-        emptyShopHint: {
-          ...fontSize.sm,
-          color: theme.textSecondary,
-          textAlign: "center",
-          padding: spacing[4],
         },
       }),
     [theme]
@@ -566,57 +432,6 @@ export default function BookScreen() {
     setBikeModel("");
     setAddingNewBike(true);
     setBikePickerOpen(false);
-  };
-
-  const findNearbyShops = async () => {
-    setNearbyLoading(true);
-    setNearbyError(null);
-    try {
-      let Location: typeof import("expo-location");
-      try {
-        Location = await import("expo-location");
-      } catch {
-        setNearbyError(
-          "Location is unavailable in this build. Rebuild the app to enable nearby shops."
-        );
-        setNearbyFetched(true);
-        return;
-      }
-
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== "granted") {
-        setNearbyError("Location permission is required to find nearby shops.");
-        setNearbyFetched(true);
-        return;
-      }
-      const position = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
-      });
-      const { shops } = await platformApi.getNearbyShops(
-        position.coords.latitude,
-        position.coords.longitude
-      );
-      setNearbyShops(shops);
-      setNearbyFetched(true);
-    } catch (e) {
-      const message =
-        e instanceof PlatformApiError && (e.status === 404 || e.status >= 500)
-          ? "Nearby shop search isn't available yet. Pick a shop you've used before, or try again later."
-          : /ExpoLocation|native module/i.test(
-                e instanceof Error ? e.message : ""
-              )
-            ? "Location is unavailable in this build. Rebuild the app to enable nearby shops."
-            : e instanceof PlatformApiError
-              ? e.message
-              : e instanceof Error
-                ? e.message
-                : "Could not find nearby shops.";
-      setNearbyError(message);
-      setNearbyShops([]);
-      setNearbyFetched(true);
-    } finally {
-      setNearbyLoading(false);
-    }
   };
 
   const handleSubmit = async () => {
@@ -656,11 +471,13 @@ export default function BookScreen() {
         { role: "customer" }
       );
 
+      const existingProfile = await getCustomerProfile();
       const contact = {
         firstName: firstName.trim(),
         lastName: lastName.trim(),
         email: email.trim(),
         phone: phone.trim(),
+        address: collectionAddress.trim() || existingProfile.address,
       };
       await saveContact(contact);
       const { profile: afterBike, bike } = await upsertBike(
@@ -729,29 +546,11 @@ export default function BookScreen() {
         {/* Shop */}
         <Card style={styles.section}>
           <Text style={styles.sectionTitle}>Bike Shop</Text>
-          <TouchableOpacity
-            style={styles.pickerButton}
-            onPress={() => setShopPickerOpen(true)}
-            activeOpacity={0.7}
-          >
-            <Text
-              style={[
-                styles.pickerButtonText,
-                !selectedShop && styles.pickerPlaceholder,
-              ]}
-              numberOfLines={1}
-            >
-              {selectedShop
-                ? selectedShop.name
-                : "Select a bike shop"}
-            </Text>
-            <Ionicons name="chevron-down" size={18} color={theme.textSecondary} />
-          </TouchableOpacity>
-          {!selectedShop ? (
-            <Text style={styles.hint}>
-              Choose a shop you've used before, or find one nearby.
-            </Text>
-          ) : null}
+          <ShopPicker
+            pastShops={pastShops}
+            selectedShop={selectedShop}
+            onSelect={selectShop}
+          />
         </Card>
 
         {/* Contact Info */}
@@ -813,7 +612,12 @@ export default function BookScreen() {
             <Switch
               value={smsConsent}
               onValueChange={setSmsConsent}
-              trackColor={{ true: colors.amber[500], false: theme.iconMuted }}
+              trackColor={{
+                true: colors.amber[500],
+                false: colors.slate[400],
+              }}
+              ios_backgroundColor={colors.slate[400]}
+              thumbColor={colors.white}
             />
             <Text style={styles.consentText}>
               Optional: I agree to receive service-related SMS from{" "}
@@ -889,8 +693,7 @@ export default function BookScreen() {
         {/* Services */}
         {selectedShop && servicesLoading ? (
           <Card style={styles.section}>
-            <ActivityIndicator color={colors.amber[500]} />
-            <Text style={styles.hint}>Loading services…</Text>
+            <BikeLoader label="Loading services…" />
           </Card>
         ) : null}
         {selectedShop && !servicesLoading && services.length > 0 ? (
@@ -1032,108 +835,6 @@ export default function BookScreen() {
           disabled={!selectedShop}
         />
       </ScrollView>
-
-      {/* Shop picker modal */}
-      <BottomSheetModal
-        visible={shopPickerOpen}
-        title="Select a shop"
-        onClose={() => setShopPickerOpen(false)}
-      >
-        <ScrollView style={styles.modalList}>
-          {pastShops.length > 0 ? (
-            <>
-              <Text style={styles.modalSectionLabel}>Your shops</Text>
-              {pastShops.map((shop) => {
-                const selected =
-                  selectedShop?.subdomain === shop.subdomain;
-                return (
-                  <TouchableOpacity
-                    key={shop.subdomain}
-                    style={[
-                      styles.modalItem,
-                      selected && styles.modalItemSelected,
-                    ]}
-                    onPress={() =>
-                      selectShop({
-                        subdomain: shop.subdomain,
-                        name: shop.name,
-                      })
-                    }
-                  >
-                    <Ionicons
-                      name={selected ? "radio-button-on" : "radio-button-off"}
-                      size={20}
-                      color={
-                        selected ? colors.amber[500] : theme.textMuted
-                      }
-                    />
-                    <View style={styles.modalItemText}>
-                      <Text style={styles.modalItemTitle}>{shop.name}</Text>
-                      <Text style={styles.modalItemSubtitle}>
-                        {shop.subdomain}
-                      </Text>
-                    </View>
-                  </TouchableOpacity>
-                );
-              })}
-            </>
-          ) : (
-            <Text style={styles.emptyShopHint}>
-              No past shops yet. Find one nearby to get started.
-            </Text>
-          )}
-
-          <Text style={styles.modalSectionLabel}>Nearby</Text>
-          <Button
-            title={nearbyLoading ? "Finding…" : "Find nearby shops"}
-            onPress={findNearbyShops}
-            loading={nearbyLoading}
-            variant="secondary"
-            style={styles.nearbyButton}
-          />
-          {nearbyError ? (
-            <Text style={styles.nearbyStatus}>{nearbyError}</Text>
-          ) : null}
-          {!nearbyError && nearbyFetched && nearbyShops.length === 0 ? (
-            <Text style={styles.nearbyStatus}>
-              No shops found nearby. Try again later.
-            </Text>
-          ) : null}
-          {nearbyShops.map((shop) => {
-            const selected =
-              selectedShop?.subdomain === shop.subdomain;
-            return (
-              <TouchableOpacity
-                key={shop.id}
-                style={[
-                  styles.modalItem,
-                  selected && styles.modalItemSelected,
-                ]}
-                onPress={() =>
-                  selectShop({
-                    subdomain: shop.subdomain,
-                    name: shop.name,
-                  })
-                }
-              >
-                <Ionicons
-                  name={selected ? "radio-button-on" : "radio-button-off"}
-                  size={20}
-                  color={selected ? colors.amber[500] : theme.textMuted}
-                />
-                <View style={styles.modalItemText}>
-                  <Text style={styles.modalItemTitle}>{shop.name}</Text>
-                  <Text style={styles.modalItemSubtitle}>
-                    {shop.address
-                      ? `${shop.address} · ${shop.distanceKm.toFixed(1)} km`
-                      : `${shop.distanceKm.toFixed(1)} km away`}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            );
-          })}
-        </ScrollView>
-      </BottomSheetModal>
 
       {/* Bike picker modal */}
       <BottomSheetModal

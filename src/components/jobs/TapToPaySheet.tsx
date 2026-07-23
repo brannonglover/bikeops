@@ -17,6 +17,7 @@ import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { formatCurrency } from "@/lib/format";
 import { Button } from "@/components/ui/Button";
+import { BikeLoader } from "@/components/ui/BikeLoader";
 
 type Phase =
   | "idle"
@@ -396,10 +397,11 @@ export function TapToPaySheet({
       case "connecting":
         return (
           <View style={styles.header}>
-            <ActivityIndicator size="large" color={colors.emerald[600]} />
-            <Text style={styles.title}>
-              {phase === "discovering" ? "Setting up reader…" : "Connecting…"}
-            </Text>
+            <BikeLoader
+              label={
+                phase === "discovering" ? "Setting up reader…" : "Connecting…"
+              }
+            />
             <Text style={styles.subtitle}>This takes just a moment.</Text>
           </View>
         );
@@ -435,8 +437,7 @@ export function TapToPaySheet({
       case "processing":
         return (
           <View style={styles.header}>
-            <ActivityIndicator size="large" color={colors.emerald[600]} />
-            <Text style={styles.title}>Processing…</Text>
+            <BikeLoader label="Processing…" />
             <Text style={styles.subtitle}>Do not remove card or close the app.</Text>
           </View>
         );

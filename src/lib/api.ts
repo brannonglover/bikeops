@@ -97,31 +97,27 @@ export async function getLastStaffShopSubdomain(): Promise<string | null> {
   return getStoredCookie(STAFF_SHOP_SUBDOMAIN_KEY);
 }
 
-function buildCustomerApiUrlFromSubdomain(
-  subdomain: string | null | undefined
-): string {
-  const candidate =
-    subdomain?.trim() || process.env.EXPO_PUBLIC_SHOP_SUBDOMAIN?.trim() || "";
-  if (!candidate) return DEFAULT_API_URL;
-  try {
-    return getShopApiUrl(candidate);
-  } catch {
-    return DEFAULT_API_URL;
-  }
+function buildCustomerApiUrlFromSubdomain(subdomain: string): string {
+  return getShopApiUrl(subdomain);
 }
 
 async function getCustomerApiUrl(): Promise<string> {
-  if (customerApiUrlMemCache !== undefined) {
-    return customerApiUrlMemCache ?? buildCustomerApiUrlFromSubdomain(null);
+  if (customerApiUrlMemCache) {
+    return customerApiUrlMemCache;
+  }
+  if (customerApiUrlMemCache === null) {
+    throw new Error("Select a bike shop before continuing.");
   }
   const stored = await getStoredCookie(CUSTOMER_SHOP_SUBDOMAIN_KEY);
   customerShopSubdomainMemCache = stored;
   const name = await getStoredCookie(CUSTOMER_SHOP_NAME_KEY);
   customerShopNameMemCache = name;
-  customerApiUrlMemCache = stored
-    ? buildCustomerApiUrlFromSubdomain(stored)
-    : null;
-  return customerApiUrlMemCache ?? buildCustomerApiUrlFromSubdomain(null);
+  if (!stored) {
+    customerApiUrlMemCache = null;
+    throw new Error("Select a bike shop before continuing.");
+  }
+  customerApiUrlMemCache = buildCustomerApiUrlFromSubdomain(stored);
+  return customerApiUrlMemCache;
 }
 
 export async function setCustomerShop(
@@ -132,8 +128,20 @@ export async function setCustomerShop(
   if (!normalized || !isValidSubdomain(normalized)) {
     throw new Error("Enter a valid shop subdomain.");
   }
+
+  let previous = customerShopSubdomainMemCache;
+  if (previous === undefined) {
+    previous = await getStoredCookie(CUSTOMER_SHOP_SUBDOMAIN_KEY);
+    customerShopSubdomainMemCache = previous;
+  }
+  if (previous && previous !== normalized) {
+    // Drop the prior shop's session so it is never sent to another tenant.
+    await clearCookie(CUSTOMER_COOKIE_KEY);
+    await clearCookie(CUSTOMER_ROLE_KEY);
+  }
+
   const apiUrl = getShopApiUrl(normalized);
-  const shopName = (name?.trim() || normalized);
+  const shopName = name?.trim() || normalized;
   customerApiUrlMemCache = apiUrl;
   customerShopSubdomainMemCache = normalized;
   customerShopNameMemCache = shopName;
@@ -163,13 +171,52 @@ export async function getCustomerShop(): Promise<{
   return { subdomain, name: name ?? subdomain };
 }
 
-export function getDefaultCustomerShopSubdomain(): string | null {
-  const env = process.env.EXPO_PUBLIC_SHOP_SUBDOMAIN?.trim();
-  return env || null;
-}
-
 export function getDefaultCustomerShopName(): string {
   return process.env.EXPO_PUBLIC_SHOP_NAME?.trim() || "Bike Shop";
+}
+
+/**
+ * Extract a shop subdomain from a magic-link / deep-link URL host.
+ * e.g. https://pedal-forge.bikeops.co/open/login#token=… → "pedal-forge"
+ * Returns null for platform hosts (app., www.) or non-tenant URLs.
+ */
+export function parseShopSubdomainFromUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    const hostname = parsed.hostname.toLowerCase();
+    if (!hostname || hostname === "localhost") return null;
+
+    const defaultHost = getDefaultApiUrl().hostname.toLowerCase();
+    const rootDomain = (
+      process.env.EXPO_PUBLIC_ROOT_DOMAIN ?? "bikeops.co"
+    ).toLowerCase();
+
+    // shop.localhost:port (local multi-tenant)
+    if (hostname.endsWith(".localhost")) {
+      const sub = hostname.slice(0, -".localhost".length);
+      if (sub && isValidSubdomain(sub) && sub !== "app" && sub !== "www") {
+        return sub;
+      }
+      return null;
+    }
+
+    const stripHost = (host: string, root: string): string | null => {
+      if (host === root || host === `app.${root}` || host === `www.${root}`) {
+        return null;
+      }
+      if (!host.endsWith(`.${root}`)) return null;
+      const sub = host.slice(0, -(root.length + 1));
+      if (!sub || sub.includes(".") || !isValidSubdomain(sub)) return null;
+      if (sub === "app" || sub === "www") return null;
+      return sub;
+    };
+
+    return (
+      stripHost(hostname, defaultHost) ?? stripHost(hostname, rootDomain)
+    );
+  } catch {
+    return null;
+  }
 }
 
 async function getApiUrl(role: "staff" | "customer"): Promise<string> {
@@ -205,9 +252,8 @@ export function resolveUrl(url: string): string {
 
 export function resolveCustomerUrl(url: string): string {
   if (!url || isAbsoluteOrLocalUri(url)) return url;
-  const apiUrl =
-    customerApiUrlMemCache ??
-    buildCustomerApiUrlFromSubdomain(customerShopSubdomainMemCache);
+  const apiUrl = customerApiUrlMemCache;
+  if (!apiUrl) return url;
   return `${apiUrl}${url.startsWith("/") ? "" : "/"}${url}`;
 }
 
@@ -216,6 +262,10 @@ export type AuthRole = "staff" | "customer" | null;
 interface FetchOptions extends Omit<RequestInit, "headers"> {
   headers?: Record<string, string>;
   role?: "staff" | "customer";
+  /** Use this cookie instead of the one in SecureStore (e.g. post-logout cleanup). */
+  cookie?: string;
+  /** When false, ignore Set-Cookie / sessionToken in the response. Default true. */
+  persistSession?: boolean;
 }
 
 /** Extracts the raw token value from a stored cookie string like "cookieName=<token>". */
@@ -257,10 +307,16 @@ async function apiFetch<T = unknown>(
   path: string,
   options: FetchOptions = {}
 ): Promise<{ data: T; response: Response }> {
-  const { role = "staff", headers: extraHeaders = {}, ...fetchOptions } = options;
+  const {
+    role = "staff",
+    headers: extraHeaders = {},
+    cookie: cookieOverride,
+    persistSession = true,
+    ...fetchOptions
+  } = options;
   const cookieKey =
     role === "customer" ? CUSTOMER_COOKIE_KEY : STAFF_COOKIE_KEY;
-  const storedCookie = await getStoredCookie(cookieKey);
+  const storedCookie = cookieOverride ?? (await getStoredCookie(cookieKey));
 
   const headers: Record<string, string> = {
     ...extraHeaders,
@@ -302,7 +358,7 @@ async function apiFetch<T = unknown>(
     timeout.clear();
   }
 
-  const setCookie = response.headers.get("set-cookie");
+  const setCookie = persistSession ? response.headers.get("set-cookie") : null;
   if (setCookie) {
     const staffToken = extractCookieValue(
       setCookie,
@@ -338,7 +394,7 @@ async function apiFetch<T = unknown>(
     data = (await response.text()) as unknown as T;
   }
 
-  if (role === "customer") {
+  if (persistSession && role === "customer") {
     const sessionToken = extractCustomerSessionFromResponse(data);
     if (sessionToken) {
       await storeCustomerSessionToken(sessionToken);
@@ -498,13 +554,27 @@ async function clearStaffApiUrl(): Promise<void> {
   await clearCookie(STAFF_SHOP_SUBDOMAIN_KEY);
 }
 
+export async function peekCustomerSessionCookie(): Promise<string | null> {
+  return getStoredCookie(CUSTOMER_COOKIE_KEY);
+}
+
+/**
+ * Clears the local customer session immediately. Server logout is best-effort
+ * in the background so the UI is not blocked; pass the captured cookie so the
+ * request stays authenticated after local clear, and skip persisting Set-Cookie
+ * so a late logout response cannot wipe a newly created session.
+ */
 export async function customerLogout(): Promise<void> {
-  try {
-    await api.post("/api/chat/logout", undefined, { role: "customer" });
-  } catch {
-    // ignore
-  }
+  const cookie = await getStoredCookie(CUSTOMER_COOKIE_KEY);
   await clearCookie(CUSTOMER_COOKIE_KEY);
+  if (!cookie) return;
+  void api
+    .post("/api/chat/logout", undefined, {
+      role: "customer",
+      cookie,
+      persistSession: false,
+    })
+    .catch(() => {});
 }
 
 export async function isStaffAuthenticated(): Promise<boolean> {

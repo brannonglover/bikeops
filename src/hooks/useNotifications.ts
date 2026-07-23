@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef } from "react";
-import { AppState, type AppStateStatus, Linking } from "react-native";
+import {
+  AppState,
+  InteractionManager,
+  type AppStateStatus,
+  Linking,
+} from "react-native";
 import * as Notifications from "expo-notifications";
 import { useRouter } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
@@ -194,15 +199,18 @@ export function useNotifications() {
     if (registeredForRole.current === role) return;
 
     let cancelled = false;
-    registerForPushNotifications(role).then((token) => {
-      if (cancelled) return;
-      if (token) {
-        registeredForRole.current = role;
-        lastRegisteredAt.current = Date.now();
-      }
+    const task = InteractionManager.runAfterInteractions(() => {
+      registerForPushNotifications(role).then((token) => {
+        if (cancelled) return;
+        if (token) {
+          registeredForRole.current = role;
+          lastRegisteredAt.current = Date.now();
+        }
+      });
     });
     return () => {
       cancelled = true;
+      task.cancel();
     };
   }, [role]);
 
@@ -236,10 +244,15 @@ export function useNotifications() {
 
   useEffect(() => {
     if (!role) return;
-    syncBadgeCount();
-    prefetchPresentedChatNotifications();
+    const task = InteractionManager.runAfterInteractions(() => {
+      syncBadgeCount();
+      prefetchPresentedChatNotifications();
+    });
     const id = setInterval(syncBadgeCount, BADGE_SYNC_INTERVAL_MS);
-    return () => clearInterval(id);
+    return () => {
+      task.cancel();
+      clearInterval(id);
+    };
   }, [role, syncBadgeCount, prefetchPresentedChatNotifications]);
 
   // Warm caches on cold start (navigation is handled in app/index.tsx).

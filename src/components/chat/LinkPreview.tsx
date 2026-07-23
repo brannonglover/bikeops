@@ -8,7 +8,8 @@ import {
   StyleSheet,
 } from "react-native";
 import { resolveUrl } from "@/lib/api";
-import { borderRadius, colors } from "@/lib/theme";
+import { borderRadius } from "@/lib/theme";
+import { useTheme } from "@/lib/ThemeContext";
 
 type OgData = {
   imageUrl: string | null;
@@ -20,6 +21,7 @@ type Props = {
 };
 
 export function LinkPreview({ url }: Props) {
+  const { theme } = useTheme();
   const [data, setData] = useState<OgData | null>(null);
   const [imgError, setImgError] = useState(false);
 
@@ -44,7 +46,13 @@ export function LinkPreview({ url }: Props) {
     <TouchableOpacity
       activeOpacity={0.85}
       onPress={() => Linking.openURL(url)}
-      style={styles.card}
+      style={[
+        styles.card,
+        {
+          borderColor: theme.surfaceBorder,
+          backgroundColor: theme.surface,
+        },
+      ]}
     >
       <Image
         source={{ uri: data.imageUrl }}
@@ -54,7 +62,10 @@ export function LinkPreview({ url }: Props) {
       />
       {data.title ? (
         <View style={styles.titleRow}>
-          <Text style={styles.title} numberOfLines={1}>
+          <Text
+            style={[styles.title, { color: theme.textSecondary }]}
+            numberOfLines={1}
+          >
             {data.title}
           </Text>
         </View>
@@ -69,8 +80,6 @@ const styles = StyleSheet.create({
     borderRadius: borderRadius.md,
     overflow: "hidden",
     borderWidth: 1,
-    borderColor: colors.slate[200],
-    backgroundColor: "#ffffff",
   },
   image: {
     width: "100%",
@@ -83,6 +92,5 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 12,
     fontWeight: "500",
-    color: "#374151",
   },
 });

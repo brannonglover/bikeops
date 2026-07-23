@@ -1,5 +1,6 @@
 import { View, Text, StyleSheet, type ViewStyle } from "react-native";
 import { colors, borderRadius, fontSize } from "@/lib/theme";
+import { useTheme } from "@/lib/ThemeContext";
 import { type Stage, STAGE_LABELS, STAGE_COLORS } from "@/lib/types";
 
 interface BadgeProps {
@@ -46,11 +47,28 @@ export function PaymentBadge({
   status: string;
   style?: ViewStyle;
 }) {
+  const { theme } = useTheme();
   const config: Record<string, { color: string; bg: string; label: string }> = {
-    PAID: { color: colors.emerald[700], bg: colors.emerald[50], label: "Paid" },
-    PENDING: { color: colors.amber[700], bg: colors.amber[50], label: "Partially paid" },
-    UNPAID: { color: colors.slate[600], bg: colors.slate[100], label: "Unpaid" },
-    REFUNDED: { color: colors.red[700], bg: colors.red[50], label: "Refunded" },
+    PAID: {
+      color: colors.emerald[theme.dark ? 500 : 700],
+      bg: theme.dark ? colors.emerald[800] + "55" : colors.emerald[50],
+      label: "Paid",
+    },
+    PENDING: {
+      color: colors.amber[theme.dark ? 400 : 700],
+      bg: theme.dark ? colors.amber[800] + "55" : colors.amber[50],
+      label: "Partially paid",
+    },
+    UNPAID: {
+      color: theme.dark ? colors.slate[300] : colors.slate[600],
+      bg: theme.dark ? colors.slate[700] : colors.slate[100],
+      label: "Unpaid",
+    },
+    REFUNDED: {
+      color: colors.red[theme.dark ? 500 : 700],
+      bg: theme.dark ? colors.red[800] + "55" : colors.red[50],
+      label: "Refunded",
+    },
   };
   const c = config[status] ?? config.UNPAID;
   return <Badge label={c.label} color={c.color} backgroundColor={c.bg} style={style} />;

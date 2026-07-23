@@ -1,13 +1,15 @@
-import { useEffect } from "react";
-import { Linking, Alert } from "react-native";
+import { useEffect, useState } from "react";
+import { Alert, Linking, Modal, View } from "react-native";
 import { Stack, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StripeProvider } from "@stripe/stripe-react-native";
 import { AuthProvider, useAuth } from "@/lib/auth";
-import { api } from "@/lib/api";
+import { api, parseShopSubdomainFromUrl, setCustomerShop } from "@/lib/api";
+import { consumeCustomerLoginReturnPath } from "@/lib/customer-login-return";
 import { NotificationProvider } from "@/lib/NotificationProvider";
 import { ThemeProvider, useTheme } from "@/lib/ThemeContext";
+import { BikeLoader } from "@/components/ui/BikeLoader";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -24,43 +26,61 @@ const STRIPE_MERCHANT_IDENTIFIER = "merchant.com.brannonglover.bikeops.app";
 
 function MagicLinkHandler() {
   const { setCustomerAuthenticated } = useAuth();
+  const { theme } = useTheme();
   const router = useRouter();
+  const [verifying, setVerifying] = useState(false);
 
   useEffect(() => {
     const handleUrl = ({ url }: { url: string }) => {
-      let token: string | null = null;
-      try {
-        const parsed = new URL(url);
-        token =
-          parsed.searchParams.get("token") ??
-          new URLSearchParams(parsed.hash.replace(/^#/, "")).get("token");
-      } catch {
-        const queryPart = url.split("?")[1]?.split("#")[0] ?? "";
-        const hashPart = url.split("#")[1] ?? "";
-        token =
-          new URLSearchParams(queryPart).get("token") ??
-          new URLSearchParams(hashPart).get("token");
-      }
-      if (!token) return;
+      void (async () => {
+        let token: string | null = null;
+        try {
+          const parsed = new URL(url);
+          token =
+            parsed.searchParams.get("token") ??
+            new URLSearchParams(parsed.hash.replace(/^#/, "")).get("token");
+        } catch {
+          const queryPart = url.split("?")[1]?.split("#")[0] ?? "";
+          const hashPart = url.split("#")[1] ?? "";
+          token =
+            new URLSearchParams(queryPart).get("token") ??
+            new URLSearchParams(hashPart).get("token");
+        }
+        if (!token) return;
 
-      if (url.includes("/signup/verify")) {
-        router.replace({
-          pathname: "/(auth)/signup/verify",
-          params: { token },
-        });
-        return;
-      }
+        if (url.includes("/signup/verify")) {
+          router.replace({
+            pathname: "/(auth)/signup/verify",
+            params: { token },
+          });
+          return;
+        }
 
-      const destination =
-        url.includes("/chat/c") || /chat\/c/i.test(url)
-          ? "/(customer)/chat"
-          : "/(customer)/";
+        setVerifying(true);
 
-      api
-        .post("/api/chat/verify", { token }, { role: "customer" })
-        .then(() => setCustomerAuthenticated())
-        .then(() => router.replace(destination))
-        .catch(() => Alert.alert("Error", "Invalid or expired link. Please try again."));
+        const returnPath = await consumeCustomerLoginReturnPath();
+        const destination =
+          returnPath ??
+          (url.includes("/chat/c") || /chat\/c/i.test(url)
+            ? "/(customer)/chat"
+            : "/(customer)/");
+
+        try {
+          const shopSub = parseShopSubdomainFromUrl(url);
+          if (shopSub) {
+            await setCustomerShop(shopSub);
+          }
+          await api.post("/api/chat/verify", { token }, { role: "customer" });
+          await setCustomerAuthenticated();
+          // Drop the signing-in overlay before navigating so home can paint
+          // immediately instead of sitting behind the modal.
+          setVerifying(false);
+          router.replace(destination);
+        } catch {
+          setVerifying(false);
+          Alert.alert("Error", "Invalid or expired link. Please try again.");
+        }
+      })();
     };
 
     Linking.getInitialURL().then((url) => {
@@ -71,7 +91,27 @@ function MagicLinkHandler() {
     return () => sub.remove();
   }, [setCustomerAuthenticated, router]);
 
-  return null;
+  if (!verifying) return null;
+
+  return (
+    <Modal
+      visible
+      animationType="fade"
+      transparent={false}
+      statusBarTranslucent
+    >
+      <View
+        style={{
+          flex: 1,
+          justifyContent: "center",
+          alignItems: "center",
+          backgroundColor: theme.background,
+        }}
+      >
+        <BikeLoader label="Signing you in…" />
+      </View>
+    </Modal>
+  );
 }
 
 function RootNav() {

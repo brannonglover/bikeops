@@ -9,7 +9,6 @@ import {
   Alert,
   TextInput,
   Modal,
-  ActivityIndicator,
 } from "react-native";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
@@ -19,6 +18,7 @@ import { type Conversation, type Customer } from "@/lib/types";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { BikeLoader } from "@/components/ui/BikeLoader";
 import {
   conversationsQueryKey,
   fetchStaffConversations,
@@ -221,7 +221,7 @@ export default function ChatListScreen() {
 
       {showInitialLoad ? (
         <View style={styles.initialLoad}>
-          <ActivityIndicator size="large" color={colors.amber[600]} />
+          <BikeLoader label="Loading conversations…" />
         </View>
       ) : conversations.length === 0 ? (
         <EmptyState

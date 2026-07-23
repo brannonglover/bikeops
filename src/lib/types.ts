@@ -22,6 +22,7 @@ export interface Customer {
   phone: string | null;
   address: string | null;
   notes: string | null;
+  imageUrl: string | null;
   bikes: Bike[];
   createdAt: string;
   updatedAt: string;

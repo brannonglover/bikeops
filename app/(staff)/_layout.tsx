@@ -5,10 +5,11 @@ import { useQueryClient } from "@tanstack/react-query";
 import { prefetchStaffHomeData } from "@/lib/staff-queries";
 import { Ionicons } from "@expo/vector-icons";
 import { StripeTerminalProvider, useStripeTerminal } from "@stripe/stripe-terminal-react-native";
-import { colors, spacing } from "@/lib/theme";
+import { getHeaderTitle } from "@react-navigation/elements";
+import { colors } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { HamburgerMenu } from "@/components/ui/HamburgerMenu";
-import { ShopLogo } from "@/components/ui/ShopLogo";
+import { AppHeader } from "@/components/ui/AppHeader";
 import { api } from "@/lib/api";
 
 function StaffTabs() {
@@ -32,34 +33,28 @@ function StaffTabs() {
 
   return (
     <Tabs
-      screenOptions={{
+      screenOptions={({ route }) => ({
         tabBarActiveTintColor: colors.amber[600],
         tabBarInactiveTintColor: theme.textMuted,
         tabBarStyle: {
           borderTopColor: theme.tabBarBorder,
           backgroundColor: theme.tabBarBg,
         },
-        headerStyle: {
-          backgroundColor: theme.headerBg,
-          shadowColor: theme.surfaceBorder,
-          shadowOpacity: 1,
-          shadowOffset: { width: 0, height: 1 },
-          shadowRadius: 0,
-          elevation: 1,
-        },
         headerTitleStyle: {
           fontWeight: "700",
           color: theme.text,
         },
-        headerLeftContainerStyle: {
-          paddingLeft: spacing[4],
-        },
-        headerRightContainerStyle: {
-          paddingRight: spacing[4],
-        },
-        headerLeft: () => <ShopLogo />,
         headerRight: () => <HamburgerMenu />,
-      }}
+        header: ({ options }) => (
+          <AppHeader
+            title={getHeaderTitle(options, route.name)}
+            headerLeft={options.headerLeft}
+            headerRight={options.headerRight}
+            headerTitle={options.headerTitle}
+            defaultLeft="logo"
+          />
+        ),
+      })}
     >
       <Tabs.Screen
         name="(jobs)"

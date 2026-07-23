@@ -12,6 +12,10 @@ import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/lib/api";
 import { type Job, STAGE_COLORS } from "@/lib/types";
+import {
+  customerJobsQueryKey,
+  setCustomerLoadPriority,
+} from "@/lib/customer-load-priority";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { Card } from "@/components/ui/Card";
@@ -40,7 +44,7 @@ export default function RepairsScreen() {
     isLoading,
     refetch,
   } = useQuery({
-    queryKey: ["customer-jobs"],
+    queryKey: customerJobsQueryKey,
     queryFn: async () => {
       const { data } = await api.get<Job[]>("/api/customer/jobs", {
         role: "customer",
@@ -52,6 +56,7 @@ export default function RepairsScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      setCustomerLoadPriority("repairs");
       void refetch();
     }, [refetch])
   );

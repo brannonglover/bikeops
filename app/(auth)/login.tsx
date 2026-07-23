@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import { useLocalSearchParams } from "expo-router";
 import {
   View,
@@ -12,9 +12,25 @@ import {
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/lib/auth";
-import { api, ApiError, getLastStaffShopSubdomain } from "@/lib/api";
+import {
+  api,
+  ApiError,
+  getLastStaffShopSubdomain,
+  getCustomerShop,
+  setCustomerShop,
+} from "@/lib/api";
+import {
+  getCustomerProfile,
+  rememberShop,
+  type PastShop,
+} from "@/lib/customer-profile";
+import { setCustomerLoginReturnPath } from "@/lib/customer-login-return";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
+import {
+  ShopPicker,
+  type SelectedShop,
+} from "@/components/customer/ShopPicker";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 
@@ -37,6 +53,8 @@ export default function LoginScreen() {
   const [customerEmail, setCustomerEmail] = useState("");
   const [requestingLogin, setRequestingLogin] = useState(false);
   const [loginMessage, setLoginMessage] = useState<string | null>(null);
+  const [selectedShop, setSelectedShop] = useState<SelectedShop | null>(null);
+  const [pastShops, setPastShops] = useState<PastShop[]>([]);
 
   useEffect(() => {
     getLastStaffShopSubdomain()
@@ -58,12 +76,47 @@ export default function LoginScreen() {
     }
   }, [params.mode, params.shopSubdomain, params.email]);
 
+  useEffect(() => {
+    if (mode !== "customer") return;
+    let cancelled = false;
+    (async () => {
+      const profile = await getCustomerProfile();
+      if (cancelled) return;
+      setPastShops(profile.pastShops);
+      if (profile.email) {
+        setCustomerEmail((prev) => prev || profile.email);
+      }
+      const stored = await getCustomerShop();
+      if (cancelled) return;
+      if (stored?.subdomain) {
+        setSelectedShop({
+          subdomain: stored.subdomain,
+          name: stored.name ?? stored.subdomain,
+        });
+      } else if (profile.pastShops[0]) {
+        const shop = profile.pastShops[0];
+        setSelectedShop({ subdomain: shop.subdomain, name: shop.name });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [mode]);
+
+  const selectCustomerShop = useCallback(async (shop: SelectedShop) => {
+    await setCustomerShop(shop.subdomain, shop.name);
+    const profile = await rememberShop(shop.subdomain, shop.name);
+    setPastShops(profile.pastShops);
+    setSelectedShop(shop);
+  }, []);
 
   const handleCustomerLogin = async () => {
-    if (!customerEmail.trim()) return;
+    if (!customerEmail.trim() || !selectedShop) return;
     setRequestingLogin(true);
     setLoginMessage(null);
     try {
+      await setCustomerShop(selectedShop.subdomain, selectedShop.name);
+      await setCustomerLoginReturnPath("/(customer)/");
       const { data } = await api.post<{ message?: string }>(
         "/api/chat/request-login",
         { email: customerEmail.trim().toLowerCase() },
@@ -122,6 +175,15 @@ export default function LoginScreen() {
         },
         inputContainer: {
           marginBottom: spacing[4],
+        },
+        shopField: {
+          marginBottom: spacing[4],
+        },
+        shopLabel: {
+          ...fontSize.sm,
+          fontWeight: "500",
+          color: theme.textTertiary,
+          marginBottom: spacing[1],
         },
         error: {
           ...fontSize.sm,
@@ -222,8 +284,16 @@ export default function LoginScreen() {
               marginBottom: spacing[4],
             }}
           >
-            Enter your email and we'll send you a login link.
+            Choose your bike shop, then enter your email for a login link.
           </Text>
+          <View style={styles.shopField}>
+            <Text style={styles.shopLabel}>Bike Shop</Text>
+            <ShopPicker
+              pastShops={pastShops}
+              selectedShop={selectedShop}
+              onSelect={selectCustomerShop}
+            />
+          </View>
           <Input
             label="Email"
             placeholder="you@example.com"
@@ -250,7 +320,7 @@ export default function LoginScreen() {
             title={requestingLogin ? "Sending..." : "Send Login Link"}
             onPress={handleCustomerLogin}
             loading={requestingLogin}
-            disabled={!customerEmail.trim()}
+            disabled={!customerEmail.trim() || !selectedShop}
             style={styles.button}
           />
           <TouchableOpacity onPress={() => setMode("pick")} style={styles.backLink}>

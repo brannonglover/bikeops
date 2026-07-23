@@ -10,6 +10,7 @@ import {
   staffLogin as apiStaffLogin,
   staffLogout as apiStaffLogout,
   customerLogout as apiCustomerLogout,
+  peekCustomerSessionCookie,
   isCustomerAuthenticated,
   getCachedStaffSession,
   cacheStaffSession,
@@ -63,19 +64,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       const customerPersisted = await hasPersistedCustomerRole();
       if (customerPersisted) {
-        const stillAuthed = await isCustomerAuthenticated();
-        if (stillAuthed) {
-          setRole("customer");
+        // Optimistic: let Home paint immediately. Confirm the session in the
+        // background — don't block startup on /api/chat/me.
+        setRole("customer");
+        setStaffUser(null);
+        void isCustomerAuthenticated().then(async (stillAuthed) => {
+          if (stillAuthed) return;
+          await clearCustomerRole();
+          setRole(null);
           setStaffUser(null);
-          return;
-        }
-        await clearCustomerRole();
+        });
+        return;
       }
 
       const customerAuth = await isCustomerAuthenticated();
       if (customerAuth) {
         setRole("customer");
         setStaffUser(null);
+        void persistCustomerRole();
         return;
       }
 
@@ -100,10 +106,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         queryClient.clear();
         const user = result.user ?? { id: "", email, name: "" };
         const session = { user };
-        await cacheStaffSession(session);
         setRole("staff");
         setStaffUser(user);
-        clearCustomerRole().catch(() => {});
+        void cacheStaffSession(session);
+        void clearCustomerRole();
       }
       return result;
     },
@@ -120,18 +126,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const customerLogin = useCallback(async () => {
     queryClient.clear();
-    await persistCustomerRole();
     setRole("customer");
+    void persistCustomerRole();
   }, [queryClient]);
 
   const setCustomerAuthenticated = useCallback(async () => {
     queryClient.clear();
-    await persistCustomerRole();
+    // Paint customer routes immediately; SecureStore can finish in the background.
     setRole("customer");
+    void persistCustomerRole();
   }, [queryClient]);
 
   const customerLogout = useCallback(async () => {
-    await unregisterPushToken("customer");
+    const cookie = await peekCustomerSessionCookie();
+    // Local clear first so the UI can exit immediately; server cleanup is
+    // best-effort in the background with the captured cookie.
+    void unregisterPushToken("customer", { cookie });
     await apiCustomerLogout();
     queryClient.clear();
     await clearCustomerRole();

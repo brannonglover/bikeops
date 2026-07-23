@@ -4,6 +4,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/lib/ThemeContext";
 import { HamburgerMenu } from "@/components/ui/HamburgerMenu";
 import { ShopLogo } from "@/components/ui/ShopLogo";
+import { renderAppHeader } from "@/components/ui/AppHeader";
 
 export default function ChatLayout() {
   const { theme } = useTheme();
@@ -12,9 +13,10 @@ export default function ChatLayout() {
   return (
     <Stack
       screenOptions={{
-        headerStyle: { backgroundColor: theme.headerBg },
+        header: renderAppHeader,
+        animation: "simple_push",
+        customAnimationOnSwipe: true,
         headerTitleStyle: { fontWeight: "700", color: theme.text },
-        headerLeft: () => <ShopLogo />,
         headerRight: () => <HamburgerMenu />,
       }}
     >

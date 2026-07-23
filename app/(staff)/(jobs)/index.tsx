@@ -459,7 +459,12 @@ export default function JobBoardScreen() {
 
       {showInitialLoad ? (
         <View style={styles.initialLoad}>
-          <ActivityIndicator size="large" color={colors.amber[600]} />
+          <ActivityIndicator size="small" color={colors.amber[600]} />
+          <Text
+            style={[styles.initialLoadText, { color: theme.textSecondary }]}
+          >
+            Loading jobs…
+          </Text>
         </View>
       ) : jobs.length === 0 ? (
         <EmptyState
@@ -939,6 +944,11 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
+    gap: spacing[3],
     paddingVertical: spacing[12],
+  },
+  initialLoadText: {
+    ...fontSize.sm,
+    fontWeight: "500",
   },
 });

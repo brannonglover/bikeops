@@ -18,13 +18,18 @@ import {
   type NativeSyntheticEvent,
   type NativeScrollEvent,
 } from "react-native";
-import { Stack, useLocalSearchParams } from "expo-router";
+import { Stack, useLocalSearchParams, useFocusEffect } from "expo-router";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQueryClient } from "@tanstack/react-query";
 import * as ImagePicker from "expo-image-picker";
 import { Ionicons } from "@expo/vector-icons";
-import { api, isCustomerAuthenticated, resolveCustomerUrl } from "@/lib/api";
+import { api, isCustomerAuthenticated, resolveCustomerUrl, getCustomerShop, setCustomerShop, parseShopSubdomainFromUrl, peekCustomerSessionCookie } from "@/lib/api";
+import {
+  getCustomerProfile,
+  rememberShop,
+  type PastShop,
+} from "@/lib/customer-profile";
 import {
   buildPendingChatImage,
   hasUploadingPendingImages,
@@ -34,30 +39,64 @@ import {
 } from "@/lib/chat-attachments";
 import { useAuth } from "@/lib/auth";
 import { CUSTOMER_MESSAGES_QUERY_KEY } from "@/hooks/useNotifications";
+import { setCustomerLoadPriority } from "@/lib/customer-load-priority";
 import { type ChatMessage } from "@/lib/types";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
-import { LoadingScreen } from "@/components/ui/LoadingScreen";
+import { BikeLoader } from "@/components/ui/BikeLoader";
+import { SectionLoader } from "@/components/ui/SectionLoader";
 import { ImageViewer } from "@/components/ui/ImageViewer";
 import { LinkifiedText } from "@/components/chat/LinkifiedText";
 import { LinkPreview } from "@/components/chat/LinkPreview";
+import {
+  ShopPicker,
+  ShopPickerModal,
+  type SelectedShop,
+} from "@/components/customer/ShopPicker";
+import { formatTime } from "@/lib/format";
 
 const URL_REGEX = /(https?:\/\/[^\s]+)/g;
 function extractUrls(text: string): string[] {
   return Array.from(new Set(text.match(URL_REGEX) ?? []));
 }
-import { formatTime } from "@/lib/format";
 
 const POLL_MS = 3000;
 const REACTION_EMOJIS = ["\u{1F44D}", "\u{2764}\u{FE0F}", "\u{1F602}", "\u{1F62E}", "\u{1F622}", "\u{1F64F}"];
 
 type AuthState = "loading" | "needs_login" | "authenticated";
 
+type MessagesCache =
+  | ChatMessage[]
+  | { messages: ChatMessage[]; staffLastReadAt?: string | null };
+
+function readCachedThread(queryClient: {
+  getQueryData: <T>(key: readonly unknown[]) => T | undefined;
+}): {
+  messages: ChatMessage[];
+  staffLastReadAt: string | null;
+  ready: boolean;
+} {
+  const cached = queryClient.getQueryData<MessagesCache>(
+    CUSTOMER_MESSAGES_QUERY_KEY
+  );
+  if (!cached) {
+    return { messages: [], staffLastReadAt: null, ready: false };
+  }
+  if (Array.isArray(cached)) {
+    return { messages: cached, staffLastReadAt: null, ready: true };
+  }
+  return {
+    messages: cached.messages ?? [],
+    staffLastReadAt: cached.staffLastReadAt ?? null,
+    ready: true,
+  };
+}
+
 export default function CustomerChatScreen() {
   const { theme } = useTheme();
-  const { setCustomerAuthenticated } = useAuth();
+  const { role, setCustomerAuthenticated, customerLogout } = useAuth();
   const queryClient = useQueryClient();
   const headerHeight = useHeaderHeight();
   const insets = useSafeAreaInsets();
@@ -73,16 +112,31 @@ export default function CustomerChatScreen() {
         ? params.messageId[0]
         : params.messageId;
   const [showScrollButton, setShowScrollButton] = useState(false);
-  const [authState, setAuthState] = useState<AuthState>("loading");
+  // Trust in-memory auth so revisits don't flash a loader while SecureStore /
+  // /api/chat/me catch up. Shop presence is confirmed in the bootstrap effect.
+  const [authState, setAuthState] = useState<AuthState>(() =>
+    role === "customer" ? "authenticated" : "loading"
+  );
   const [email, setEmail] = useState("");
   const [requestingLogin, setRequestingLogin] = useState(false);
   const [loginMessage, setLoginMessage] = useState<string | null>(null);
+  const [selectedShop, setSelectedShop] = useState<SelectedShop | null>(null);
+  const [pastShops, setPastShops] = useState<PastShop[]>([]);
+  const [changeShopOpen, setChangeShopOpen] = useState(false);
 
   const [token, setToken] = useState<string | null>(null);
   const [verifying, setVerifying] = useState(false);
 
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [staffLastReadAt, setStaffLastReadAt] = useState<string | null>(null);
+  const cachedThread = readCachedThread(queryClient);
+  const [messages, setMessages] = useState<ChatMessage[]>(
+    () => cachedThread.messages
+  );
+  const [messagesReady, setMessagesReady] = useState(
+    () => cachedThread.ready
+  );
+  const [staffLastReadAt, setStaffLastReadAt] = useState<string | null>(
+    () => cachedThread.staffLastReadAt
+  );
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingChatImage[]>([]);
@@ -113,18 +167,98 @@ export default function CustomerChatScreen() {
     }, 2000);
   }, []);
 
+  const clearThreadState = useCallback(() => {
+    setMessages([]);
+    setMessagesReady(false);
+    setStaffLastReadAt(null);
+    setPendingImages([]);
+    setText("");
+    setEditingMessage(null);
+    setActiveMessage(null);
+    setShowScrollButton(false);
+    didInitialAutoScrollRef.current = false;
+    queryClient.removeQueries({ queryKey: CUSTOMER_MESSAGES_QUERY_KEY });
+  }, [queryClient]);
+
   useEffect(() => {
-    isCustomerAuthenticated().then((authed) =>
-      setAuthState(authed ? "authenticated" : "needs_login")
-    );
-  }, []);
+    let cancelled = false;
+    (async () => {
+      const [profile, stored, cookie] = await Promise.all([
+        getCustomerProfile(),
+        getCustomerShop(),
+        peekCustomerSessionCookie(),
+      ]);
+      if (cancelled) return;
+
+      setPastShops(profile.pastShops);
+      if (profile.email) setEmail((prev) => prev || profile.email);
+
+      let shop: SelectedShop | null = null;
+      if (stored?.subdomain) {
+        shop = {
+          subdomain: stored.subdomain,
+          name: stored.name ?? stored.subdomain,
+        };
+      } else if (profile.pastShops[0]) {
+        const past = profile.pastShops[0];
+        shop = { subdomain: past.subdomain, name: past.name };
+      }
+      setSelectedShop(shop);
+
+      // Local signals are enough to paint chat; validate the session in the
+      // background so revisits aren't blocked on /api/chat/me.
+      const hasLocalSession = (role === "customer" || !!cookie) && !!shop;
+      if (hasLocalSession) {
+        setAuthState("authenticated");
+        void isCustomerAuthenticated().then((ok) => {
+          if (cancelled || ok) return;
+          setAuthState("needs_login");
+          setMessagesReady(false);
+        });
+        return;
+      }
+
+      if (!shop) {
+        setAuthState("needs_login");
+        return;
+      }
+
+      const authed = await isCustomerAuthenticated();
+      if (cancelled) return;
+      setAuthState(authed ? "authenticated" : "needs_login");
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [role]);
+
+  useFocusEffect(
+    useCallback(() => {
+      setCustomerLoadPriority("chat");
+    }, [])
+  );
 
   useEffect(() => {
     const handleUrl = ({ url }: { url: string }) => {
-      const hash = url.split("#")[1] ?? "";
-      const params = new URLSearchParams(hash);
-      const t = params.get("token");
-      if (t) setToken(t);
+      void (async () => {
+        const shopSub = parseShopSubdomainFromUrl(url);
+        if (shopSub) {
+          await setCustomerShop(shopSub);
+          setSelectedShop({ subdomain: shopSub, name: shopSub });
+        }
+
+        let tokenValue: string | null = null;
+        try {
+          const parsed = new URL(url);
+          tokenValue =
+            parsed.searchParams.get("token") ??
+            new URLSearchParams(parsed.hash.replace(/^#/, "")).get("token");
+        } catch {
+          const hash = url.split("#")[1] ?? "";
+          tokenValue = new URLSearchParams(hash).get("token");
+        }
+        if (tokenValue) setToken(tokenValue);
+      })();
     };
 
     Linking.getInitialURL().then((url) => {
@@ -138,18 +272,72 @@ export default function CustomerChatScreen() {
   useEffect(() => {
     if (!token) return;
     setVerifying(true);
-    api
-      .post("/api/chat/verify", { token }, { role: "customer" })
-      .then(() => {
+    (async () => {
+      try {
+        await api.post("/api/chat/verify", { token }, { role: "customer" });
         setAuthState("authenticated");
-        setCustomerAuthenticated();
-      })
-      .catch(() => Alert.alert("Error", "Invalid or expired link."))
-      .finally(() => {
+        await setCustomerAuthenticated();
+        setLoginMessage(null);
+      } catch {
+        Alert.alert("Error", "Invalid or expired link.");
+      } finally {
         setVerifying(false);
         setToken(null);
-      });
+      }
+    })();
   }, [token, setCustomerAuthenticated]);
+
+  const selectChatShop = useCallback(async (shop: SelectedShop) => {
+    await setCustomerShop(shop.subdomain, shop.name);
+    const profile = await rememberShop(shop.subdomain, shop.name);
+    setPastShops(profile.pastShops);
+    setSelectedShop(shop);
+  }, []);
+
+  const handleChangeShop = useCallback(
+    async (shop: SelectedShop) => {
+      setChangeShopOpen(false);
+      if (selectedShop?.subdomain === shop.subdomain) return;
+
+      clearThreadState();
+      try {
+        await customerLogout();
+      } catch {
+        // Best-effort; tenant switch below still clears local session.
+      }
+      await setCustomerShop(shop.subdomain, shop.name);
+      const profile = await rememberShop(shop.subdomain, shop.name);
+      setPastShops(profile.pastShops);
+      setSelectedShop(shop);
+      if (profile.email) setEmail((prev) => prev || profile.email);
+
+      setAuthState("needs_login");
+      setLoginMessage(`Sign in again to chat with ${shop.name}.`);
+    },
+    [selectedShop?.subdomain, clearThreadState, customerLogout]
+  );
+
+  const handleRequestLogin = async () => {
+    if (!email.trim() || !selectedShop) return;
+    setRequestingLogin(true);
+    setLoginMessage(null);
+    try {
+      await setCustomerShop(selectedShop.subdomain, selectedShop.name);
+      const { data } = await api.post<{ message?: string }>(
+        "/api/chat/request-login",
+        { email: email.trim().toLowerCase() },
+        { role: "customer" }
+      );
+      setLoginMessage(
+        data.message ??
+          "Check your email for a login link. It may take a minute."
+      );
+    } catch {
+      setLoginMessage("Something went wrong. Please try again.");
+    } finally {
+      setRequestingLogin(false);
+    }
+  };
 
   const mergeServerMessages = useCallback((serverMessages: ChatMessage[]) => {
     setMessages((prev) => {
@@ -169,20 +357,34 @@ export default function CustomerChatScreen() {
     });
   }, []);
 
-  useEffect(() => {
-    if (authState !== "authenticated") return;
-    const cached = queryClient.getQueryData<
-      ChatMessage[] | { messages: ChatMessage[]; staffLastReadAt?: string | null }
-    >(CUSTOMER_MESSAGES_QUERY_KEY);
-    if (!cached) return;
+  const applyCachedThread = useCallback(() => {
+    const cached = readCachedThread(queryClient);
+    if (!cached.ready) return false;
+    mergeServerMessages(cached.messages);
+    setStaffLastReadAt((prev) => prev ?? cached.staffLastReadAt);
+    setMessagesReady(true);
+    return true;
+  }, [mergeServerMessages, queryClient]);
 
-    if (Array.isArray(cached)) {
-      mergeServerMessages(cached);
-    } else {
-      mergeServerMessages(cached.messages ?? []);
-      setStaffLastReadAt(cached.staffLastReadAt ?? null);
+  const messagesReadyRef = useRef(messagesReady);
+  messagesReadyRef.current = messagesReady;
+
+  useEffect(() => {
+    if (authState !== "authenticated") {
+      if (authState === "needs_login") setMessagesReady(false);
+      return;
     }
-  }, [authState, mergeServerMessages, queryClient]);
+    // Re-hydrate from React Query when auth flips on (e.g. after magic link),
+    // and pick up home→chat prefetch as soon as it lands in the cache.
+    applyCachedThread();
+    return queryClient.getQueryCache().subscribe((event) => {
+      if (event.type !== "updated") return;
+      if (event.query.queryKey[0] !== CUSTOMER_MESSAGES_QUERY_KEY[0]) return;
+      // After the first successful load, fetchMessages owns live updates.
+      if (messagesReadyRef.current) return;
+      applyCachedThread();
+    });
+  }, [authState, applyCachedThread, queryClient]);
 
   const fetchMessages = useCallback(async () => {
     if (authState !== "authenticated") return;
@@ -198,10 +400,14 @@ export default function CustomerChatScreen() {
         mergeServerMessages(data.messages ?? []);
         setStaffLastReadAt(data.staffLastReadAt ?? null);
       }
+      setMessagesReady(true);
     } catch {
-      // ignore
+      // Keep the bike loader up on failure — a transient auth/network miss
+      // used to flip ready=true and flash "No messages yet" until the 3s
+      // poll succeeded. Prefer cache (e.g. home prefetch) when available.
+      applyCachedThread();
     }
-  }, [authState, mergeServerMessages, queryClient]);
+  }, [authState, applyCachedThread, mergeServerMessages, queryClient]);
 
   useEffect(() => {
     fetchMessages();
@@ -294,27 +500,6 @@ export default function CustomerChatScreen() {
     flatListRef.current?.scrollToEnd({ animated: true });
   }, []);
 
-  const handleRequestLogin = async () => {
-    if (!email.trim()) return;
-    setRequestingLogin(true);
-    setLoginMessage(null);
-    try {
-      const { data } = await api.post<{ message?: string }>(
-        "/api/chat/request-login",
-        { email: email.trim().toLowerCase() },
-        { role: "customer" }
-      );
-      setLoginMessage(
-        data.message ??
-          "Check your email for a login link. It may take a minute."
-      );
-    } catch {
-      setLoginMessage("Something went wrong. Please try again.");
-    } finally {
-      setRequestingLogin(false);
-    }
-  };
-
   const handleSend = useCallback(async () => {
     const textToSend = text.trim();
     const imagesToSend = pendingImages.filter(isPendingChatImageReady);
@@ -363,9 +548,15 @@ export default function CustomerChatScreen() {
         { role: "customer" }
       );
       const deliveredMsg: ChatMessage = { ...newMsg, clientDeliveryState: "DELIVERED" };
-      setMessages((prev) =>
-        prev.map((m) => (m.id === tempId ? deliveredMsg : m))
-      );
+      setMessages((prev) => {
+        const next = prev.map((m) => (m.id === tempId ? deliveredMsg : m));
+        queryClient.setQueryData(CUSTOMER_MESSAGES_QUERY_KEY, (old: MessagesCache | undefined) => {
+          if (!old) return next;
+          if (Array.isArray(old)) return next;
+          return { ...old, messages: next };
+        });
+        return next;
+      });
       clearClientDeliveryStateLater(deliveredMsg.id);
     } catch {
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
@@ -373,7 +564,7 @@ export default function CustomerChatScreen() {
     } finally {
       setSending(false);
     }
-  }, [text, pendingImages, clearClientDeliveryStateLater]);
+  }, [text, pendingImages, clearClientDeliveryStateLater, queryClient]);
 
   const handlePickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -518,6 +709,12 @@ export default function CustomerChatScreen() {
           gap: spacing[4],
           backgroundColor: theme.background,
         },
+        loaderScreen: {
+          flex: 1,
+          justifyContent: "center",
+          alignItems: "center",
+          backgroundColor: theme.background,
+        },
         loginTitle: {
           ...fontSize.xl,
           fontWeight: "700",
@@ -531,6 +728,39 @@ export default function CustomerChatScreen() {
         loginInput: {
           width: "100%",
           maxWidth: 320,
+        },
+        loginShop: {
+          width: "100%",
+          maxWidth: 320,
+          gap: spacing[2],
+        },
+        loginShopLabel: {
+          ...fontSize.sm,
+          fontWeight: "500",
+          color: theme.textSecondary,
+        },
+        shopBar: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: spacing[3],
+          paddingHorizontal: spacing[4],
+          paddingVertical: spacing[3],
+          borderBottomWidth: 1,
+          borderBottomColor: theme.surfaceBorder,
+          backgroundColor: theme.surface,
+        },
+        shopBarName: {
+          ...fontSize.sm,
+          fontWeight: "600",
+          color: theme.text,
+          flex: 1,
+        },
+        shopBarChange: {
+          ...fontSize.sm,
+          fontWeight: "600",
+          color: colors.amber[600],
+          paddingVertical: spacing[1],
+          paddingHorizontal: spacing[1],
         },
         loginFeedback: {
           ...fontSize.sm,
@@ -546,6 +776,19 @@ export default function CustomerChatScreen() {
           padding: spacing[4],
           paddingBottom: spacing[2],
           gap: spacing[2],
+          flexGrow: 1,
+        },
+        emptyChat: {
+          flex: 1,
+          alignItems: "center",
+          justifyContent: "center",
+          gap: spacing[3],
+          paddingVertical: spacing[16],
+        },
+        emptyText: {
+          ...fontSize.sm,
+          color: theme.textSecondary,
+          textAlign: "center",
         },
         messageWrapper: {
           maxWidth: "80%",
@@ -587,7 +830,7 @@ export default function CustomerChatScreen() {
           opacity: 0.85,
         },
         bubbleLinkOther: {
-          color: colors.amber[700],
+          color: theme.dark ? colors.amber[400] : colors.amber[700],
         },
         bubbleMeta: {
           ...fontSize.xs,
@@ -650,9 +893,13 @@ export default function CustomerChatScreen() {
           justifyContent: "space-between",
           paddingHorizontal: spacing[4],
           paddingVertical: spacing[2],
-          backgroundColor: colors.amber[50],
+          backgroundColor: theme.dark
+            ? colors.amber[800] + "55"
+            : colors.amber[50],
           borderTopWidth: 1,
-          borderTopColor: colors.amber[100],
+          borderTopColor: theme.dark
+            ? colors.amber[700]
+            : colors.amber[100],
         },
         editBannerContent: {
           flexDirection: "row",
@@ -661,7 +908,7 @@ export default function CustomerChatScreen() {
         },
         editBannerText: {
           ...fontSize.sm,
-          color: colors.amber[700],
+          color: theme.dark ? colors.amber[400] : colors.amber[700],
           fontWeight: "500",
         },
         composer: {
@@ -736,28 +983,32 @@ export default function CustomerChatScreen() {
           flexDirection: "row",
           alignItems: "center",
           gap: 2,
-          backgroundColor: colors.white,
+          backgroundColor: theme.surface,
           borderWidth: 1,
-          borderColor: colors.slate[200],
+          borderColor: theme.surfaceBorder,
           borderRadius: borderRadius.full,
           paddingHorizontal: spacing[1],
           paddingVertical: 2,
           shadowColor: colors.black,
           shadowOffset: { width: 0, height: 1 },
-          shadowOpacity: 0.15,
+          shadowOpacity: theme.dark ? 0.35 : 0.15,
           shadowRadius: 3,
           elevation: 3,
         },
         reactionPillMine: {
-          backgroundColor: colors.emerald[50],
-          borderColor: colors.emerald[300],
+          backgroundColor: theme.dark
+            ? colors.emerald[800] + "55"
+            : colors.emerald[50],
+          borderColor: theme.dark
+            ? colors.emerald[600]
+            : colors.emerald[300],
         },
         reactionPillEmoji: {
           fontSize: 14,
         },
         reactionPillCount: {
           ...fontSize.xs,
-          color: colors.slate[600],
+          color: theme.textSecondary,
         },
         popupBackdrop: {
           flex: 1,
@@ -793,7 +1044,9 @@ export default function CustomerChatScreen() {
           alignItems: "center",
         },
         emojiButtonSelected: {
-          backgroundColor: colors.emerald[100],
+          backgroundColor: theme.dark
+            ? colors.emerald[800] + "55"
+            : colors.emerald[100],
         },
         emojiText: {
           fontSize: 24,
@@ -846,11 +1099,18 @@ export default function CustomerChatScreen() {
     [theme, insets.bottom]
   );
 
-  if (authState === "loading" || verifying) {
-    return <LoadingScreen message="Loading chat..." />;
+  if ((authState === "loading" || verifying) && !messagesReady) {
+    return (
+      <View style={styles.loaderScreen}>
+        <BikeLoader label={verifying ? "Signing you in…" : "Loading chat…"} />
+      </View>
+    );
   }
 
   if (authState === "needs_login") {
+    const loginCopy = selectedShop
+      ? `We'll send a login link for ${selectedShop.name}.`
+      : "Choose your bike shop, then enter your email for a login link.";
     return (
       <>
         <Stack.Screen options={{ title: "Chat" }} />
@@ -861,9 +1121,20 @@ export default function CustomerChatScreen() {
             color={theme.iconMuted}
           />
           <Text style={styles.loginTitle}>Chat with us</Text>
-          <Text style={styles.loginMessage}>
-            Enter your email to receive a login link.
-          </Text>
+          <Text style={styles.loginMessage}>{loginCopy}</Text>
+          <View style={styles.loginShop}>
+            <Text style={styles.loginShopLabel}>Bike Shop</Text>
+            <ShopPicker
+              pastShops={pastShops}
+              selectedShop={selectedShop}
+              onSelect={selectChatShop}
+              hint={
+                selectedShop
+                  ? "Change shop if you need to chat with a different one."
+                  : undefined
+              }
+            />
+          </View>
           <Input
             placeholder="you@example.com"
             value={email}
@@ -876,7 +1147,7 @@ export default function CustomerChatScreen() {
             title={requestingLogin ? "Sending..." : "Send Login Link"}
             onPress={handleRequestLogin}
             loading={requestingLogin}
-            disabled={!email.trim()}
+            disabled={!email.trim() || !selectedShop}
           />
           {loginMessage ? (
             <Text style={styles.loginFeedback}>{loginMessage}</Text>
@@ -886,6 +1157,8 @@ export default function CustomerChatScreen() {
     );
   }
 
+  // Authenticated path — paint chat chrome immediately. Cached threads already
+  // have messagesReady=true so revisits skip the empty-state spinner.
   return (
     <>
       <Stack.Screen options={{ title: "Chat" }} />
@@ -894,6 +1167,16 @@ export default function CustomerChatScreen() {
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         keyboardVerticalOffset={headerHeight}
       >
+        {selectedShop ? (
+          <View style={styles.shopBar}>
+            <Text style={styles.shopBarName} numberOfLines={1}>
+              {selectedShop.name}
+            </Text>
+            <TouchableOpacity onPress={() => setChangeShopOpen(true)}>
+              <Text style={styles.shopBarChange}>Change</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
         <View style={{ flex: 1 }}>
         <FlatList
           ref={flatListRef}
@@ -932,6 +1215,17 @@ export default function CustomerChatScreen() {
               }
             }, 250);
           }}
+          ListEmptyComponent={
+            <View style={styles.emptyChat}>
+              {!messagesReady ? (
+                <SectionLoader label="Loading messages…" />
+              ) : (
+                <Text style={styles.emptyText}>
+                  No messages yet. Say hello!
+                </Text>
+              )}
+            </View>
+          }
           renderItem={({ item }) => {
             const isOwn = item.sender === "CUSTOMER";
             const hasAttachments = (item.attachments?.length ?? 0) > 0;
@@ -1309,6 +1603,14 @@ export default function CustomerChatScreen() {
           </View>
         </Pressable>
       </Modal>
+
+      <ShopPickerModal
+        visible={changeShopOpen}
+        pastShops={pastShops}
+        selectedShop={selectedShop}
+        onClose={() => setChangeShopOpen(false)}
+        onSelect={handleChangeShop}
+      />
     </>
   );
 }

@@ -30,8 +30,11 @@ export default function Index() {
       void prefetchStaffHomeData(queryClient);
     }
 
-    let cancelled = false;
+    // Route to the role home immediately — don't hold the bike loader open
+    // while we inspect the last notification response.
+    setLaunchRoute(defaultRouteForRole(role));
 
+    let cancelled = false;
     (async () => {
       const response = await Notifications.getLastNotificationResponseAsync();
       const data = response
@@ -39,8 +42,8 @@ export default function Index() {
         : null;
       const notificationRoute = data ? routeForNotification(data, role) : null;
 
-      if (!cancelled) {
-        setLaunchRoute(notificationRoute ?? defaultRouteForRole(role));
+      if (!cancelled && notificationRoute) {
+        setLaunchRoute(notificationRoute);
       }
     })();
 
@@ -49,6 +52,7 @@ export default function Index() {
     };
   }, [role, loading, queryClient]);
 
+  // Only block on the initial SecureStore auth read — not on network checks.
   if (loading || launchRoute === "pending") {
     return <LoadingScreen message="Starting BikeOps..." />;
   }

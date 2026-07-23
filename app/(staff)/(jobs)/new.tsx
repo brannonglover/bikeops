@@ -21,8 +21,21 @@ import { useTheme } from "@/lib/ThemeContext";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
-import { customerName, formatCurrency, formatDate } from "@/lib/format";
+import {
+  customerName,
+  formatCurrency,
+  formatDate,
+  formatPhoneNumber,
+  unformatPhoneNumber,
+} from "@/lib/format";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
+
+function splitName(raw: string): { firstName: string; lastName: string } {
+  const parts = raw.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return { firstName: "", lastName: "" };
+  if (parts.length === 1) return { firstName: parts[0], lastName: "" };
+  return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
+}
 
 export default function NewJobScreen() {
   const { theme } = useTheme();
@@ -37,7 +50,13 @@ export default function NewJobScreen() {
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [customerSearch, setCustomerSearch] = useState("");
   const [customers, setCustomers] = useState<Customer[]>([]);
-  const [showCustomerPicker, setShowCustomerPicker] = useState(false);
+  const [showNewCustomerModal, setShowNewCustomerModal] = useState(false);
+  const [newFirstName, setNewFirstName] = useState("");
+  const [newLastName, setNewLastName] = useState("");
+  const [newEmail, setNewEmail] = useState("");
+  const [newPhone, setNewPhone] = useState("");
+  const [creatingCustomer, setCreatingCustomer] = useState(false);
+  const [checkingDuplicate, setCheckingDuplicate] = useState(false);
   const [services, setServices] = useState<Service[]>([]);
   const [selectedServiceIds, setSelectedServiceIds] = useState<string[]>([]);
   const [serviceSearch, setServiceSearch] = useState("");
@@ -128,6 +147,144 @@ export default function NewJobScreen() {
     }
   };
 
+  const resetNewCustomerForm = () => {
+    setNewFirstName("");
+    setNewLastName("");
+    setNewEmail("");
+    setNewPhone("");
+  };
+
+  const openNewCustomerModal = () => {
+    const q = customerSearch.trim();
+    const looksLikeEmail = q.includes("@");
+    const digitsOnly = q.replace(/\D/g, "");
+    const looksLikePhone = digitsOnly.length >= 7 && !/[a-zA-Z]/.test(q);
+
+    if (looksLikeEmail) {
+      setNewFirstName("");
+      setNewLastName("");
+      setNewEmail(q);
+      setNewPhone("");
+    } else if (looksLikePhone) {
+      setNewFirstName("");
+      setNewLastName("");
+      setNewEmail("");
+      setNewPhone(unformatPhoneNumber(q));
+    } else {
+      const { firstName, lastName } = splitName(q);
+      setNewFirstName(firstName);
+      setNewLastName(lastName);
+      setNewEmail("");
+      setNewPhone("");
+    }
+    setShowNewCustomerModal(true);
+  };
+
+  const findDuplicates = async (): Promise<Customer[]> => {
+    const trimmedFirst = newFirstName.trim().toLowerCase();
+    const trimmedLast = newLastName.trim().toLowerCase();
+    const trimmedEmail = newEmail.trim().toLowerCase();
+    const trimmedPhone = newPhone.trim().replace(/\D/g, "");
+
+    const searches = new Set<string>();
+    if (trimmedFirst) searches.add(trimmedFirst);
+    if (trimmedEmail) searches.add(trimmedEmail);
+    if (trimmedPhone) searches.add(trimmedPhone);
+
+    const seen = new Set<string>();
+    const matches: Customer[] = [];
+
+    for (const q of searches) {
+      const { data } = await api.get<Customer[]>(
+        `/api/customers?q=${encodeURIComponent(q)}`
+      );
+      for (const c of data) {
+        if (seen.has(c.id)) continue;
+        const nameMatch =
+          c.firstName.toLowerCase() === trimmedFirst &&
+          (c.lastName?.toLowerCase() ?? "") === trimmedLast;
+        const emailMatch =
+          trimmedEmail && c.email?.toLowerCase() === trimmedEmail;
+        const phoneMatch =
+          trimmedPhone &&
+          (c.phone?.replace(/\D/g, "") ?? "") === trimmedPhone;
+        if (nameMatch || emailMatch || phoneMatch) {
+          seen.add(c.id);
+          matches.push(c);
+        }
+      }
+    }
+    return matches;
+  };
+
+  const createAndSelectCustomer = async () => {
+    setCreatingCustomer(true);
+    try {
+      const { data } = await api.post<Customer>("/api/customers", {
+        firstName: newFirstName.trim(),
+        lastName: newLastName.trim() || null,
+        email: newEmail.trim() || null,
+        phone: newPhone.trim() || null,
+      });
+      queryClient.invalidateQueries({ queryKey: ["customers"] });
+      setShowNewCustomerModal(false);
+      resetNewCustomerForm();
+      await handleSelectCustomer(data);
+    } catch (e) {
+      Alert.alert("Error", e instanceof Error ? e.message : "Failed to create customer");
+    } finally {
+      setCreatingCustomer(false);
+    }
+  };
+
+  const handleCreateCustomer = async () => {
+    if (!newFirstName.trim()) return;
+
+    setCheckingDuplicate(true);
+    let dupes: Customer[];
+    try {
+      dupes = await findDuplicates();
+    } catch {
+      setCheckingDuplicate(false);
+      Alert.alert(
+        "Unable to Check for Duplicates",
+        "Please check your connection and try again."
+      );
+      return;
+    } finally {
+      setCheckingDuplicate(false);
+    }
+
+    if (dupes.length > 0) {
+      const names = dupes
+        .map((c) => {
+          const parts = [customerName(c)];
+          if (c.email) parts.push(c.email);
+          if (c.phone) parts.push(c.phone);
+          return `• ${parts.join(" — ")}`;
+        })
+        .join("\n");
+      Alert.alert(
+        "Customer Already Exists",
+        `This customer matches an existing entry:\n\n${names}`,
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Use Existing",
+            onPress: () => {
+              setShowNewCustomerModal(false);
+              resetNewCustomerForm();
+              handleSelectCustomer(dupes[0]);
+            },
+          },
+        ]
+      );
+      return;
+    }
+
+    await createAndSelectCustomer();
+  };
+
   const toggleCustomerBike = (bikeId: string) => {
     setSelectedCustomerBikeIds((prev) =>
       prev.includes(bikeId) ? prev.filter((id) => id !== bikeId) : [...prev, bikeId]
@@ -206,7 +363,7 @@ export default function NewJobScreen() {
     if (!selectedCustomer && customerSearch.trim()) {
       Alert.alert(
         "Select Customer",
-        "Tap a customer from the search results to attach them to this job, or clear the customer field to create a walk-in job."
+        "Tap a customer from the search results, create a new customer, or clear the customer field to create a walk-in job."
       );
       return;
     }
@@ -323,47 +480,63 @@ export default function NewJobScreen() {
                   onChangeText={searchCustomers}
                   autoCapitalize="none"
                 />
-                {customerSearch.trim() ? (
-                  <Text style={[styles.customerSearchHint, { color: theme.textSecondary }]}>
-                    Select a result below to attach this customer.
-                  </Text>
-                ) : null}
                 {customers.length > 0 ? (
-                  <View
-                    style={[
-                      styles.customerList,
-                      { borderColor: theme.surfaceBorder },
-                    ]}
-                  >
-                    {customers.slice(0, 5).map((c) => (
-                      <TouchableOpacity
-                        key={c.id}
-                        onPress={() => handleSelectCustomer(c)}
-                        style={[
-                          styles.customerOption,
-                          { borderBottomColor: theme.surfaceBorderSubtle },
-                        ]}
-                      >
-                        <Text style={[styles.customerOptionName, { color: theme.text }]}>
-                          {customerName(c)}
-                        </Text>
-                        {c.email ? (
-                          <Text
-                            style={[
-                              styles.customerOptionEmail,
-                              { color: theme.textSecondary },
-                            ]}
-                          >
-                            {c.email}
+                  <>
+                    <Text style={[styles.customerSearchHint, { color: theme.textSecondary }]}>
+                      Select a result below to attach this customer.
+                    </Text>
+                    <View
+                      style={[
+                        styles.customerList,
+                        { borderColor: theme.surfaceBorder },
+                      ]}
+                    >
+                      {customers.slice(0, 5).map((c) => (
+                        <TouchableOpacity
+                          key={c.id}
+                          onPress={() => handleSelectCustomer(c)}
+                          style={[
+                            styles.customerOption,
+                            { borderBottomColor: theme.surfaceBorderSubtle },
+                          ]}
+                        >
+                          <Text style={[styles.customerOptionName, { color: theme.text }]}>
+                            {customerName(c)}
                           </Text>
-                        ) : null}
-                      </TouchableOpacity>
-                    ))}
-                  </View>
+                          {c.email ? (
+                            <Text
+                              style={[
+                                styles.customerOptionEmail,
+                                { color: theme.textSecondary },
+                              ]}
+                            >
+                              {c.email}
+                            </Text>
+                          ) : null}
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </>
                 ) : customerSearch.trim() ? (
-                  <Text style={[styles.customerSearchHint, { color: theme.textMuted }]}>
-                    No matching customer found. Clear this field to continue as a walk-in job.
-                  </Text>
+                  <View style={styles.noCustomerMatch}>
+                    <Text style={[styles.noMatchText, { color: theme.textMuted }]}>
+                      No matching customer found.
+                    </Text>
+                    <TouchableOpacity
+                      onPress={openNewCustomerModal}
+                      style={styles.createCustomerBtn}
+                    >
+                      <Ionicons
+                        name="person-add-outline"
+                        size={18}
+                        color={colors.amber[600]}
+                      />
+                      <Text style={styles.createCustomerText}>Create new customer</Text>
+                    </TouchableOpacity>
+                    <Text style={[styles.noMatchText, { color: theme.textMuted }]}>
+                      Or clear this field to continue as a walk-in job.
+                    </Text>
+                  </View>
                 ) : null}
               </>
             )}
@@ -732,6 +905,76 @@ export default function NewJobScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
 
+      {/* New customer modal */}
+      <Modal
+        visible={showNewCustomerModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowNewCustomerModal(false)}
+      >
+        <KeyboardAvoidingView
+          style={[styles.modalContainer, { backgroundColor: theme.surface }]}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+        >
+          <View
+            style={[
+              styles.modalHeader,
+              { borderBottomColor: theme.surfaceBorder },
+            ]}
+          >
+            <Text style={[styles.modalTitle, { color: theme.text }]}>
+              New Customer
+            </Text>
+            <TouchableOpacity
+              onPress={() => {
+                setShowNewCustomerModal(false);
+                resetNewCustomerForm();
+              }}
+            >
+              <Ionicons name="close" size={24} color={theme.icon} />
+            </TouchableOpacity>
+          </View>
+          <ScrollView
+            contentContainerStyle={styles.modalContent}
+            keyboardShouldPersistTaps="handled"
+          >
+            <Input
+              label="First Name"
+              value={newFirstName}
+              onChangeText={setNewFirstName}
+              containerStyle={styles.modalInputGap}
+            />
+            <Input
+              label="Last Name"
+              value={newLastName}
+              onChangeText={setNewLastName}
+              containerStyle={styles.modalInputGap}
+            />
+            <Input
+              label="Email"
+              value={newEmail}
+              onChangeText={setNewEmail}
+              keyboardType="email-address"
+              autoCapitalize="none"
+              containerStyle={styles.modalInputGap}
+            />
+            <Input
+              label="Phone"
+              value={formatPhoneNumber(newPhone)}
+              onChangeText={(text) => setNewPhone(unformatPhoneNumber(text))}
+              keyboardType="phone-pad"
+              containerStyle={styles.modalInputGap}
+            />
+            <Button
+              title="Create Customer"
+              onPress={handleCreateCustomer}
+              loading={checkingDuplicate || creatingCustomer}
+              disabled={!newFirstName.trim()}
+            />
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </Modal>
+
       {/* Date picker modal */}
       <Modal
         visible={showDatePicker !== null}
@@ -981,6 +1224,46 @@ const styles = StyleSheet.create({
   customerSearchHint: {
     ...fontSize.xs,
     marginTop: -spacing[2],
+  },
+  noCustomerMatch: {
+    gap: spacing[2],
+  },
+  noMatchText: {
+    ...fontSize.xs,
+  },
+  createCustomerBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing[1.5],
+    paddingVertical: spacing[1],
+  },
+  createCustomerText: {
+    ...fontSize.sm,
+    fontWeight: "600",
+    color: colors.amber[600],
+  },
+  modalContainer: {
+    flex: 1,
+  },
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: spacing[4],
+    borderBottomWidth: 1,
+  },
+  modalTitle: {
+    ...fontSize.lg,
+    fontWeight: "600",
+  },
+  modalContent: {
+    padding: spacing[4],
+    width: "100%",
+    maxWidth: 720,
+    alignSelf: "center",
+  },
+  modalInputGap: {
+    marginBottom: spacing[3],
   },
   sectionToggle: {
     flexDirection: "row",
