@@ -36,6 +36,7 @@ function StaffTabs() {
       screenOptions={({ route }) => ({
         tabBarActiveTintColor: colors.amber[600],
         tabBarInactiveTintColor: theme.textMuted,
+        tabBarHideOnKeyboard: true,
         tabBarStyle: {
           borderTopColor: theme.tabBarBorder,
           backgroundColor: theme.tabBarBg,

@@ -18,7 +18,6 @@ import {
   type NativeScrollEvent,
 } from "react-native";
 import { useLocalSearchParams, Stack, useRouter } from "expo-router";
-import { useHeaderHeight } from "@react-navigation/elements";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
@@ -124,13 +123,16 @@ export default function ConversationScreen() {
   const fromJobId = paramToString(params.fromJobId);
   const messageId = paramToString(params.messageId);
   const queryClient = useQueryClient();
-  const headerHeight = useHeaderHeight();
   const flatListRef = useRef<FlatList<ChatMessage>>(null);
   const isAtBottomRef = useRef(true);
   const didInitialAutoScrollRef = useRef(false);
   const pendingScrollToMessageIdRef = useRef<string | null>(null);
+  const composerTextRef = useRef("");
   const [showScrollButton, setShowScrollButton] = useState(false);
-  const [text, setText] = useState("");
+  // Uncontrolled composer: controlled `value` breaks iOS autocapitalize-after-period.
+  const [composerKey, setComposerKey] = useState(0);
+  const [composerSeed, setComposerSeed] = useState("");
+  const [composerHasText, setComposerHasText] = useState(false);
   const [sending, setSending] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingChatImage[]>([]);
   const [editingMessage, setEditingMessage] = useState<ChatMessage | null>(null);
@@ -970,8 +972,15 @@ export default function ConversationScreen() {
     flatListRef.current?.scrollToEnd({ animated: true });
   }, []);
 
+  const resetComposer = useCallback((next = "") => {
+    composerTextRef.current = next;
+    setComposerSeed(next);
+    setComposerHasText(next.trim().length > 0);
+    setComposerKey((k) => k + 1);
+  }, []);
+
   const handleSend = useCallback(async () => {
-    const textToSend = text.trim();
+    const textToSend = composerTextRef.current.trim();
     const imagesToSend = pendingImages.filter(isPendingChatImageReady);
     if (!textToSend && imagesToSend.length === 0) return;
     if (hasUploadingPendingImages(pendingImages)) return;
@@ -1002,7 +1011,7 @@ export default function ConversationScreen() {
       return { ...old, messages: [...old.messages, optimisticMsg] };
     });
 
-    setText("");
+    resetComposer("");
     setPendingImages([]);
     isAtBottomRef.current = true;
     setShowScrollButton(false);
@@ -1039,7 +1048,7 @@ export default function ConversationScreen() {
     } finally {
       setSending(false);
     }
-  }, [id, text, pendingImages, queryClient, clearClientDeliveryStateLater]);
+  }, [id, pendingImages, queryClient, clearClientDeliveryStateLater, resetComposer]);
 
   const handlePickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -1099,20 +1108,20 @@ export default function ConversationScreen() {
 
   const startEditing = useCallback((message: ChatMessage) => {
     setEditingMessage(message);
-    setText(message.body || "");
+    resetComposer(message.body || "");
     setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
-  }, []);
+  }, [resetComposer]);
 
   const cancelEditing = useCallback(() => {
     setEditingMessage(null);
-    setText("");
+    resetComposer("");
     Keyboard.dismiss();
-  }, []);
+  }, [resetComposer]);
 
   const handleEdit = useCallback(async () => {
-    if (!editingMessage || !text.trim()) return;
+    if (!editingMessage || !composerTextRef.current.trim()) return;
 
-    const newBody = text.trim();
+    const newBody = composerTextRef.current.trim();
     const editedMsgId = editingMessage.id;
 
     type MessagesData =
@@ -1141,7 +1150,7 @@ export default function ConversationScreen() {
     });
 
     setEditingMessage(null);
-    setText("");
+    resetComposer("");
     setSending(true);
 
     try {
@@ -1156,7 +1165,7 @@ export default function ConversationScreen() {
     } finally {
       setSending(false);
     }
-  }, [editingMessage, text, id, queryClient]);
+  }, [editingMessage, id, queryClient, resetComposer]);
 
   const toggleReaction = useCallback(
     async (messageId: string, emoji: string) => {
@@ -1385,7 +1394,8 @@ export default function ConversationScreen() {
       <KeyboardAvoidingView
         style={styles.container}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
-        keyboardVerticalOffset={headerHeight}
+        // Header is outside this view; useHeaderHeight() was double-counting.
+        keyboardVerticalOffset={0}
       >
         <View style={{ flex: 1 }}>
         <FlatList
@@ -1696,13 +1706,19 @@ export default function ConversationScreen() {
             </TouchableOpacity>
           ) : null}
           <TextInput
-            value={text}
-            onChangeText={setText}
+            key={composerKey}
+            defaultValue={composerSeed}
+            onChangeText={(next) => {
+              composerTextRef.current = next;
+              setComposerHasText(next.trim().length > 0);
+            }}
             placeholder={editingMessage ? "Edit message..." : "Type a message..."}
             style={styles.input}
             placeholderTextColor={theme.textMuted}
             multiline
             maxLength={5000}
+            autoCapitalize="sentences"
+            autoCorrect
             onSubmitEditing={editingMessage ? handleEdit : handleSend}
           />
           <TouchableOpacity
@@ -1710,7 +1726,7 @@ export default function ConversationScreen() {
             disabled={
               sending ||
               hasUploadingPendingImages(pendingImages) ||
-              (!text.trim() &&
+              (!composerHasText &&
                 !editingMessage &&
                 pendingImages.filter(isPendingChatImageReady).length === 0)
             }
@@ -1718,7 +1734,7 @@ export default function ConversationScreen() {
               styles.sendButton,
               (sending ||
                 hasUploadingPendingImages(pendingImages) ||
-                (!text.trim() &&
+                (!composerHasText &&
                   !editingMessage &&
                   pendingImages.filter(isPendingChatImageReady).length === 0)) &&
                 styles.sendButtonDisabled,
