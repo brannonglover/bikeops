@@ -21,7 +21,7 @@ import { useLocalSearchParams, Stack, useRouter } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
-import { api, resolveUrl } from "@/lib/api";
+import { api, ApiError, resolveUrl } from "@/lib/api";
 import {
   buildPendingChatImage,
   hasUploadingPendingImages,
@@ -1056,7 +1056,18 @@ export default function ConversationScreen() {
       quality: 0.8,
     });
     if (result.canceled || !result.assets[0]) return;
-    const { pending, formData } = buildPendingChatImage(result.assets[0]);
+
+    let pending: PendingChatImage;
+    let formData: FormData;
+    try {
+      ({ pending, formData } = await buildPendingChatImage(result.assets[0]));
+    } catch (err) {
+      Alert.alert(
+        "Error",
+        err instanceof Error ? err.message : "Failed to prepare image"
+      );
+      return;
+    }
     setPendingImages((prev) => [...prev, pending]);
 
     try {
@@ -1078,13 +1089,16 @@ export default function ConversationScreen() {
             : img
         )
       );
-    } catch {
+    } catch (err) {
       setPendingImages((prev) =>
         prev.map((img) =>
           img.localId === pending.localId ? { ...img, status: "failed" } : img
         )
       );
-      Alert.alert("Error", "Failed to upload image");
+      Alert.alert(
+        "Error",
+        err instanceof ApiError ? err.message : "Failed to upload image"
+      );
     }
   };
 

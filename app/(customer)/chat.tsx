@@ -24,7 +24,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQueryClient } from "@tanstack/react-query";
 import * as ImagePicker from "expo-image-picker";
 import { Ionicons } from "@expo/vector-icons";
-import { api, isCustomerAuthenticated, resolveCustomerUrl, getCustomerShop, setCustomerShop, parseShopSubdomainFromUrl, peekCustomerSessionCookie } from "@/lib/api";
+import { api, ApiError, isCustomerAuthenticated, resolveCustomerUrl, getCustomerShop, setCustomerShop, parseShopSubdomainFromUrl, peekCustomerSessionCookie } from "@/lib/api";
 import {
   getCustomerProfile,
   rememberShop,
@@ -572,7 +572,18 @@ export default function CustomerChatScreen() {
       quality: 0.8,
     });
     if (result.canceled || !result.assets[0]) return;
-    const { pending, formData } = buildPendingChatImage(result.assets[0]);
+
+    let pending: PendingChatImage;
+    let formData: FormData;
+    try {
+      ({ pending, formData } = await buildPendingChatImage(result.assets[0]));
+    } catch (err) {
+      Alert.alert(
+        "Error",
+        err instanceof Error ? err.message : "Failed to prepare image"
+      );
+      return;
+    }
     setPendingImages((prev) => [...prev, pending]);
 
     try {
@@ -594,13 +605,16 @@ export default function CustomerChatScreen() {
             : img
         )
       );
-    } catch {
+    } catch (err) {
       setPendingImages((prev) =>
         prev.map((img) =>
           img.localId === pending.localId ? { ...img, status: "failed" } : img
         )
       );
-      Alert.alert("Error", "Failed to upload image");
+      Alert.alert(
+        "Error",
+        err instanceof ApiError ? err.message : "Failed to upload image"
+      );
     }
   };
 

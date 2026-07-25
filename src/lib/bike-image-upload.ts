@@ -3,13 +3,16 @@ import { api } from "@/lib/api";
 import type { Job } from "@/lib/types";
 
 export function buildBikeImageFormData(asset: ImagePickerAsset): FormData {
+  const rawMime = asset.mimeType?.trim() || "";
   const isHeic =
-    asset.mimeType === "image/heic" || asset.mimeType === "image/heif";
-  const mimeType = isHeic ? "image/jpeg" : (asset.mimeType ?? "image/jpeg");
+    rawMime === "image/heic" ||
+    rawMime === "image/heif" ||
+    /\.(heic|heif)$/i.test(asset.fileName ?? "");
+  const mimeType = isHeic || !rawMime ? "image/jpeg" : rawMime;
   const fileName = isHeic
     ? (asset.fileName?.replace(/\.heic$/i, ".jpg").replace(/\.heif$/i, ".jpg") ??
       "photo.jpg")
-    : (asset.fileName ?? "photo.jpg");
+    : (asset.fileName?.trim() || "photo.jpg");
 
   const formData = new FormData();
   formData.append("file", {

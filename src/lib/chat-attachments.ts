@@ -1,4 +1,13 @@
 import type { ImagePickerAsset } from "expo-image-picker";
+import {
+  manipulateAsync,
+  SaveFormat,
+  type Action,
+} from "expo-image-manipulator";
+
+/** Match web chat: stay under Vercel's ~4.5 MB serverless body limit. */
+const MAX_UPLOAD_DIM = 2048;
+const JPEG_QUALITY = 0.8;
 
 export type PendingChatImage = {
   localId: string;
@@ -10,22 +19,47 @@ export type PendingChatImage = {
   status: "uploading" | "ready" | "failed";
 };
 
-export function buildPendingChatImage(asset: ImagePickerAsset): {
+function toJpegFileName(fileName: string | null | undefined): string {
+  const raw = (fileName?.trim() || "photo").replace(/\.[^.]+$/, "") || "photo";
+  return `${raw}.jpg`;
+}
+
+async function compressChatImage(asset: ImagePickerAsset): Promise<{
+  uri: string;
+  fileName: string;
+}> {
+  const actions: Action[] = [];
+  const width = asset.width ?? 0;
+  const height = asset.height ?? 0;
+  if (width > MAX_UPLOAD_DIM || height > MAX_UPLOAD_DIM) {
+    if (width >= height) {
+      actions.push({ resize: { width: MAX_UPLOAD_DIM } });
+    } else {
+      actions.push({ resize: { height: MAX_UPLOAD_DIM } });
+    }
+  }
+
+  const result = await manipulateAsync(asset.uri, actions, {
+    compress: JPEG_QUALITY,
+    format: SaveFormat.JPEG,
+  });
+
+  return {
+    uri: result.uri,
+    fileName: toJpegFileName(asset.fileName),
+  };
+}
+
+export async function buildPendingChatImage(asset: ImagePickerAsset): Promise<{
   pending: PendingChatImage;
   formData: FormData;
-} {
-  const isHeic =
-    asset.mimeType === "image/heic" || asset.mimeType === "image/heif";
-  const mimeType = isHeic ? "image/jpeg" : (asset.mimeType ?? "image/jpeg");
-  const fileName = isHeic
-    ? (asset.fileName?.replace(/\.heic$/i, ".jpg").replace(/\.heif$/i, ".jpg") ??
-      "photo.jpg")
-    : (asset.fileName ?? "photo.jpg");
+}> {
+  const { uri, fileName } = await compressChatImage(asset);
 
   const formData = new FormData();
   formData.append("file", {
-    uri: asset.uri,
-    type: mimeType,
+    uri,
+    type: "image/jpeg",
     name: fileName,
   } as unknown as Blob);
 

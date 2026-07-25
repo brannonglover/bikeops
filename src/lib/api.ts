@@ -266,6 +266,8 @@ interface FetchOptions extends Omit<RequestInit, "headers"> {
   cookie?: string;
   /** When false, ignore Set-Cookie / sessionToken in the response. Default true. */
   persistSession?: boolean;
+  /** Override the default request timeout (ms). */
+  timeoutMs?: number;
 }
 
 /** Extracts the raw token value from a stored cookie string like "cookieName=<token>". */
@@ -293,6 +295,7 @@ function extractCustomerSessionFromResponse(data: unknown): string | null {
 }
 
 const DEFAULT_FETCH_TIMEOUT_MS = 20_000;
+const FORM_UPLOAD_TIMEOUT_MS = 90_000;
 
 function createTimeoutSignal(ms: number): { signal: AbortSignal; clear: () => void } {
   const controller = new AbortController();
@@ -312,6 +315,7 @@ async function apiFetch<T = unknown>(
     headers: extraHeaders = {},
     cookie: cookieOverride,
     persistSession = true,
+    timeoutMs = DEFAULT_FETCH_TIMEOUT_MS,
     ...fetchOptions
   } = options;
   const cookieKey =
@@ -340,7 +344,7 @@ async function apiFetch<T = unknown>(
 
   const apiUrl = await getApiUrl(role);
   const url = `${apiUrl}${path}`;
-  const timeout = createTimeoutSignal(DEFAULT_FETCH_TIMEOUT_MS);
+  const timeout = createTimeoutSignal(timeoutMs);
   let response: Response;
   try {
     response = await fetch(url, {
@@ -453,6 +457,7 @@ export const api = {
       method: "POST",
       body: formData as unknown as string,
       headers: { ...opts?.headers },
+      timeoutMs: opts?.timeoutMs ?? FORM_UPLOAD_TIMEOUT_MS,
     }),
 };
 
