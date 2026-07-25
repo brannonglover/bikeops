@@ -1,4 +1,9 @@
 import type { NotificationData } from "@/lib/notifications";
+import {
+  parseJobIdList,
+  setPendingBookingDigest,
+  type BookingDigest,
+} from "@/lib/pending-booking-digest";
 
 export function normalizeNotificationData(raw: unknown): NotificationData | null {
   if (!raw || typeof raw !== "object") return null;
@@ -37,13 +42,43 @@ export function normalizeNotificationData(raw: unknown): NotificationData | null
       ? ((candidate as Record<string, unknown>).message_id as string)
       : undefined);
 
+  const todayJobIds = parseJobIdList(
+    candidate.todayJobIds ?? candidate.today_job_ids ?? obj.todayJobIds
+  );
+  const tomorrowJobIds = parseJobIdList(
+    candidate.tomorrowJobIds ?? candidate.tomorrow_job_ids ?? obj.tomorrowJobIds
+  );
+
   return {
     ...(candidate as Record<string, unknown>),
     type,
     ...(jobId ? { jobId } : null),
     ...(conversationId ? { conversationId } : null),
     ...(messageId ? { messageId } : null),
+    ...(type === "staff_booking_digest"
+      ? { todayJobIds, tomorrowJobIds }
+      : null),
   } as NotificationData;
+}
+
+export function bookingDigestFromNotification(
+  data: NotificationData | null | undefined
+): BookingDigest | null {
+  if (!data || data.type !== "staff_booking_digest") return null;
+  return {
+    todayJobIds: parseJobIdList(data.todayJobIds),
+    tomorrowJobIds: parseJobIdList(data.tomorrowJobIds),
+  };
+}
+
+/** Capture digest job IDs so the jobs board can show them after navigation. */
+export function captureBookingDigestFromNotification(
+  data: NotificationData | null | undefined
+): boolean {
+  const digest = bookingDigestFromNotification(data);
+  if (!digest) return false;
+  setPendingBookingDigest(digest);
+  return true;
 }
 
 export function routeForNotification(
@@ -58,6 +93,8 @@ export function routeForNotification(
       case "job_update":
       case "booking_request":
         return data.jobId ? `/(staff)/(jobs)/${data.jobId}` : null;
+      case "staff_booking_digest":
+        return "/(staff)/(jobs)";
       case "new_message":
         if (!data.conversationId) return null;
         return data.messageId

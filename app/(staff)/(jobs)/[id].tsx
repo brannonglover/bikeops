@@ -944,6 +944,13 @@ export default function JobDetailScreen() {
         stage === "CANCELLED"
       ) {
         patch.workingOnJobBikeId = null;
+        // Single-bike jobs: Bike Ready also marks that bike Done.
+        if (stage === "BIKE_READY") {
+          const bikes = job.jobBikes ?? [];
+          if (bikes.length === 1 && !bikes[0].completedAt) {
+            patch.completeJobBikeId = bikes[0].id;
+          }
+        }
       }
 
       patchJob.mutate(patch as unknown as Partial<Job>);

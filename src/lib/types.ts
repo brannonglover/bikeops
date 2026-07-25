@@ -132,6 +132,8 @@ export interface Job {
   stage: Stage;
   deliveryType: DeliveryType;
   dropOffDate: string | null;
+  /** When the job was moved into Received (actual intake). */
+  receivedAt?: string | null;
   pickupDate: string | null;
   collectionAddress: string | null;
   collectionPickupWindowFrom: string | null;

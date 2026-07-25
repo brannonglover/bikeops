@@ -5,6 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import {
+  captureBookingDigestFromNotification,
   defaultRouteForRole,
   normalizeNotificationData,
   routeForNotification,
@@ -40,6 +41,9 @@ export default function Index() {
       const data = response
         ? normalizeNotificationData(response.notification.request.content.data)
         : null;
+      if (captureBookingDigestFromNotification(data)) {
+        void Notifications.clearLastNotificationResponseAsync();
+      }
       const notificationRoute = data ? routeForNotification(data, role) : null;
 
       if (!cancelled && notificationRoute) {

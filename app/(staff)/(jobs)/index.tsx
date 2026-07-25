@@ -20,6 +20,7 @@ import { type Job, type Stage, DISPLAY_STAGES, STAGE_LABELS, STAGE_COLORS } from
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { JobCard } from "@/components/jobs/JobCard";
+import { BookingDigestSheet } from "@/components/jobs/BookingDigestSheet";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { fetchStaffJobs, jobsQueryKey } from "@/lib/staff-queries";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
@@ -30,10 +31,11 @@ const COLUMN_STAGES = DISPLAY_STAGES.filter(
   (stage) => stage !== "PENDING_APPROVAL"
 );
 
-// When the bike was received/checked in. Falls back to job creation time when
-// no drop-off date is recorded. Used to sort the Received column oldest-first.
+// When the bike was received/checked in. Prefer receivedAt (set when the job
+// enters Received), then drop-off date, then job creation time. Used to sort
+// the Received column oldest-first (first come, first served).
 function receivedTime(job: Job): number {
-  const value = job.dropOffDate ?? job.createdAt;
+  const value = job.receivedAt ?? job.dropOffDate ?? job.createdAt;
   const time = value ? new Date(value).getTime() : NaN;
   return Number.isNaN(time) ? Number.POSITIVE_INFINITY : time;
 }
@@ -64,6 +66,11 @@ export default function JobBoardScreen() {
     }, [])
   );
   const [cancelledExpanded, setCancelledExpanded] = useState(false);
+  const [digestHighlightIds, setDigestHighlightIds] = useState<string[]>([]);
+  const digestHighlightSet = useMemo(
+    () => new Set(digestHighlightIds),
+    [digestHighlightIds]
+  );
 
   const { data: jobs = [], isLoading, refetch } = useQuery({
     queryKey: jobsQueryKey,
@@ -261,19 +268,23 @@ export default function JobBoardScreen() {
   const renderJobCard = useCallback(
     (item: Job, wrapperStyle?: StyleProp<ViewStyle>) => (
       <View style={[styles.cardWrapper, wrapperStyle]}>
-        <JobCard
-          job={item}
-          onPress={() => openJob(item)}
-          onAccept={
-            item.stage === "PENDING_APPROVAL" ? () => handleAccept(item.id) : undefined
-          }
-          onReject={
-            item.stage === "PENDING_APPROVAL" ? () => handleReject(item) : undefined
-          }
-        />
+        <View
+          style={digestHighlightSet.has(item.id) ? styles.digestHighlight : null}
+        >
+          <JobCard
+            job={item}
+            onPress={() => openJob(item)}
+            onAccept={
+              item.stage === "PENDING_APPROVAL" ? () => handleAccept(item.id) : undefined
+            }
+            onReject={
+              item.stage === "PENDING_APPROVAL" ? () => handleReject(item) : undefined
+            }
+          />
+        </View>
       </View>
     ),
-    [openJob, handleAccept, handleReject]
+    [openJob, handleAccept, handleReject, digestHighlightSet]
   );
 
   const renderItem = useCallback(
@@ -643,6 +654,13 @@ export default function JobBoardScreen() {
           }
         />
       )}
+
+      <BookingDigestSheet
+        jobs={jobs}
+        isLoading={isLoading}
+        onOpenJob={openJob}
+        onHighlightIdsChange={setDigestHighlightIds}
+      />
     </View>
   );
 }
@@ -650,6 +668,11 @@ export default function JobBoardScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  digestHighlight: {
+    borderRadius: borderRadius.lg,
+    borderWidth: 2,
+    borderColor: colors.amber[400],
   },
   toolbar: {
     flexDirection: "row",

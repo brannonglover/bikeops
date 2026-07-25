@@ -15,6 +15,7 @@ import {
   type NotificationData,
 } from "@/lib/notifications";
 import {
+  captureBookingDigestFromNotification,
   normalizeNotificationData,
   routeForNotification,
   routeForUniversalLink,
@@ -297,6 +298,9 @@ export function useNotifications() {
         const data = normalizeNotificationData(
           response.notification.request.content.data
         );
+        if (captureBookingDigestFromNotification(data)) {
+          void Notifications.clearLastNotificationResponseAsync();
+        }
         const route = data ? routeForNotification(data, role) : null;
         syncBadgeCount();
         if (route) {

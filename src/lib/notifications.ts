@@ -17,13 +17,16 @@ export type NotificationType =
   | "new_job"
   | "job_update"
   | "new_message"
-  | "booking_request";
+  | "booking_request"
+  | "staff_booking_digest";
 
 export interface NotificationData {
   type: NotificationType;
   jobId?: string;
   conversationId?: string;
   messageId?: string;
+  todayJobIds?: string[] | string;
+  tomorrowJobIds?: string[] | string;
   [key: string]: unknown;
 }
 
