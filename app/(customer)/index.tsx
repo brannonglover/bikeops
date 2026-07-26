@@ -22,7 +22,6 @@ import {
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { Card } from "@/components/ui/Card";
-import { BikeLoader } from "@/components/ui/BikeLoader";
 
 const ACTIVE_STAGES = new Set([
   "PENDING_APPROVAL",
@@ -109,7 +108,6 @@ export default function CustomerHomeScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [greetingName, setGreetingName] = useState<string | null>(null);
-  const [homeReady, setHomeReady] = useState(false);
   const [loadPriority, setLoadPriority] = useState<CustomerDestination>(
     getCustomerLoadPriority
   );
@@ -130,15 +128,19 @@ export default function CustomerHomeScreen() {
     [queryClient, router]
   );
 
-  // Local profile is cheap — paint the bike briefly, then the menu.
+  // Never block the menu on SecureStore — it can hang at cold start until the
+  // app is backgrounded. Paint "Welcome" immediately; fill the name when ready.
   useEffect(() => {
     let cancelled = false;
-    void getCustomerProfile().then((profile) => {
-      if (cancelled) return;
-      const name = profile.firstName.trim();
-      setGreetingName(name || null);
-      setHomeReady(true);
-    });
+    void getCustomerProfile()
+      .then((profile) => {
+        if (cancelled) return;
+        const name = profile.firstName.trim();
+        setGreetingName(name || null);
+      })
+      .catch(() => {
+        // Keep generic Welcome.
+      });
     return () => {
       cancelled = true;
     };
@@ -152,7 +154,7 @@ export default function CustomerHomeScreen() {
   const { data: jobSummary } = useQuery({
     queryKey: customerJobsSummaryQueryKey,
     queryFn: fetchCustomerJobsSummary,
-    enabled: homeReady && homeBackgroundAllowed,
+    enabled: homeBackgroundAllowed,
     initialData: cachedSummary,
   });
 
@@ -175,12 +177,6 @@ export default function CustomerHomeScreen() {
           padding: spacing[4],
           gap: spacing[3],
           paddingBottom: spacing[12],
-        },
-        loaderScreen: {
-          flex: 1,
-          justifyContent: "center",
-          alignItems: "center",
-          backgroundColor: theme.background,
         },
         greeting: {
           ...fontSize["2xl"],
@@ -242,14 +238,6 @@ export default function CustomerHomeScreen() {
       }),
     [theme]
   );
-
-  if (!homeReady) {
-    return (
-      <View style={styles.loaderScreen}>
-        <BikeLoader label="Loading…" />
-      </View>
-    );
-  }
 
   return (
     <ScrollView
