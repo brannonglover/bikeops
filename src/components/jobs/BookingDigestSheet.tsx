@@ -60,6 +60,9 @@ function deliveryLabel(job: Job): string {
   return job.deliveryType === "COLLECTION_SERVICE" ? "Collection" : "Drop-off";
 }
 
+const EMPTY_HIGHLIGHT_IDS: string[] = [];
+const EMPTY_JOBS: Job[] = [];
+
 export function BookingDigestSheet({
   jobs,
   isLoading,
@@ -91,7 +94,7 @@ export function BookingDigestSheet({
     () =>
       digest
         ? resolveDigestJobs(jobs, digest)
-        : { today: [] as Job[], tomorrow: [] as Job[] },
+        : { today: EMPTY_JOBS, tomorrow: EMPTY_JOBS },
     [digest, jobs]
   );
 
@@ -101,7 +104,8 @@ export function BookingDigestSheet({
   );
 
   useEffect(() => {
-    onHighlightIdsChange?.(visible ? highlightIds : []);
+    const next = visible ? highlightIds : EMPTY_HIGHLIGHT_IDS;
+    onHighlightIdsChange?.(next);
   }, [visible, highlightIds, onHighlightIdsChange]);
 
   const close = useCallback(() => {

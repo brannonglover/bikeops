@@ -5,6 +5,7 @@ import React, {
   useEffect,
   useCallback,
 } from "react";
+import { AppState, type AppStateStatus } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   staffLogin as apiStaffLogin,
@@ -54,7 +55,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const refresh = useCallback(async () => {
     try {
-      const cachedSession = await getCachedStaffSession();
+      // Parallel keychain reads — sequential SecureStore at cold start is a
+      // common hang on iOS (unblocks when the app is backgrounded).
+      const [cachedSession, customerPersisted] = await Promise.all([
+        getCachedStaffSession(),
+        hasPersistedCustomerRole(),
+      ]);
+
       if (cachedSession?.user) {
         setRole("staff");
         setStaffUser(cachedSession.user);
@@ -62,7 +69,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      const customerPersisted = await hasPersistedCustomerRole();
       if (customerPersisted) {
         // Optimistic: let Home paint immediately. Confirm the session in the
         // background — don't block startup on /api/chat/me.
@@ -94,7 +100,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    refresh().finally(() => setLoading(false));
+    let cancelled = false;
+    const AUTH_BOOT_BUDGET_MS = 1200;
+
+    void (async () => {
+      try {
+        // Never leave the startup bike spinner waiting on a hung keychain read.
+        await Promise.race([
+          refresh(),
+          new Promise<void>((resolve) =>
+            setTimeout(resolve, AUTH_BOOT_BUDGET_MS)
+          ),
+        ]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+      // If the timeout won, refresh may still complete and update role.
+    })();
+
+    // Same transition that was manually unblocking users — retry auth when
+    // the app becomes active again so a cold keychain can catch up.
+    const onAppState = (next: AppStateStatus) => {
+      if (next === "active") void refresh();
+    };
+    const sub = AppState.addEventListener("change", onAppState);
+
+    return () => {
+      cancelled = true;
+      sub.remove();
+    };
   }, [refresh]);
 
   const staffLogin = useCallback(

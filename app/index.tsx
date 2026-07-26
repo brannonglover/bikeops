@@ -22,6 +22,12 @@ export default function Index() {
   const { role, loading } = useAuth();
   const queryClient = useQueryClient();
   const [launchRoute, setLaunchRoute] = useState<LaunchRoute>("pending");
+  const [bootTimedOut, setBootTimedOut] = useState(false);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setBootTimedOut(true), 2000);
+    return () => clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     if (loading) return;
@@ -65,10 +71,19 @@ export default function Index() {
     };
   }, [role, loading, queryClient]);
 
-  // Only block on the initial SecureStore auth read — not on network checks.
-  if (loading || launchRoute === "pending") {
+  const canLeaveLoader =
+    bootTimedOut || (!loading && launchRoute !== "pending");
+
+  if (!canLeaveLoader) {
     return <LoadingScreen message="Starting BikeOps..." />;
   }
 
-  return <Redirect href={launchRoute as never} />;
+  const href =
+    launchRoute !== "pending"
+      ? launchRoute
+      : role
+        ? defaultRouteForRole(role)
+        : "/(auth)/login";
+
+  return <Redirect href={href as never} />;
 }

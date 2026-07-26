@@ -11,6 +11,9 @@ const CUSTOMER_ROLE_KEY = "customer_role_persisted";
 const CUSTOMER_SHOP_SUBDOMAIN_KEY = "customer_shop_subdomain";
 const CUSTOMER_SHOP_NAME_KEY = "customer_shop_name";
 
+/** iOS keychain reads can hang at cold start until the app is backgrounded. */
+const SECURE_STORE_READ_TIMEOUT_MS = 700;
+
 // In-memory cache so each apiFetch call doesn't hit SecureStore on disk.
 // Values are invalidated on write/delete so they stay consistent.
 const cookieMemCache = new Map<string, string | null>();
@@ -19,12 +22,50 @@ let customerApiUrlMemCache: string | null | undefined;
 let customerShopSubdomainMemCache: string | null | undefined;
 let customerShopNameMemCache: string | null | undefined;
 
+type SecureReadResult =
+  | { status: "ok"; value: string | null }
+  | { status: "timeout" };
+
+function readSecureStore(key: string, ms: number): Promise<SecureReadResult> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve({ status: "timeout" });
+    }, ms);
+
+    SecureStore.getItemAsync(key).then(
+      (value) => {
+        // Always warm the cache when the keychain eventually answers — even
+        // after a timeout — so a later retry (or AppState refresh) is instant.
+        cookieMemCache.set(key, value);
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ status: "ok", value });
+      },
+      () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ status: "ok", value: null });
+      }
+    );
+  });
+}
+
 async function getStoredCookie(key: string): Promise<string | null> {
   if (cookieMemCache.has(key)) return cookieMemCache.get(key) ?? null;
   try {
-    const value = await SecureStore.getItemAsync(key);
-    cookieMemCache.set(key, value);
-    return value;
+    let result = await readSecureStore(key, SECURE_STORE_READ_TIMEOUT_MS);
+    if (result.status === "timeout") {
+      // One short retry — cold keychain often answers on the second try.
+      await new Promise((r) => setTimeout(r, 50));
+      result = await readSecureStore(key, SECURE_STORE_READ_TIMEOUT_MS);
+    }
+    if (result.status === "timeout") return null;
+    return result.value;
   } catch {
     return null;
   }

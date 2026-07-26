@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Alert, Linking, Modal, View } from "react-native";
-import { Stack, useRouter } from "expo-router";
+import { Stack, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StripeProvider } from "@stripe/stripe-react-native";
@@ -10,6 +10,7 @@ import { consumeCustomerLoginReturnPath } from "@/lib/customer-login-return";
 import { NotificationProvider } from "@/lib/NotificationProvider";
 import { ThemeProvider, useTheme } from "@/lib/ThemeContext";
 import { BikeLoader } from "@/components/ui/BikeLoader";
+import { defaultRouteForRole } from "@/lib/notification-routing";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -114,12 +115,30 @@ function MagicLinkHandler() {
   );
 }
 
+function AuthGate() {
+  const { role, loading } = useAuth();
+  const router = useRouter();
+  const segments = useSegments();
+
+  useEffect(() => {
+    if (loading || !role) return;
+    const root = segments[0];
+    // Recover if a cold keychain timeout briefly sent us to login, or we're
+    // still sitting on the bootstrap index route.
+    if (root !== "(auth)" && root !== "index" && root !== undefined) return;
+    router.replace(defaultRouteForRole(role) as never);
+  }, [role, loading, segments, router]);
+
+  return null;
+}
+
 function RootNav() {
   const { theme } = useTheme();
 
   return (
     <>
       <StatusBar style={theme.statusBar} />
+      <AuthGate />
       <MagicLinkHandler />
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="index" />

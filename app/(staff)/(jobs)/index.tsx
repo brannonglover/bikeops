@@ -31,6 +31,8 @@ const COLUMN_STAGES = DISPLAY_STAGES.filter(
   (stage) => stage !== "PENDING_APPROVAL"
 );
 
+const EMPTY_JOBS: Job[] = [];
+
 // When the bike was received/checked in. Prefer receivedAt (set when the job
 // enters Received), then drop-off date, then job creation time. Used to sort
 // the Received column oldest-first (first come, first served).
@@ -72,7 +74,19 @@ export default function JobBoardScreen() {
     [digestHighlightIds]
   );
 
-  const { data: jobs = [], isLoading, refetch } = useQuery({
+  const handleDigestHighlightIdsChange = useCallback((ids: string[]) => {
+    setDigestHighlightIds((prev) => {
+      if (
+        prev.length === ids.length &&
+        prev.every((id, i) => id === ids[i])
+      ) {
+        return prev;
+      }
+      return ids;
+    });
+  }, []);
+
+  const { data, isLoading, refetch } = useQuery({
     queryKey: jobsQueryKey,
     queryFn: fetchStaffJobs,
     refetchInterval: 15_000,
@@ -89,6 +103,9 @@ export default function JobBoardScreen() {
       });
     },
   });
+  // Stable empty fallback — `data = []` allocates a new array every render
+  // while loading and infinite-loops BookingDigestSheet highlights.
+  const jobs = data ?? EMPTY_JOBS;
 
   const [isManualRefresh, setIsManualRefresh] = useState(false);
   const handleRefresh = useCallback(async () => {
@@ -654,7 +671,7 @@ export default function JobBoardScreen() {
         jobs={jobs}
         isLoading={isLoading}
         onOpenJob={openJob}
-        onHighlightIdsChange={setDigestHighlightIds}
+        onHighlightIdsChange={handleDigestHighlightIdsChange}
       />
     </View>
   );
