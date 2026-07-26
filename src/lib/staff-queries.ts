@@ -11,7 +11,8 @@ export const jobsQueryKey = ["jobs"] as const;
 export const conversationsQueryKey = ["conversations"] as const;
 
 export async function fetchStaffJobs(): Promise<Job[]> {
-  const { data } = await api.get<Job[]>("/api/jobs");
+  // Board payload is what the web kanban uses — far lighter than full job includes.
+  const { data } = await api.get<Job[]>("/api/jobs?view=board");
   return data;
 }
 
@@ -40,16 +41,15 @@ export async function fetchConversationMessages(
 }
 
 export function prefetchStaffHomeData(queryClient: QueryClient) {
-  return Promise.all([
-    queryClient.prefetchQuery({
-      queryKey: jobsQueryKey,
-      queryFn: fetchStaffJobs,
-    }),
-    queryClient.prefetchQuery({
-      queryKey: conversationsQueryKey,
-      queryFn: fetchStaffConversations,
-    }),
-  ]);
+  // Warm jobs first (home), then conversations — don't let chat compete with board TTFB.
+  void queryClient.prefetchQuery({
+    queryKey: jobsQueryKey,
+    queryFn: fetchStaffJobs,
+  });
+  void queryClient.prefetchQuery({
+    queryKey: conversationsQueryKey,
+    queryFn: fetchStaffConversations,
+  });
 }
 
 export function prefetchConversationMessages(

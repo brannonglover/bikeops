@@ -27,6 +27,10 @@ const listeners = new Set<PriorityListener>();
 
 export const customerMeQueryKey = ["customer-me"] as const;
 export const customerJobsQueryKey = ["customer-jobs"] as const;
+/** Lightweight stage list for the home “active repairs” badge. */
+export const customerJobsSummaryQueryKey = ["customer-jobs-summary"] as const;
+
+export type CustomerJobSummary = { id: string; stage: string };
 
 export function getCustomerLoadPriority(): CustomerDestination {
   return priority;
@@ -58,6 +62,14 @@ async function fetchCustomerJobs(): Promise<Job[]> {
   return data;
 }
 
+async function fetchCustomerJobsSummary(): Promise<CustomerJobSummary[]> {
+  const { data } = await api.get<CustomerJobSummary[]>(
+    "/api/customer/jobs?summary=1",
+    { role: "customer" }
+  );
+  return data;
+}
+
 async function fetchCustomerMessages(): Promise<ChatMessagesPage> {
   const { data } = await api.get<ChatMessagesPage>(
     customerMessagesPath({ limit: CHAT_MESSAGE_PAGE_SIZE }),
@@ -76,12 +88,21 @@ export function prioritizeCustomerDestination(
 ): void {
   setCustomerLoadPriority(dest);
 
+  if (dest !== "home") {
+    void queryClient.cancelQueries({ queryKey: customerJobsSummaryQueryKey });
+  }
   if (dest !== "home" && dest !== "repairs") {
-    // Badge fetch is lowest priority once they've committed to another screen.
+    // Full jobs list is only needed on Repairs once they've left Home.
     void queryClient.cancelQueries({ queryKey: customerJobsQueryKey });
   }
 
   switch (dest) {
+    case "home":
+      void queryClient.prefetchQuery({
+        queryKey: customerJobsSummaryQueryKey,
+        queryFn: fetchCustomerJobsSummary,
+      });
+      break;
     case "repairs":
       void queryClient.prefetchQuery({
         queryKey: customerJobsQueryKey,
@@ -102,10 +123,11 @@ export function prioritizeCustomerDestination(
       break;
     case "book":
     case "settings":
-    case "home":
       break;
   }
 }
+
+export { fetchCustomerJobsSummary };
 
 export type CustomerMeQueryData = {
   customer: Customer | null;

@@ -5,25 +5,24 @@ import {
   ScrollView,
   TouchableOpacity,
   StyleSheet,
-  InteractionManager,
 } from "react-native";
 import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/api";
 import { getCustomerProfile } from "@/lib/customer-profile";
 import {
-  customerJobsQueryKey,
+  customerJobsSummaryQueryKey,
+  fetchCustomerJobsSummary,
   getCustomerLoadPriority,
   prioritizeCustomerDestination,
-  setCustomerLoadPriority,
   subscribeCustomerLoadPriority,
   type CustomerDestination,
+  type CustomerJobSummary,
 } from "@/lib/customer-load-priority";
-import { type Job } from "@/lib/types";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { Card } from "@/components/ui/Card";
+import { BikeLoader } from "@/components/ui/BikeLoader";
 
 const ACTIVE_STAGES = new Set([
   "PENDING_APPROVAL",
@@ -110,7 +109,7 @@ export default function CustomerHomeScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [greetingName, setGreetingName] = useState<string | null>(null);
-  const [readyForJobs, setReadyForJobs] = useState(false);
+  const [homeReady, setHomeReady] = useState(false);
   const [loadPriority, setLoadPriority] = useState<CustomerDestination>(
     getCustomerLoadPriority
   );
@@ -119,8 +118,8 @@ export default function CustomerHomeScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      setCustomerLoadPriority("home");
-    }, [])
+      prioritizeCustomerDestination(queryClient, "home");
+    }, [queryClient])
   );
 
   const openDestination = useCallback(
@@ -131,46 +130,38 @@ export default function CustomerHomeScreen() {
     [queryClient, router]
   );
 
-  // Local profile is cheap — fill the greeting after first paint.
+  // Local profile is cheap — paint the bike briefly, then the menu.
   useEffect(() => {
     let cancelled = false;
-    const task = InteractionManager.runAfterInteractions(() => {
-      void getCustomerProfile().then((profile) => {
-        if (cancelled) return;
-        const name = profile.firstName.trim();
-        setGreetingName(name || null);
-      });
+    void getCustomerProfile().then((profile) => {
+      if (cancelled) return;
+      const name = profile.firstName.trim();
+      setGreetingName(name || null);
+      setHomeReady(true);
     });
     return () => {
       cancelled = true;
-      task.cancel();
     };
   }, []);
 
-  // Jobs badge is lowest priority — only while Home is the active destination.
-  useEffect(() => {
-    const task = InteractionManager.runAfterInteractions(() => {
-      setReadyForJobs(true);
-    });
-    return () => task.cancel();
-  }, []);
-
   const homeBackgroundAllowed = loadPriority === "home";
+  const cachedSummary = queryClient.getQueryData<CustomerJobSummary[]>(
+    customerJobsSummaryQueryKey
+  );
 
-  const { data: jobs } = useQuery({
-    queryKey: customerJobsQueryKey,
-    queryFn: async () => {
-      const { data } = await api.get<Job[]>("/api/customer/jobs", {
-        role: "customer",
-      });
-      return data;
-    },
-    enabled: readyForJobs && homeBackgroundAllowed,
+  const { data: jobSummary } = useQuery({
+    queryKey: customerJobsSummaryQueryKey,
+    queryFn: fetchCustomerJobsSummary,
+    enabled: homeReady && homeBackgroundAllowed,
+    initialData: cachedSummary,
   });
 
   const activeCount = useMemo(
-    () => (jobs ?? []).filter((j) => ACTIVE_STAGES.has(j.stage)).length,
-    [jobs]
+    () =>
+      (jobSummary ?? []).filter((j: CustomerJobSummary) =>
+        ACTIVE_STAGES.has(j.stage)
+      ).length,
+    [jobSummary]
   );
 
   const styles = useMemo(
@@ -184,6 +175,12 @@ export default function CustomerHomeScreen() {
           padding: spacing[4],
           gap: spacing[3],
           paddingBottom: spacing[12],
+        },
+        loaderScreen: {
+          flex: 1,
+          justifyContent: "center",
+          alignItems: "center",
+          backgroundColor: theme.background,
         },
         greeting: {
           ...fontSize["2xl"],
@@ -246,69 +243,75 @@ export default function CustomerHomeScreen() {
     [theme]
   );
 
-  return (
-    <>
-      <ScrollView
-        style={styles.container}
-        contentContainerStyle={styles.content}
-      >
-        <View>
-          <Text style={styles.greeting}>
-            {greetingName ? `Welcome, ${greetingName}` : "Welcome"}
-          </Text>
-          <Text style={styles.subtitle}>What can we help you with?</Text>
-        </View>
+  if (!homeReady) {
+    return (
+      <View style={styles.loaderScreen}>
+        <BikeLoader label="Loading…" />
+      </View>
+    );
+  }
 
-        {MENU_ITEMS.map((item) => (
-          <TouchableOpacity
-            key={item.key}
-            activeOpacity={0.7}
-            onPress={() => openDestination(item)}
-          >
-            <Card style={styles.menuCard}>
-              <View
-                style={[
-                  styles.iconCircle,
-                  {
-                    backgroundColor: theme.dark
-                      ? item.iconBgDark
-                      : item.iconBgLight,
-                  },
-                ]}
-              >
-                <Ionicons
-                  name={item.icon}
-                  size={24}
-                  color={
-                    theme.dark && item.key === "settings"
-                      ? colors.slate[300]
-                      : item.iconColor
-                  }
-                />
-              </View>
-              <View style={styles.cardContent}>
-                <View style={styles.badgeRow}>
-                  <Text style={styles.cardTitle}>{item.title}</Text>
-                  {item.showActiveBadge && activeCount > 0 ? (
-                    <View style={styles.activeBadge}>
-                      <Text style={styles.activeBadgeText}>
-                        {activeCount} active
-                      </Text>
-                    </View>
-                  ) : null}
-                </View>
-                <Text style={styles.cardDescription}>{item.description}</Text>
-              </View>
+  return (
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.content}
+    >
+      <View>
+        <Text style={styles.greeting}>
+          {greetingName ? `Welcome, ${greetingName}` : "Welcome"}
+        </Text>
+        <Text style={styles.subtitle}>What can we help you with?</Text>
+      </View>
+
+      {MENU_ITEMS.map((item) => (
+        <TouchableOpacity
+          key={item.key}
+          activeOpacity={0.7}
+          onPress={() => openDestination(item)}
+        >
+          <Card style={styles.menuCard}>
+            <View
+              style={[
+                styles.iconCircle,
+                {
+                  backgroundColor: theme.dark
+                    ? item.iconBgDark
+                    : item.iconBgLight,
+                },
+              ]}
+            >
               <Ionicons
-                name="chevron-forward"
-                size={20}
-                color={theme.textMuted}
-                style={styles.chevron}
+                name={item.icon}
+                size={24}
+                color={
+                  theme.dark && item.key === "settings"
+                    ? colors.slate[300]
+                    : item.iconColor
+                }
               />
-            </Card>
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
-    </>
+            </View>
+            <View style={styles.cardContent}>
+              <View style={styles.badgeRow}>
+                <Text style={styles.cardTitle}>{item.title}</Text>
+                {item.showActiveBadge && activeCount > 0 ? (
+                  <View style={styles.activeBadge}>
+                    <Text style={styles.activeBadgeText}>
+                      {activeCount} active
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+              <Text style={styles.cardDescription}>{item.description}</Text>
+            </View>
+            <Ionicons
+              name="chevron-forward"
+              size={20}
+              color={theme.textMuted}
+              style={styles.chevron}
+            />
+          </Card>
+        </TouchableOpacity>
+      ))}
+    </ScrollView>
   );
 }

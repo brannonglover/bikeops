@@ -11,6 +11,10 @@ import {
   routeForNotification,
 } from "@/lib/notification-routing";
 import { prefetchStaffHomeData } from "@/lib/staff-queries";
+import {
+  customerJobsSummaryQueryKey,
+  fetchCustomerJobsSummary,
+} from "@/lib/customer-load-priority";
 
 type LaunchRoute = string | null | "pending";
 
@@ -29,6 +33,11 @@ export default function Index() {
 
     if (role === "staff") {
       void prefetchStaffHomeData(queryClient);
+    } else if (role === "customer") {
+      void queryClient.prefetchQuery({
+        queryKey: customerJobsSummaryQueryKey,
+        queryFn: fetchCustomerJobsSummary,
+      });
     }
 
     // Route to the role home immediately — don't hold the bike loader open

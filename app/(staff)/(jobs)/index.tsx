@@ -8,7 +8,6 @@ import {
   RefreshControl,
   Alert,
   StyleSheet,
-  ActivityIndicator,
   type StyleProp,
   type ViewStyle,
 } from "react-native";
@@ -22,6 +21,7 @@ import { useTheme } from "@/lib/ThemeContext";
 import { JobCard } from "@/components/jobs/JobCard";
 import { BookingDigestSheet } from "@/components/jobs/BookingDigestSheet";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { BikeLoader } from "@/components/ui/BikeLoader";
 import { fetchStaffJobs, jobsQueryKey } from "@/lib/staff-queries";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { customerName, formatDate, getJobBikeDisplayTitle } from "@/lib/format";
@@ -470,12 +470,7 @@ export default function JobBoardScreen() {
 
       {showInitialLoad ? (
         <View style={styles.initialLoad}>
-          <ActivityIndicator size="small" color={colors.amber[600]} />
-          <Text
-            style={[styles.initialLoadText, { color: theme.textSecondary }]}
-          >
-            Loading jobs…
-          </Text>
+          <BikeLoader label="Loading jobs…" />
         </View>
       ) : jobs.length === 0 ? (
         <EmptyState
@@ -967,11 +962,6 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    gap: spacing[3],
     paddingVertical: spacing[12],
-  },
-  initialLoadText: {
-    ...fontSize.sm,
-    fontWeight: "500",
   },
 });
