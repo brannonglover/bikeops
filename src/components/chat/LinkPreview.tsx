@@ -18,27 +18,50 @@ type OgData = {
 
 type Props = {
   url: string;
+  /** When false, skip the OG network fetch (e.g. until after first paint). */
+  enabled?: boolean;
 };
 
-export function LinkPreview({ url }: Props) {
+const ogCache = new Map<string, OgData | null>();
+
+export function LinkPreview({ url, enabled = true }: Props) {
   const { theme } = useTheme();
-  const [data, setData] = useState<OgData | null>(null);
+  const [data, setData] = useState<OgData | null>(() => ogCache.get(url) ?? null);
   const [imgError, setImgError] = useState(false);
 
   useEffect(() => {
+    if (!enabled) return;
+
+    const cached = ogCache.get(url);
+    if (cached !== undefined) {
+      setData(cached);
+      return;
+    }
+
     setData(null);
     setImgError(false);
     const controller = new AbortController();
-    const endpoint =
-      resolveUrl("/api/og-preview") + "?url=" + encodeURIComponent(url);
-    fetch(endpoint, { signal: controller.signal })
-      .then((r) => r.json())
-      .then((d: OgData) => {
-        if (d.imageUrl) setData(d);
-      })
-      .catch(() => {});
-    return () => controller.abort();
-  }, [url]);
+    // Defer slightly so message bubbles paint before OG work starts.
+    const timer = setTimeout(() => {
+      const endpoint =
+        resolveUrl("/api/og-preview") + "?url=" + encodeURIComponent(url);
+      fetch(endpoint, { signal: controller.signal })
+        .then((r) => r.json())
+        .then((d: OgData) => {
+          const next = d.imageUrl ? d : null;
+          ogCache.set(url, next);
+          if (next) setData(next);
+        })
+        .catch(() => {
+          ogCache.set(url, null);
+        });
+    }, 300);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [url, enabled]);
 
   if (!data || !data.imageUrl || imgError) return null;
 

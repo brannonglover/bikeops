@@ -5,7 +5,12 @@ import {
   type ProfileBikeSource,
 } from "@/lib/customer-api";
 import { CUSTOMER_MESSAGES_QUERY_KEY } from "@/hooks/useNotifications";
-import type { ChatMessage, Customer, Job } from "@/lib/types";
+import {
+  CHAT_MESSAGE_PAGE_SIZE,
+  customerMessagesPath,
+  type ChatMessagesPage,
+} from "@/lib/chat-messages";
+import type { Customer, Job } from "@/lib/types";
 
 export type CustomerDestination =
   | "home"
@@ -53,12 +58,11 @@ async function fetchCustomerJobs(): Promise<Job[]> {
   return data;
 }
 
-async function fetchCustomerMessages(): Promise<
-  ChatMessage[] | { messages: ChatMessage[]; staffLastReadAt: string | null }
-> {
-  const { data } = await api.get<
-    ChatMessage[] | { messages: ChatMessage[]; staffLastReadAt: string | null }
-  >("/api/chat/conversation/messages", { role: "customer" });
+async function fetchCustomerMessages(): Promise<ChatMessagesPage> {
+  const { data } = await api.get<ChatMessagesPage>(
+    customerMessagesPath({ limit: CHAT_MESSAGE_PAGE_SIZE }),
+    { role: "customer" }
+  );
   return data;
 }
 

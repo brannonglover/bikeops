@@ -28,6 +28,11 @@ import {
   jobsQueryKey,
   prefetchStaffHomeData,
 } from "@/lib/staff-queries";
+import {
+  CHAT_MESSAGE_PAGE_SIZE,
+  customerMessagesPath,
+  staffMessagesPath,
+} from "@/lib/chat-messages";
 import { type ChatMessage, type Conversation } from "@/lib/types";
 import type { QueryClient } from "@tanstack/react-query";
 
@@ -42,6 +47,7 @@ type MessagesData =
       customerTypingAt?: string | null;
       customerLastReadAt?: string | null;
       staffLastReadAt?: string | null;
+      hasMore?: boolean;
     };
 
 function lastConversationMessage(conv: Conversation): ChatMessage | null {
@@ -135,13 +141,15 @@ export function useNotifications() {
       try {
         if (role === "staff" && data.conversationId) {
           const { data: messagesData } = await api.get<MessagesData>(
-            `/api/conversations/${data.conversationId}/messages`
+            staffMessagesPath(data.conversationId, {
+              limit: CHAT_MESSAGE_PAGE_SIZE,
+            })
           );
           cacheMessages(["messages", data.conversationId], messagesData);
           queryClient.invalidateQueries({ queryKey: ["conversations"] });
         } else if (role === "customer") {
           const { data: messagesData } = await api.get<MessagesData>(
-            "/api/chat/conversation/messages",
+            customerMessagesPath({ limit: CHAT_MESSAGE_PAGE_SIZE }),
             { role: "customer" }
           );
           cacheMessages(CUSTOMER_MESSAGES_QUERY_KEY, messagesData);

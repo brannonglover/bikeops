@@ -14,6 +14,7 @@ import {
   Alert,
   Keyboard,
   ActivityIndicator,
+  InteractionManager,
   type NativeSyntheticEvent,
   type NativeScrollEvent,
 } from "react-native";
@@ -29,6 +30,13 @@ import {
   pendingChatImageDisplayUri,
   type PendingChatImage,
 } from "@/lib/chat-attachments";
+import {
+  CHAT_MESSAGE_PAGE_SIZE,
+  mergeRecentMessagePage,
+  messagesFromPagePayload,
+  prependOlderMessages,
+  staffMessagesPath,
+} from "@/lib/chat-messages";
 import { type Bike, type ChatMessage, type Conversation, type Job } from "@/lib/types";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
@@ -146,10 +154,20 @@ export default function ConversationScreen() {
         customerTypingAt: string | null;
         customerLastReadAt: string | null;
         staffLastReadAt: string | null;
+        hasMore?: boolean;
       }
     | undefined;
 
   const deliveryTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [linkPreviewsEnabled, setLinkPreviewsEnabled] = useState(false);
+  const hasMoreMessagesRef = useRef(true);
+
+  useEffect(() => {
+    hasMoreMessagesRef.current = true;
+    setLoadingOlder(false);
+    setLinkPreviewsEnabled(false);
+  }, [id]);
   useEffect(() => {
     return () => {
       for (const timeoutId of Object.values(deliveryTimeoutsRef.current)) {
@@ -727,6 +745,9 @@ export default function ConversationScreen() {
     queryKey: ["messages", id],
     initialData: cachedMessages,
     queryFn: async () => {
+      const path = messageId
+        ? staffMessagesPath(id!)
+        : staffMessagesPath(id!, { limit: CHAT_MESSAGE_PAGE_SIZE });
       const { data } = await api.get<
         | ChatMessage[]
         | {
@@ -734,8 +755,9 @@ export default function ConversationScreen() {
             customerTypingAt: string | null;
             customerLastReadAt: string | null;
             staffLastReadAt: string | null;
+            hasMore?: boolean;
           }
-      >(`/api/conversations/${id}/messages`);
+      >(path);
       const previous = queryClient.getQueryData<MessagesData>(["messages", id]);
       const prevMessages: ChatMessage[] = previous
         ? Array.isArray(previous)
@@ -743,26 +765,26 @@ export default function ConversationScreen() {
           : previous.messages
         : [];
 
-      const serverMessages: ChatMessage[] = Array.isArray(data)
-        ? data
-        : data.messages ?? [];
+      const { messages: serverMessages, hasMore } = messagesFromPagePayload(data);
+      const combined = mergeRecentMessagePage(prevMessages, serverMessages);
 
-      const prevById = new Map(prevMessages.map((m) => [m.id, m]));
-      const merged = serverMessages.map((m) => {
-        const prev = prevById.get(m.id);
-        return prev?.clientDeliveryState
-          ? { ...m, clientDeliveryState: prev.clientDeliveryState }
-          : m;
-      });
-
-      const serverIds = new Set(serverMessages.map((m) => m.id));
-      const optimistic = prevMessages.filter(
-        (m) => m.id.startsWith("temp-") && !serverIds.has(m.id)
-      );
-      const combined = [...merged, ...optimistic];
+      const previousHasMore =
+        previous &&
+        !Array.isArray(previous) &&
+        typeof previous.hasMore === "boolean"
+          ? previous.hasMore
+          : hasMoreMessagesRef.current;
+      // Recent-page polls always report hasMore if the thread is long; once
+      // we've finished paging older messages, don't flip back to true.
+      const nextHasMore = messageId
+        ? false
+        : previousHasMore === false
+          ? false
+          : hasMore;
+      hasMoreMessagesRef.current = nextHasMore;
 
       if (Array.isArray(data)) return combined;
-      return { ...data, messages: combined };
+      return { ...data, messages: combined, hasMore: nextHasMore };
     },
     enabled: !!id,
     refetchInterval: POLL_MS,
@@ -771,6 +793,68 @@ export default function ConversationScreen() {
   const messages: ChatMessage[] = Array.isArray(messagesData)
     ? messagesData
     : messagesData?.messages ?? [];
+
+  const hasMoreMessages = !Array.isArray(messagesData)
+    ? Boolean(messagesData?.hasMore)
+    : hasMoreMessagesRef.current;
+
+  useEffect(() => {
+    if (messages.length === 0 && isLoading) {
+      setLinkPreviewsEnabled(false);
+      return;
+    }
+    if (messages.length === 0) return;
+    const task = InteractionManager.runAfterInteractions(() => {
+      setLinkPreviewsEnabled(true);
+    });
+    return () => task.cancel();
+  }, [messages.length, isLoading]);
+
+  const loadOlderMessages = useCallback(async () => {
+    if (!id || !hasMoreMessages || loadingOlder || messages.length === 0) return;
+    const oldest = messages[0];
+    if (!oldest || oldest.id.startsWith("temp-")) return;
+
+    setLoadingOlder(true);
+    try {
+      const { data } = await api.get<
+        | ChatMessage[]
+        | {
+            messages: ChatMessage[];
+            customerTypingAt: string | null;
+            customerLastReadAt: string | null;
+            staffLastReadAt: string | null;
+            hasMore?: boolean;
+          }
+      >(
+        staffMessagesPath(id, {
+          limit: CHAT_MESSAGE_PAGE_SIZE,
+          before: oldest.id,
+        })
+      );
+      const { messages: older, hasMore } = messagesFromPagePayload(data);
+      hasMoreMessagesRef.current = hasMore;
+      queryClient.setQueryData<MessagesData>(["messages", id], (old) => {
+        if (!old) {
+          return Array.isArray(data)
+            ? older
+            : { ...data, messages: older, hasMore };
+        }
+        if (Array.isArray(old)) {
+          return prependOlderMessages(old, older);
+        }
+        return {
+          ...old,
+          messages: prependOlderMessages(old.messages, older),
+          hasMore,
+        };
+      });
+    } catch {
+      // Retry on next scroll-to-top.
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [hasMoreMessages, id, loadingOlder, messages, queryClient]);
 
   const customerTypingAt = !Array.isArray(messagesData)
     ? messagesData?.customerTypingAt
@@ -962,8 +1046,16 @@ export default function ConversationScreen() {
       const atBottom = distanceFromBottom < 60;
       isAtBottomRef.current = atBottom;
       setShowScrollButton(!atBottom);
+
+      const canLoadOlder =
+        didInitialAutoScrollRef.current &&
+        contentSize.height > layoutMeasurement.height + 40 &&
+        contentOffset.y < 80;
+      if (canLoadOlder) {
+        void loadOlderMessages();
+      }
     },
-    []
+    [loadOlderMessages]
   );
 
   const scrollToBottom = useCallback(() => {
@@ -1419,6 +1511,13 @@ export default function ConversationScreen() {
           contentContainerStyle={styles.messageList}
           onScroll={handleScroll}
           scrollEventThrottle={100}
+          initialNumToRender={16}
+          maxToRenderPerBatch={8}
+          windowSize={7}
+          removeClippedSubviews={Platform.OS === "android"}
+          maintainVisibleContentPosition={{
+            minIndexForVisible: 0,
+          }}
           onContentSizeChange={() => {
             requestAnimationFrame(() => {
               if (isAtBottomRef.current && didInitialAutoScrollRef.current) {
@@ -1447,6 +1546,13 @@ export default function ConversationScreen() {
               }
             }, 250);
           }}
+          ListHeaderComponent={
+            loadingOlder ? (
+              <View style={{ paddingVertical: spacing[3] }}>
+                <ActivityIndicator color={theme.iconMuted} />
+              </View>
+            ) : null
+          }
           renderItem={({ item }) => {
             const isOwn = item.sender === "STAFF";
             const hasAttachments = (item.attachments?.length ?? 0) > 0;
@@ -1606,7 +1712,11 @@ export default function ConversationScreen() {
                 ) : null}
                 {item.body
                   ? extractUrls(item.body).map((url) => (
-                      <LinkPreview key={url} url={url} />
+                      <LinkPreview
+                        key={url}
+                        url={url}
+                        enabled={linkPreviewsEnabled}
+                      />
                     ))
                   : null}
                 {hasReactions ? (

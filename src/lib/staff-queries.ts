@@ -1,6 +1,11 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import type { ChatMessage, Conversation, Job } from "@/lib/types";
+import {
+  CHAT_MESSAGE_PAGE_SIZE,
+  staffMessagesPath,
+  type ChatMessagesPage,
+} from "@/lib/chat-messages";
+import type { Conversation, Job } from "@/lib/types";
 
 export const jobsQueryKey = ["jobs"] as const;
 export const conversationsQueryKey = ["conversations"] as const;
@@ -15,24 +20,21 @@ export async function fetchStaffConversations(): Promise<Conversation[]> {
   return data;
 }
 
-export type MessagesQueryData =
-  | ChatMessage[]
-  | {
-      messages: ChatMessage[];
-      customerTypingAt: string | null;
-      customerLastReadAt: string | null;
-      staffLastReadAt: string | null;
-    };
+export type MessagesQueryData = ChatMessagesPage | ChatMessagesPage["messages"];
 
 export function messagesQueryKey(conversationId: string) {
   return ["messages", conversationId] as const;
 }
 
 export async function fetchConversationMessages(
-  conversationId: string
+  conversationId: string,
+  opts?: { limit?: number; before?: string }
 ): Promise<MessagesQueryData> {
   const { data } = await api.get<MessagesQueryData>(
-    `/api/conversations/${conversationId}/messages`
+    staffMessagesPath(conversationId, {
+      limit: opts?.limit ?? CHAT_MESSAGE_PAGE_SIZE,
+      before: opts?.before,
+    })
   );
   return data;
 }

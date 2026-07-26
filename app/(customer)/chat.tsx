@@ -15,6 +15,7 @@ import {
   Keyboard,
   Linking,
   ActivityIndicator,
+  InteractionManager,
   type NativeSyntheticEvent,
   type NativeScrollEvent,
 } from "react-native";
@@ -39,7 +40,17 @@ import {
 } from "@/lib/chat-attachments";
 import { useAuth } from "@/lib/auth";
 import { CUSTOMER_MESSAGES_QUERY_KEY } from "@/hooks/useNotifications";
-import { setCustomerLoadPriority } from "@/lib/customer-load-priority";
+import {
+  prioritizeCustomerDestination,
+} from "@/lib/customer-load-priority";
+import {
+  CHAT_MESSAGE_PAGE_SIZE,
+  customerMessagesPath,
+  mergeRecentMessagePage,
+  messagesFromPagePayload,
+  prependOlderMessages,
+  type ChatMessagesPage,
+} from "@/lib/chat-messages";
 import { type ChatMessage } from "@/lib/types";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
@@ -69,7 +80,11 @@ type AuthState = "loading" | "needs_login" | "authenticated";
 
 type MessagesCache =
   | ChatMessage[]
-  | { messages: ChatMessage[]; staffLastReadAt?: string | null };
+  | {
+      messages: ChatMessage[];
+      staffLastReadAt?: string | null;
+      hasMore?: boolean;
+    };
 
 function readCachedThread(queryClient: {
   getQueryData: <T>(key: readonly unknown[]) => T | undefined;
@@ -134,6 +149,9 @@ export default function CustomerChatScreen() {
   const [messagesReady, setMessagesReady] = useState(
     () => cachedThread.ready
   );
+  const [hasMoreMessages, setHasMoreMessages] = useState(true);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [linkPreviewsEnabled, setLinkPreviewsEnabled] = useState(false);
   const [staffLastReadAt, setStaffLastReadAt] = useState<string | null>(
     () => cachedThread.staffLastReadAt
   );
@@ -170,6 +188,8 @@ export default function CustomerChatScreen() {
   const clearThreadState = useCallback(() => {
     setMessages([]);
     setMessagesReady(false);
+    setHasMoreMessages(true);
+    setLoadingOlder(false);
     setStaffLastReadAt(null);
     setPendingImages([]);
     setText("");
@@ -234,8 +254,8 @@ export default function CustomerChatScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      setCustomerLoadPriority("chat");
-    }, [])
+      prioritizeCustomerDestination(queryClient, "chat");
+    }, [queryClient])
   );
 
   useEffect(() => {
@@ -340,21 +360,7 @@ export default function CustomerChatScreen() {
   };
 
   const mergeServerMessages = useCallback((serverMessages: ChatMessage[]) => {
-    setMessages((prev) => {
-      const prevById = new Map(prev.map((m) => [m.id, m]));
-      const merged = serverMessages.map((m) => {
-        const prevMsg = prevById.get(m.id);
-        return prevMsg?.clientDeliveryState
-          ? { ...m, clientDeliveryState: prevMsg.clientDeliveryState }
-          : m;
-      });
-
-      const serverIds = new Set(serverMessages.map((m) => m.id));
-      const optimistic = prev.filter(
-        (m) => m.id.startsWith("temp-") && !serverIds.has(m.id)
-      );
-      return [...merged, ...optimistic];
-    });
+    setMessages((prev) => mergeRecentMessagePage(prev, serverMessages));
   }, []);
 
   const applyCachedThread = useCallback(() => {
@@ -368,6 +374,17 @@ export default function CustomerChatScreen() {
 
   const messagesReadyRef = useRef(messagesReady);
   messagesReadyRef.current = messagesReady;
+
+  useEffect(() => {
+    if (!messagesReady) {
+      setLinkPreviewsEnabled(false);
+      return;
+    }
+    const task = InteractionManager.runAfterInteractions(() => {
+      setLinkPreviewsEnabled(true);
+    });
+    return () => task.cancel();
+  }, [messagesReady]);
 
   useEffect(() => {
     if (authState !== "authenticated") {
@@ -389,17 +406,26 @@ export default function CustomerChatScreen() {
   const fetchMessages = useCallback(async () => {
     if (authState !== "authenticated") return;
     try {
-      const { data } = await api.get<
-        | ChatMessage[]
-        | { messages: ChatMessage[]; staffLastReadAt: string | null }
-      >("/api/chat/conversation/messages", { role: "customer" });
+      // Deep-link to a specific message: load full history so the target exists.
+      const path = messageId
+        ? customerMessagesPath()
+        : customerMessagesPath({ limit: CHAT_MESSAGE_PAGE_SIZE });
+      const { data } = await api.get<ChatMessage[] | ChatMessagesPage>(path, {
+        role: "customer",
+      });
       queryClient.setQueryData(CUSTOMER_MESSAGES_QUERY_KEY, data);
-      if (Array.isArray(data)) {
-        mergeServerMessages(data);
-      } else {
-        mergeServerMessages(data.messages ?? []);
+      const { messages: pageMessages, hasMore } = messagesFromPagePayload(data);
+      mergeServerMessages(pageMessages);
+      if (!Array.isArray(data)) {
         setStaffLastReadAt(data.staffLastReadAt ?? null);
       }
+      // Only trust hasMore from limited pages; full history has no older page.
+      // Once false, keep it across recent-page polls (those always look "full").
+      setHasMoreMessages((prev) => {
+        if (messageId) return false;
+        if (prev === false) return false;
+        return hasMore;
+      });
       setMessagesReady(true);
     } catch {
       // Keep the bike loader up on failure — a transient auth/network miss
@@ -407,7 +433,49 @@ export default function CustomerChatScreen() {
       // poll succeeded. Prefer cache (e.g. home prefetch) when available.
       applyCachedThread();
     }
-  }, [authState, applyCachedThread, mergeServerMessages, queryClient]);
+  }, [
+    authState,
+    applyCachedThread,
+    mergeServerMessages,
+    messageId,
+    queryClient,
+  ]);
+
+  const loadOlderMessages = useCallback(async () => {
+    if (
+      authState !== "authenticated" ||
+      !hasMoreMessages ||
+      loadingOlder ||
+      messages.length === 0
+    ) {
+      return;
+    }
+    const oldest = messages[0];
+    if (!oldest || oldest.id.startsWith("temp-")) return;
+
+    setLoadingOlder(true);
+    try {
+      const { data } = await api.get<ChatMessage[] | ChatMessagesPage>(
+        customerMessagesPath({
+          limit: CHAT_MESSAGE_PAGE_SIZE,
+          before: oldest.id,
+        }),
+        { role: "customer" }
+      );
+      const { messages: older, hasMore } = messagesFromPagePayload(data);
+      setMessages((prev) => prependOlderMessages(prev, older));
+      setHasMoreMessages(hasMore);
+    } catch {
+      // Leave hasMore true so the user can retry by scrolling up again.
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [
+    authState,
+    hasMoreMessages,
+    loadingOlder,
+    messages,
+  ]);
 
   useEffect(() => {
     fetchMessages();
@@ -490,8 +558,16 @@ export default function CustomerChatScreen() {
       const atBottom = distanceFromBottom < 60;
       isAtBottomRef.current = atBottom;
       setShowScrollButton(!atBottom);
+
+      const canLoadOlder =
+        didInitialAutoScrollRef.current &&
+        contentSize.height > layoutMeasurement.height + 40 &&
+        contentOffset.y < 80;
+      if (canLoadOlder) {
+        void loadOlderMessages();
+      }
     },
-    []
+    [loadOlderMessages]
   );
 
   const scrollToBottom = useCallback(() => {
@@ -1199,6 +1275,13 @@ export default function CustomerChatScreen() {
           contentContainerStyle={styles.messageList}
           onScroll={handleScroll}
           scrollEventThrottle={100}
+          initialNumToRender={16}
+          maxToRenderPerBatch={8}
+          windowSize={7}
+          removeClippedSubviews={Platform.OS === "android"}
+          maintainVisibleContentPosition={{
+            minIndexForVisible: 0,
+          }}
           onContentSizeChange={() => {
             requestAnimationFrame(() => {
               if (isAtBottomRef.current && didInitialAutoScrollRef.current) {
@@ -1229,6 +1312,13 @@ export default function CustomerChatScreen() {
               }
             }, 250);
           }}
+          ListHeaderComponent={
+            loadingOlder ? (
+              <View style={{ paddingVertical: spacing[3] }}>
+                <ActivityIndicator color={theme.iconMuted} />
+              </View>
+            ) : null
+          }
           ListEmptyComponent={
             <View style={styles.emptyChat}>
               {!messagesReady ? (
@@ -1399,7 +1489,11 @@ export default function CustomerChatScreen() {
                 ) : null}
                 {item.body
                   ? extractUrls(item.body).map((url) => (
-                      <LinkPreview key={url} url={url} />
+                      <LinkPreview
+                        key={url}
+                        url={url}
+                        enabled={linkPreviewsEnabled}
+                      />
                     ))
                   : null}
                 {hasReactions ? (

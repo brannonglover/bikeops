@@ -11,7 +11,7 @@ import {
   Animated,
 } from "react-native";
 import { useLocalSearchParams, Stack, useRouter } from "expo-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { useStripe } from "@stripe/stripe-react-native";
 import { ApiError, api, getCustomerShop, resolveCustomerUrl } from "@/lib/api";
@@ -31,6 +31,7 @@ import {
   alertPaymentResult,
   presentJobPaymentSheet,
 } from "@/lib/customer-payment";
+import { prioritizeCustomerDestination } from "@/lib/customer-load-priority";
 
 const JOB_STATUS_POLL_MS = 15_000;
 
@@ -510,6 +511,7 @@ export default function JobStatusScreen() {
   const { theme } = useTheme();
   const { jobId } = useLocalSearchParams<{ jobId: string }>();
   const router = useRouter();
+  const queryClient = useQueryClient();
   const { initPaymentSheet, presentPaymentSheet } = useStripe();
 
   const {
@@ -720,7 +722,13 @@ export default function JobStatusScreen() {
               ) : null}
               <TouchableOpacity
                 style={styles.contactActionBtn}
-                onPress={() => router.push("/(customer)/chat")}
+                onPressIn={() => {
+                  prioritizeCustomerDestination(queryClient, "chat");
+                }}
+                onPress={() => {
+                  prioritizeCustomerDestination(queryClient, "chat");
+                  router.push("/(customer)/chat");
+                }}
                 accessibilityLabel="Message shop"
               >
                 <Ionicons
