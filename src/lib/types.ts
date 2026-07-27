@@ -20,6 +20,9 @@ export interface Customer {
   lastName: string | null;
   email: string | null;
   phone: string | null;
+  smsConsent?: boolean;
+  smsConsentSource?: string | null;
+  smsConsentUpdatedAt?: string | null;
   address: string | null;
   notes: string | null;
   imageUrl: string | null;

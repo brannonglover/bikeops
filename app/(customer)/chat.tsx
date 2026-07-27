@@ -61,6 +61,7 @@ import { SectionLoader } from "@/components/ui/SectionLoader";
 import { ImageViewer } from "@/components/ui/ImageViewer";
 import { LinkifiedText } from "@/components/chat/LinkifiedText";
 import { LinkPreview } from "@/components/chat/LinkPreview";
+import { GrowingTextInput } from "@/components/chat/GrowingTextInput";
 import {
   ShopPicker,
   ShopPickerModal,
@@ -1013,17 +1014,22 @@ export default function CustomerChatScreen() {
           backgroundColor: theme.background,
         },
         imageButton: { padding: spacing[2] },
-        input: {
+        inputShell: {
           flex: 1,
           borderWidth: 1,
           borderColor: theme.inputBorder,
           borderRadius: borderRadius.xl,
           paddingHorizontal: spacing[3],
           paddingVertical: spacing[2],
+          backgroundColor: theme.inputBg,
+          justifyContent: "center",
+        },
+        input: {
           ...fontSize.sm,
           color: theme.inputText,
-          backgroundColor: theme.inputBg,
-          maxHeight: 100,
+          padding: 0,
+          margin: 0,
+          textAlignVertical: "top",
         },
         sendButton: {
           width: 40,
@@ -1602,13 +1608,14 @@ export default function CustomerChatScreen() {
               <Ionicons name="image-outline" size={24} color={theme.icon} />
             </TouchableOpacity>
           ) : null}
-          <TextInput
+          <GrowingTextInput
             value={text}
+            measureText={text}
             onChangeText={setText}
             placeholder={editingMessage ? "Edit message..." : "Type a message..."}
+            shellStyle={styles.inputShell}
             style={styles.input}
             placeholderTextColor={theme.textMuted}
-            multiline
           />
           <TouchableOpacity
             onPress={editingMessage ? handleEdit : handleSend}

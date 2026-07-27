@@ -1,9 +1,8 @@
 import { Stack, useRouter } from "expo-router";
-import { TouchableOpacity, View } from "react-native";
+import { TouchableOpacity } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/lib/ThemeContext";
 import { HamburgerMenu } from "@/components/ui/HamburgerMenu";
-import { ShopLogo } from "@/components/ui/ShopLogo";
 import { renderAppHeader } from "@/components/ui/AppHeader";
 
 export default function ChatLayout() {
@@ -26,18 +25,21 @@ export default function ChatLayout() {
         options={{
           title: "Conversation",
           headerLeft: () => (
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-              <TouchableOpacity
-                onPress={() => router.navigate("/(staff)/chat")}
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                style={{ padding: 4 }}
-                accessibilityRole="button"
-                accessibilityLabel="Back to conversations"
-              >
-                <Ionicons name="chevron-back" size={24} color={theme.text} />
-              </TouchableOpacity>
-              <ShopLogo />
-            </View>
+            <TouchableOpacity
+              onPress={() => {
+                if (router.canGoBack()) {
+                  router.back();
+                } else {
+                  router.navigate("/(staff)/chat");
+                }
+              }}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              style={{ padding: 4 }}
+              accessibilityRole="button"
+              accessibilityLabel="Go back"
+            >
+              <Ionicons name="chevron-back" size={24} color={theme.text} />
+            </TouchableOpacity>
           ),
         }}
       />

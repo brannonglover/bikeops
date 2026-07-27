@@ -3,7 +3,6 @@ import {
   View,
   Text,
   FlatList,
-  TextInput,
   TouchableOpacity,
   Pressable,
   KeyboardAvoidingView,
@@ -43,7 +42,7 @@ import { useTheme } from "@/lib/ThemeContext";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { LinkifiedText } from "@/components/chat/LinkifiedText";
 import { LinkPreview } from "@/components/chat/LinkPreview";
-import { ShopLogo } from "@/components/ui/ShopLogo";
+import { GrowingTextInput } from "@/components/chat/GrowingTextInput";
 
 const URL_REGEX = /(https?:\/\/[^\s]+)/g;
 function extractUrls(text: string): string[] {
@@ -141,6 +140,7 @@ export default function ConversationScreen() {
   const [composerKey, setComposerKey] = useState(0);
   const [composerSeed, setComposerSeed] = useState("");
   const [composerHasText, setComposerHasText] = useState(false);
+  const [composerMeasureText, setComposerMeasureText] = useState("");
   const [sending, setSending] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingChatImage[]>([]);
   const [editingMessage, setEditingMessage] = useState<ChatMessage | null>(null);
@@ -390,17 +390,22 @@ export default function ConversationScreen() {
         imageButton: {
           padding: spacing[2],
         },
-        input: {
+        inputShell: {
           flex: 1,
           borderWidth: 1,
           borderColor: theme.inputBorder,
           borderRadius: borderRadius.xl,
           paddingHorizontal: spacing[3],
           paddingVertical: spacing[2],
+          backgroundColor: theme.inputBg,
+          justifyContent: "center",
+        },
+        input: {
           ...fontSize.sm,
           color: theme.inputText,
-          backgroundColor: theme.inputBg,
-          maxHeight: 100,
+          padding: 0,
+          margin: 0,
+          textAlignVertical: "top",
         },
         sendButton: {
           width: 40,
@@ -1067,6 +1072,7 @@ export default function ConversationScreen() {
   const resetComposer = useCallback((next = "") => {
     composerTextRef.current = next;
     setComposerSeed(next);
+    setComposerMeasureText(next);
     setComposerHasText(next.trim().length > 0);
     setComposerKey((k) => k + 1);
   }, []);
@@ -1404,15 +1410,29 @@ export default function ConversationScreen() {
           headerLeft: () => (
             <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
               <TouchableOpacity
-                onPress={() => router.navigate("/(staff)/chat")}
+                onPress={() => {
+                  if (router.canGoBack()) {
+                    router.back();
+                  } else {
+                    router.navigate("/(staff)/chat");
+                  }
+                }}
                 hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                 style={{ padding: 4 }}
                 accessibilityRole="button"
-                accessibilityLabel="Back to conversations"
+                accessibilityLabel="Go back"
               >
                 <Ionicons name="chevron-back" size={24} color={theme.text} />
               </TouchableOpacity>
-              <ShopLogo />
+              <TouchableOpacity
+                onPress={handleOpenJobCard}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                style={{ padding: spacing[2] }}
+                accessibilityRole="button"
+                accessibilityLabel="Open job card"
+              >
+                <Ionicons name="construct-outline" size={20} color={theme.icon} />
+              </TouchableOpacity>
             </View>
           ),
           headerTitle: () => {
@@ -1465,34 +1485,34 @@ export default function ConversationScreen() {
             );
           },
           headerRight: () => {
-            const inviteIconColor =
-              inviteStatus === "active"
-                ? colors.emerald[500]
-                : inviteStatus === "pending"
-                  ? colors.amber[500]
-                  : theme.icon;
+            const hasSmsConsent =
+              !!resolvedConversation?.customer?.phone?.trim() &&
+              resolvedConversation.customer.smsConsent === true;
+            const smsIconColor = hasSmsConsent
+              ? colors.emerald[500]
+              : theme.iconMuted;
+            const canInvite = !!conversation?.customer?.email;
+
             return (
-              <View style={{ flexDirection: "row", alignItems: "center", gap: spacing[1] }}>
-                <TouchableOpacity
-                  onPress={handleOpenJobCard}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  style={{ padding: spacing[2] }}
-                  accessibilityRole="button"
-                  accessibilityLabel="Open job card"
-                >
-                  <Ionicons name="construct-outline" size={20} color={theme.icon} />
-                </TouchableOpacity>
-                {conversation?.customer?.email ? (
-                  <TouchableOpacity
-                    onPress={handleInvitePress}
-                    disabled={sendingInvite}
-                    style={{ padding: spacing[2], opacity: sendingInvite ? 0.5 : 1 }}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  >
-                    <Ionicons name="mail-outline" size={20} color={inviteIconColor} />
-                  </TouchableOpacity>
-                ) : null}
-              </View>
+              <TouchableOpacity
+                onPress={canInvite ? handleInvitePress : undefined}
+                disabled={!canInvite || sendingInvite}
+                style={{
+                  padding: spacing[2],
+                  opacity: sendingInvite ? 0.5 : 1,
+                }}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  hasSmsConsent ? "SMS consent given" : "SMS consent not given"
+                }
+              >
+                <Ionicons
+                  name="chatbubble-ellipses-outline"
+                  size={20}
+                  color={smsIconColor}
+                />
+              </TouchableOpacity>
             );
           },
         }}
@@ -1829,17 +1849,19 @@ export default function ConversationScreen() {
               <Ionicons name="image-outline" size={24} color={theme.icon} />
             </TouchableOpacity>
           ) : null}
-          <TextInput
+          <GrowingTextInput
             key={composerKey}
             defaultValue={composerSeed}
+            measureText={composerMeasureText}
             onChangeText={(next) => {
               composerTextRef.current = next;
+              setComposerMeasureText(next);
               setComposerHasText(next.trim().length > 0);
             }}
             placeholder={editingMessage ? "Edit message..." : "Type a message..."}
+            shellStyle={styles.inputShell}
             style={styles.input}
             placeholderTextColor={theme.textMuted}
-            multiline
             maxLength={5000}
             autoCapitalize="sentences"
             autoCorrect
