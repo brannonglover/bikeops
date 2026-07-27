@@ -76,12 +76,19 @@ function StaffTabs() {
             <Ionicons name="chatbubbles" size={size} color={color} />
           ),
         }}
-        listeners={{
+        listeners={({ navigation }) => ({
           tabPress: (e) => {
+            // Pop to inbox only when Chat is already the active tab. Detect via
+            // parent tab state — isFocused() can be true mid-transition and was
+            // incorrectly resetting to the list when returning from other tabs.
+            const parentState = navigation.getParent()?.getState();
+            const activeName =
+              parentState?.routes?.[parentState.index ?? 0]?.name;
+            if (activeName !== "chat") return;
             e.preventDefault();
             router.navigate("/(staff)/chat");
           },
-        }}
+        })}
       />
       <Tabs.Screen
         name="customers"

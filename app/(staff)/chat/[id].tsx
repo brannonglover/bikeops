@@ -14,10 +14,12 @@ import {
   Keyboard,
   ActivityIndicator,
   InteractionManager,
+  AppState,
+  type AppStateStatus,
   type NativeSyntheticEvent,
   type NativeScrollEvent,
 } from "react-native";
-import { useLocalSearchParams, Stack, useRouter } from "expo-router";
+import { useLocalSearchParams, Stack, useRouter, useFocusEffect } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
@@ -36,7 +38,16 @@ import {
   prependOlderMessages,
   staffMessagesPath,
 } from "@/lib/chat-messages";
+import {
+  clearChatDraft,
+  getChatDraft,
+  setChatDraft,
+} from "@/lib/chat-drafts";
 import { type Bike, type ChatMessage, type Conversation, type Job } from "@/lib/types";
+
+function chatDraftQueryKey(conversationId: string) {
+  return ["chat-draft", conversationId] as const;
+}
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
@@ -134,16 +145,25 @@ export default function ConversationScreen() {
   const isAtBottomRef = useRef(true);
   const didInitialAutoScrollRef = useRef(false);
   const pendingScrollToMessageIdRef = useRef<string | null>(null);
-  const composerTextRef = useRef("");
+  const initialDraft = id
+    ? (queryClient.getQueryData<string>(chatDraftQueryKey(id)) ??
+      getChatDraft(id))
+    : "";
+  const composerTextRef = useRef(initialDraft);
+  const editingMessageRef = useRef<ChatMessage | null>(null);
+  const isResettingComposerRef = useRef(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
   // Uncontrolled composer: controlled `value` breaks iOS autocapitalize-after-period.
   const [composerKey, setComposerKey] = useState(0);
-  const [composerSeed, setComposerSeed] = useState("");
-  const [composerHasText, setComposerHasText] = useState(false);
-  const [composerMeasureText, setComposerMeasureText] = useState("");
+  const [composerSeed, setComposerSeed] = useState(initialDraft);
+  const [composerHasText, setComposerHasText] = useState(
+    () => initialDraft.trim().length > 0
+  );
+  const [composerMeasureText, setComposerMeasureText] = useState(initialDraft);
   const [sending, setSending] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingChatImage[]>([]);
   const [editingMessage, setEditingMessage] = useState<ChatMessage | null>(null);
+  editingMessageRef.current = editingMessage;
   const [activeMessage, setActiveMessage] = useState<ChatMessage | null>(null);
   const [viewingImageUrl, setViewingImageUrl] = useState<string | null>(null);
 
@@ -167,7 +187,22 @@ export default function ConversationScreen() {
     hasMoreMessagesRef.current = true;
     setLoadingOlder(false);
     setLinkPreviewsEnabled(false);
-  }, [id]);
+    setEditingMessage(null);
+    const draft = id
+      ? (queryClient.getQueryData<string>(chatDraftQueryKey(id)) ??
+        getChatDraft(id))
+      : "";
+    isResettingComposerRef.current = true;
+    composerTextRef.current = draft;
+    setComposerSeed(draft);
+    setComposerMeasureText(draft);
+    setComposerHasText(draft.trim().length > 0);
+    setComposerKey((k) => k + 1);
+    queueMicrotask(() => {
+      isResettingComposerRef.current = false;
+    });
+  }, [id, queryClient]);
+
   useEffect(() => {
     return () => {
       for (const timeoutId of Object.values(deliveryTimeoutsRef.current)) {
@@ -1070,12 +1105,73 @@ export default function ConversationScreen() {
   }, []);
 
   const resetComposer = useCallback((next = "") => {
+    // Remounting an uncontrolled TextInput can emit a spurious onChangeText("").
+    // Ignore that so it doesn't wipe the in-memory draft.
+    isResettingComposerRef.current = true;
     composerTextRef.current = next;
     setComposerSeed(next);
     setComposerMeasureText(next);
     setComposerHasText(next.trim().length > 0);
     setComposerKey((k) => k + 1);
+    queueMicrotask(() => {
+      isResettingComposerRef.current = false;
+    });
   }, []);
+
+  const persistDraft = useCallback(() => {
+    if (!id || editingMessageRef.current) return;
+    const text = composerTextRef.current;
+    // Only write non-empty text here. Intentional clears go through onChangeText.
+    // Empty persists during teardown were wiping drafts after remount glitches.
+    if (text) {
+      setChatDraft(id, text);
+      queryClient.setQueryData(chatDraftQueryKey(id), text);
+    }
+  }, [id, queryClient]);
+
+  const hydrateComposerFromDraft = useCallback(() => {
+    if (!id || editingMessageRef.current) return;
+    const text =
+      queryClient.getQueryData<string>(chatDraftQueryKey(id)) ??
+      getChatDraft(id) ??
+      composerTextRef.current;
+    if (!text) return;
+    resetComposer(text);
+    setChatDraft(id, text);
+    queryClient.setQueryData(chatDraftQueryKey(id), text);
+  }, [id, queryClient, resetComposer]);
+
+  // Save on blur; re-seed on focus so detached native inputs get their text back.
+  useFocusEffect(
+    useCallback(() => {
+      hydrateComposerFromDraft();
+      return () => {
+        persistDraft();
+      };
+    }, [hydrateComposerFromDraft, persistDraft])
+  );
+
+  // Also flush when backgrounding the app (tab blur may not fire).
+  useEffect(() => {
+    const onAppState = (next: AppStateStatus) => {
+      if (next === "background" || next === "inactive") {
+        persistDraft();
+      }
+    };
+    const sub = AppState.addEventListener("change", onAppState);
+    return () => {
+      persistDraft();
+      sub.remove();
+    };
+  }, [persistDraft]);
+
+  const restoreDraftComposer = useCallback(() => {
+    const draft = id
+      ? (queryClient.getQueryData<string>(chatDraftQueryKey(id)) ??
+        getChatDraft(id))
+      : "";
+    resetComposer(draft);
+  }, [id, queryClient, resetComposer]);
 
   const handleSend = useCallback(async () => {
     const textToSend = composerTextRef.current.trim();
@@ -1109,6 +1205,10 @@ export default function ConversationScreen() {
       return { ...old, messages: [...old.messages, optimisticMsg] };
     });
 
+    if (id) {
+      clearChatDraft(id);
+      queryClient.removeQueries({ queryKey: chatDraftQueryKey(id) });
+    }
     resetComposer("");
     setPendingImages([]);
     isAtBottomRef.current = true;
@@ -1226,9 +1326,9 @@ export default function ConversationScreen() {
 
   const cancelEditing = useCallback(() => {
     setEditingMessage(null);
-    resetComposer("");
+    restoreDraftComposer();
     Keyboard.dismiss();
-  }, [resetComposer]);
+  }, [restoreDraftComposer]);
 
   const handleEdit = useCallback(async () => {
     if (!editingMessage || !composerTextRef.current.trim()) return;
@@ -1262,7 +1362,7 @@ export default function ConversationScreen() {
     });
 
     setEditingMessage(null);
-    resetComposer("");
+    restoreDraftComposer();
     setSending(true);
 
     try {
@@ -1277,7 +1377,7 @@ export default function ConversationScreen() {
     } finally {
       setSending(false);
     }
-  }, [editingMessage, id, queryClient, resetComposer]);
+  }, [editingMessage, id, queryClient, restoreDraftComposer]);
 
   const toggleReaction = useCallback(
     async (messageId: string, emoji: string) => {
@@ -1854,9 +1954,15 @@ export default function ConversationScreen() {
             defaultValue={composerSeed}
             measureText={composerMeasureText}
             onChangeText={(next) => {
+              // Remounting TextInput often emits onChangeText(""); ignore it.
+              if (isResettingComposerRef.current && next === "") return;
               composerTextRef.current = next;
               setComposerMeasureText(next);
               setComposerHasText(next.trim().length > 0);
+              if (id && !editingMessageRef.current) {
+                setChatDraft(id, next);
+                queryClient.setQueryData(chatDraftQueryKey(id), next);
+              }
             }}
             placeholder={editingMessage ? "Edit message..." : "Type a message..."}
             shellStyle={styles.inputShell}

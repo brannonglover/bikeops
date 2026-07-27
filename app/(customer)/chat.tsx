@@ -16,6 +16,8 @@ import {
   Linking,
   ActivityIndicator,
   InteractionManager,
+  AppState,
+  type AppStateStatus,
   type NativeSyntheticEvent,
   type NativeScrollEvent,
 } from "react-native";
@@ -51,6 +53,12 @@ import {
   prependOlderMessages,
   type ChatMessagesPage,
 } from "@/lib/chat-messages";
+import {
+  clearChatDraft,
+  CUSTOMER_CHAT_DRAFT_KEY,
+  getChatDraft,
+  setChatDraft,
+} from "@/lib/chat-drafts";
 import { type ChatMessage } from "@/lib/types";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
@@ -156,10 +164,14 @@ export default function CustomerChatScreen() {
   const [staffLastReadAt, setStaffLastReadAt] = useState<string | null>(
     () => cachedThread.staffLastReadAt
   );
-  const [text, setText] = useState("");
+  const [text, setText] = useState(() => getChatDraft(CUSTOMER_CHAT_DRAFT_KEY));
+  const textRef = useRef(text);
+  textRef.current = text;
+  const editingMessageRef = useRef<ChatMessage | null>(null);
   const [sending, setSending] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingChatImage[]>([]);
   const [editingMessage, setEditingMessage] = useState<ChatMessage | null>(null);
+  editingMessageRef.current = editingMessage;
   const [activeMessage, setActiveMessage] = useState<ChatMessage | null>(null);
   const [viewingImageUrl, setViewingImageUrl] = useState<string | null>(null);
 
@@ -194,6 +206,7 @@ export default function CustomerChatScreen() {
     setStaffLastReadAt(null);
     setPendingImages([]);
     setText("");
+    clearChatDraft(CUSTOMER_CHAT_DRAFT_KEY);
     setEditingMessage(null);
     setActiveMessage(null);
     setShowScrollButton(false);
@@ -256,8 +269,31 @@ export default function CustomerChatScreen() {
   useFocusEffect(
     useCallback(() => {
       prioritizeCustomerDestination(queryClient, "chat");
+      if (!editingMessageRef.current) {
+        const draft = getChatDraft(CUSTOMER_CHAT_DRAFT_KEY);
+        if (draft && draft !== textRef.current) {
+          setText(draft);
+        }
+      }
+      return () => {
+        if (!editingMessageRef.current) {
+          setChatDraft(CUSTOMER_CHAT_DRAFT_KEY, textRef.current);
+        }
+      };
     }, [queryClient])
   );
+
+  useEffect(() => {
+    const onAppState = (next: AppStateStatus) => {
+      if (next === "background" || next === "inactive") {
+        if (!editingMessageRef.current) {
+          setChatDraft(CUSTOMER_CHAT_DRAFT_KEY, textRef.current);
+        }
+      }
+    };
+    const sub = AppState.addEventListener("change", onAppState);
+    return () => sub.remove();
+  }, []);
 
   useEffect(() => {
     const handleUrl = ({ url }: { url: string }) => {
@@ -605,6 +641,7 @@ export default function CustomerChatScreen() {
 
     setMessages((prev) => [...prev, optimisticMsg]);
     setText("");
+    clearChatDraft(CUSTOMER_CHAT_DRAFT_KEY);
     setPendingImages([]);
     isAtBottomRef.current = true;
     setShowScrollButton(false);
@@ -727,7 +764,7 @@ export default function CustomerChatScreen() {
 
   const cancelEditing = useCallback(() => {
     setEditingMessage(null);
-    setText("");
+    setText(getChatDraft(CUSTOMER_CHAT_DRAFT_KEY));
     Keyboard.dismiss();
   }, []);
 
@@ -741,7 +778,7 @@ export default function CustomerChatScreen() {
         { role: "customer" }
       );
       setEditingMessage(null);
-      setText("");
+      setText(getChatDraft(CUSTOMER_CHAT_DRAFT_KEY));
       fetchMessages();
     } catch {
       Alert.alert("Error", "Failed to edit message");
@@ -1611,7 +1648,12 @@ export default function CustomerChatScreen() {
           <GrowingTextInput
             value={text}
             measureText={text}
-            onChangeText={setText}
+            onChangeText={(next) => {
+              setText(next);
+              if (!editingMessage) {
+                setChatDraft(CUSTOMER_CHAT_DRAFT_KEY, next);
+              }
+            }}
             placeholder={editingMessage ? "Edit message..." : "Type a message..."}
             shellStyle={styles.inputShell}
             style={styles.input}
