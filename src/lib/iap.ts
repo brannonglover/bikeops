@@ -13,7 +13,7 @@ import {
 
 export const APPLE_SUBSCRIPTION_PRODUCT_ID =
   process.env.EXPO_PUBLIC_APPLE_SUBSCRIPTION_PRODUCT_ID ??
-  "com.brannonglover.bikeops.app.subscription.monthly";
+  "com.gloverlabs.bikeops_monthly";
 
 export function isIapSupported(): boolean {
   return Platform.OS === "ios";
@@ -62,16 +62,25 @@ export function subscribeToPurchaseEvents(handlers: {
   };
 }
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/** Apple requires appAccountToken to be an RFC 4122 UUID; omit otherwise. */
+function appAccountTokenForShop(shopId: string): string | undefined {
+  return UUID_RE.test(shopId) ? shopId : undefined;
+}
+
 export async function purchaseSubscription(shopId: string): Promise<void> {
   if (!isIapSupported()) {
     throw new Error("In-app subscriptions are only available on iOS.");
   }
   await ensureIapConnection();
+  const appAccountToken = appAccountTokenForShop(shopId);
   await requestPurchase({
     request: {
       apple: {
         sku: APPLE_SUBSCRIPTION_PRODUCT_ID,
-        appAccountToken: shopId,
+        ...(appAccountToken ? { appAccountToken } : {}),
       },
     },
     type: "subs",
