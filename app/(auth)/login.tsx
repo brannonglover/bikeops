@@ -34,6 +34,9 @@ import {
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 
+/** Temporary App Store Review demo email — password lives only on the server. */
+const APPLE_REVIEW_EMAIL = "appreview@bikeops.co";
+
 export default function LoginScreen() {
   const { theme } = useTheme();
   const router = useRouter();
@@ -43,7 +46,7 @@ export default function LoginScreen() {
     email?: string;
     verified?: string;
   }>();
-  const { staffLogin } = useAuth();
+  const { staffLogin, setCustomerAuthenticated } = useAuth();
   const [mode, setMode] = useState<"pick" | "staff" | "customer">("pick");
   const [shopSubdomain, setShopSubdomain] = useState("");
   const [email, setEmail] = useState("");
@@ -51,10 +54,14 @@ export default function LoginScreen() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [customerEmail, setCustomerEmail] = useState("");
+  const [customerPassword, setCustomerPassword] = useState("");
   const [requestingLogin, setRequestingLogin] = useState(false);
   const [loginMessage, setLoginMessage] = useState<string | null>(null);
   const [selectedShop, setSelectedShop] = useState<SelectedShop | null>(null);
   const [pastShops, setPastShops] = useState<PastShop[]>([]);
+
+  const isAppleReviewEmail =
+    customerEmail.trim().toLowerCase() === APPLE_REVIEW_EMAIL;
 
   useEffect(() => {
     getLastStaffShopSubdomain()
@@ -112,11 +119,28 @@ export default function LoginScreen() {
 
   const handleCustomerLogin = async () => {
     if (!customerEmail.trim() || !selectedShop) return;
+    if (isAppleReviewEmail && !customerPassword) return;
+
     setRequestingLogin(true);
     setLoginMessage(null);
     try {
       await setCustomerShop(selectedShop.subdomain, selectedShop.name);
       await setCustomerLoginReturnPath("/(customer)/");
+
+      if (isAppleReviewEmail) {
+        await api.post(
+          "/api/chat/review-login",
+          {
+            email: customerEmail.trim().toLowerCase(),
+            password: customerPassword,
+          },
+          { role: "customer" }
+        );
+        await setCustomerAuthenticated();
+        router.replace("/(customer)/");
+        return;
+      }
+
       const { data } = await api.post<{ message?: string }>(
         "/api/chat/request-login",
         { email: customerEmail.trim().toLowerCase() },
@@ -284,7 +308,9 @@ export default function LoginScreen() {
               marginBottom: spacing[4],
             }}
           >
-            Choose your bike shop, then enter your email for a login link.
+            {isAppleReviewEmail
+              ? "Enter the App Review password for this demo account."
+              : "Choose your bike shop, then enter your email for a login link."}
           </Text>
           <View style={styles.shopField}>
             <Text style={styles.shopLabel}>Bike Shop</Text>
@@ -304,11 +330,26 @@ export default function LoginScreen() {
             autoComplete="email"
             containerStyle={styles.inputContainer}
           />
+          {isAppleReviewEmail ? (
+            <Input
+              label="Password"
+              placeholder="••••••••"
+              value={customerPassword}
+              onChangeText={setCustomerPassword}
+              secureTextEntry
+              autoComplete="password"
+              autoCapitalize="none"
+              autoCorrect={false}
+              containerStyle={styles.inputContainer}
+            />
+          ) : null}
           {loginMessage ? (
             <Text
               style={{
                 ...fontSize.sm,
-                color: colors.emerald[600],
+                color: loginMessage.toLowerCase().includes("invalid")
+                  ? colors.red[600]
+                  : colors.emerald[600],
                 textAlign: "center",
                 marginBottom: spacing[3],
               }}
@@ -317,10 +358,22 @@ export default function LoginScreen() {
             </Text>
           ) : null}
           <Button
-            title={requestingLogin ? "Sending..." : "Send Login Link"}
+            title={
+              requestingLogin
+                ? isAppleReviewEmail
+                  ? "Signing in..."
+                  : "Sending..."
+                : isAppleReviewEmail
+                  ? "Sign In"
+                  : "Send Login Link"
+            }
             onPress={handleCustomerLogin}
             loading={requestingLogin}
-            disabled={!customerEmail.trim() || !selectedShop}
+            disabled={
+              !customerEmail.trim() ||
+              !selectedShop ||
+              (isAppleReviewEmail && !customerPassword)
+            }
             style={styles.button}
           />
           <TouchableOpacity onPress={() => setMode("pick")} style={styles.backLink}>
