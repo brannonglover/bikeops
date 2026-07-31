@@ -26,9 +26,12 @@ import * as ImagePicker from "expo-image-picker";
 import { api, ApiError, resolveUrl } from "@/lib/api";
 import {
   buildPendingChatImage,
+  buildPendingChatVideo,
   hasUploadingPendingImages,
+  isChatVideoAsset,
   isPendingChatImageReady,
   pendingChatImageDisplayUri,
+  uploadPendingChatVideo,
   type PendingChatImage,
 } from "@/lib/chat-attachments";
 import {
@@ -62,6 +65,11 @@ function extractUrls(text: string): string[] {
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Button } from "@/components/ui/Button";
 import { ImageViewer } from "@/components/ui/ImageViewer";
+import { VideoViewer } from "@/components/ui/VideoViewer";
+import {
+  ChatAttachmentMedia,
+  isVideoMimeType,
+} from "@/components/chat/ChatAttachmentMedia";
 import { customerName, formatTime } from "@/lib/format";
 
 function paramToString(v: string | string[] | undefined): string | undefined {
@@ -166,6 +174,7 @@ export default function ConversationScreen() {
   editingMessageRef.current = editingMessage;
   const [activeMessage, setActiveMessage] = useState<ChatMessage | null>(null);
   const [viewingImageUrl, setViewingImageUrl] = useState<string | null>(null);
+  const [viewingVideoUrl, setViewingVideoUrl] = useState<string | null>(null);
 
   type MessagesData =
     | ChatMessage[]
@@ -368,6 +377,11 @@ export default function ConversationScreen() {
           height: 60,
           borderRadius: borderRadius.lg,
           backgroundColor: theme.surfaceBorder,
+        },
+        pendingVideo: {
+          backgroundColor: "#111",
+          alignItems: "center",
+          justifyContent: "center",
         },
         pendingRemove: {
           position: "absolute",
@@ -1189,7 +1203,7 @@ export default function ConversationScreen() {
         id: img.id!,
         url: img.url ?? img.previewUri,
         filename: img.filename,
-        mimeType: "",
+        mimeType: img.mimeType,
         messageId: null,
         createdAt: new Date().toISOString(),
       })),
@@ -1250,15 +1264,60 @@ export default function ConversationScreen() {
 
   const handlePickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ["images"],
+      mediaTypes: ["images", "videos"],
       quality: 0.8,
+      videoMaxDuration: 120,
     });
     if (result.canceled || !result.assets[0]) return;
+
+    const asset = result.assets[0];
+
+    if (isChatVideoAsset(asset)) {
+      let pending: PendingChatImage;
+      try {
+        pending = buildPendingChatVideo(asset);
+      } catch (err) {
+        Alert.alert(
+          "Error",
+          err instanceof Error ? err.message : "Failed to prepare video"
+        );
+        return;
+      }
+      setPendingImages((prev) => [...prev, pending]);
+      try {
+        const data = await uploadPendingChatVideo(asset, pending);
+        setPendingImages((prev) =>
+          prev.map((img) =>
+            img.localId === pending.localId
+              ? {
+                  ...img,
+                  id: data.id,
+                  url: data.url,
+                  filename: data.filename,
+                  mimeType: data.mimeType,
+                  status: "ready",
+                }
+              : img
+          )
+        );
+      } catch (err) {
+        setPendingImages((prev) =>
+          prev.map((img) =>
+            img.localId === pending.localId ? { ...img, status: "failed" } : img
+          )
+        );
+        Alert.alert(
+          "Error",
+          err instanceof ApiError ? err.message : err instanceof Error ? err.message : "Failed to upload video"
+        );
+      }
+      return;
+    }
 
     let pending: PendingChatImage;
     let formData: FormData;
     try {
-      ({ pending, formData } = await buildPendingChatImage(result.assets[0]));
+      ({ pending, formData } = await buildPendingChatImage(asset));
     } catch (err) {
       Alert.alert(
         "Error",
@@ -1273,6 +1332,7 @@ export default function ConversationScreen() {
         id: string;
         url: string;
         filename: string;
+        mimeType?: string;
       }>("/api/chat/upload", formData);
       setPendingImages((prev) =>
         prev.map((img) =>
@@ -1282,6 +1342,7 @@ export default function ConversationScreen() {
                 id: data.id,
                 url: data.url,
                 filename: data.filename,
+                mimeType: data.mimeType ?? img.mimeType,
                 status: "ready",
               }
             : img
@@ -1692,21 +1753,22 @@ export default function ConversationScreen() {
                 {splitBubble ? (
                   <View style={[styles.imageMessage, isOwn && styles.imageMessageOwn]}>
                     {item.attachments?.map(
-                      (att: { id: string; url: string }) => (
-                        <TouchableOpacity
+                      (att: { id: string; url: string; mimeType?: string }) => (
+                        <ChatAttachmentMedia
                           key={att.id}
-                          activeOpacity={0.8}
-                          onPress={() =>
-                            setViewingImageUrl(resolveUrl(att.url))
-                          }
+                          url={resolveUrl(att.url)}
+                          mimeType={att.mimeType}
+                          style={styles.standaloneImage}
+                          onPress={() => {
+                            const resolved = resolveUrl(att.url);
+                            if (isVideoMimeType(att.mimeType)) {
+                              setViewingVideoUrl(resolved);
+                            } else {
+                              setViewingImageUrl(resolved);
+                            }
+                          }}
                           onLongPress={() => setActiveMessage(item)}
-                        >
-                          <Image
-                            source={{ uri: resolveUrl(att.url) }}
-                            style={styles.standaloneImage}
-                            resizeMode="cover"
-                          />
-                        </TouchableOpacity>
+                        />
                       )
                     )}
                     <TouchableOpacity
@@ -1758,21 +1820,22 @@ export default function ConversationScreen() {
                     }
                   >
                     {item.attachments?.map(
-                      (att: { id: string; url: string }) => (
-                        <TouchableOpacity
+                      (att: { id: string; url: string; mimeType?: string }) => (
+                        <ChatAttachmentMedia
                           key={att.id}
-                          activeOpacity={0.8}
-                          onPress={() =>
-                            setViewingImageUrl(resolveUrl(att.url))
-                          }
+                          url={resolveUrl(att.url)}
+                          mimeType={att.mimeType}
+                          style={styles.standaloneImage}
+                          onPress={() => {
+                            const resolved = resolveUrl(att.url);
+                            if (isVideoMimeType(att.mimeType)) {
+                              setViewingVideoUrl(resolved);
+                            } else {
+                              setViewingImageUrl(resolved);
+                            }
+                          }}
                           onLongPress={() => setActiveMessage(item)}
-                        >
-                          <Image
-                            source={{ uri: resolveUrl(att.url) }}
-                            style={styles.standaloneImage}
-                            resizeMode="cover"
-                          />
-                        </TouchableOpacity>
+                        />
                       )
                     )}
                     {item.body ? (
@@ -1906,11 +1969,17 @@ export default function ConversationScreen() {
           <View style={styles.pendingRow}>
             {pendingImages.map((p) => (
               <View key={p.localId} style={styles.pendingImageWrapper}>
-                <Image
-                  source={{ uri: pendingChatImageDisplayUri(p) }}
-                  style={styles.pendingImage}
-                  resizeMode="cover"
-                />
+                {p.kind === "video" ? (
+                  <View style={[styles.pendingImage, styles.pendingVideo]}>
+                    <Ionicons name="videocam" size={22} color={colors.white} />
+                  </View>
+                ) : (
+                  <Image
+                    source={{ uri: pendingChatImageDisplayUri(p) }}
+                    style={styles.pendingImage}
+                    resizeMode="cover"
+                  />
+                )}
                 {p.status === "uploading" ? (
                   <View style={styles.pendingUploading} pointerEvents="none">
                     <ActivityIndicator size="small" color={colors.white} />
@@ -2002,6 +2071,7 @@ export default function ConversationScreen() {
       </KeyboardAvoidingView>
 
       <ImageViewer uri={viewingImageUrl} onClose={() => setViewingImageUrl(null)} />
+      <VideoViewer uri={viewingVideoUrl} onClose={() => setViewingVideoUrl(null)} />
 
       <Modal
         visible={!!activeMessage}

@@ -58,7 +58,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       NSCameraUsageDescription:
         "BikeOps uses the camera to take photos of bikes for repair jobs and customer profile pictures, for example when a mechanic documents a bike on a work order.",
       NSPhotoLibraryUsageDescription:
-        "BikeOps uses your photo library so you can choose an existing bike or profile photo to attach, for example when updating a customer profile picture.",
+        "BikeOps uses your photo library so you can choose an existing bike, profile photo, or video to attach in chat and on jobs.",
       BGTaskSchedulerPermittedIdentifiers: [
         IS_DEV
           ? "com.brannonglover.bikeops.app.dev.notifications"
@@ -102,13 +102,14 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     "expo-font",
     "expo-system-ui",
     "expo-iap",
+    "expo-video",
     [
       "expo-image-picker",
       {
         cameraPermission:
           "BikeOps uses the camera to take photos of bikes for repair jobs and customer profile pictures, for example when a mechanic documents a bike on a work order.",
         photosPermission:
-          "BikeOps uses your photo library so you can choose an existing bike or profile photo to attach, for example when updating a customer profile picture.",
+          "BikeOps uses your photo library so you can choose an existing bike, profile photo, or video to attach in chat and on jobs.",
       },
     ],
     [

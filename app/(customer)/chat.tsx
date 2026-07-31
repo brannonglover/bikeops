@@ -35,9 +35,12 @@ import {
 } from "@/lib/customer-profile";
 import {
   buildPendingChatImage,
+  buildPendingChatVideo,
   hasUploadingPendingImages,
+  isChatVideoAsset,
   isPendingChatImageReady,
   pendingChatImageDisplayUri,
+  uploadPendingChatVideo,
   type PendingChatImage,
 } from "@/lib/chat-attachments";
 import { useAuth } from "@/lib/auth";
@@ -67,6 +70,11 @@ import { Button } from "@/components/ui/Button";
 import { BikeLoader } from "@/components/ui/BikeLoader";
 import { SectionLoader } from "@/components/ui/SectionLoader";
 import { ImageViewer } from "@/components/ui/ImageViewer";
+import { VideoViewer } from "@/components/ui/VideoViewer";
+import {
+  ChatAttachmentMedia,
+  isVideoMimeType,
+} from "@/components/chat/ChatAttachmentMedia";
 import { LinkifiedText } from "@/components/chat/LinkifiedText";
 import { LinkPreview } from "@/components/chat/LinkPreview";
 import { GrowingTextInput } from "@/components/chat/GrowingTextInput";
@@ -174,6 +182,7 @@ export default function CustomerChatScreen() {
   editingMessageRef.current = editingMessage;
   const [activeMessage, setActiveMessage] = useState<ChatMessage | null>(null);
   const [viewingImageUrl, setViewingImageUrl] = useState<string | null>(null);
+  const [viewingVideoUrl, setViewingVideoUrl] = useState<string | null>(null);
 
   const deliveryTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   useEffect(() => {
@@ -629,7 +638,7 @@ export default function CustomerChatScreen() {
         id: img.id!,
         url: img.url ?? img.previewUri,
         filename: img.filename,
-        mimeType: "",
+        mimeType: img.mimeType,
         messageId: null,
         createdAt: new Date().toISOString(),
       })),
@@ -682,15 +691,66 @@ export default function CustomerChatScreen() {
 
   const handlePickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ["images"],
+      mediaTypes: ["images", "videos"],
       quality: 0.8,
+      videoMaxDuration: 120,
     });
     if (result.canceled || !result.assets[0]) return;
+
+    const asset = result.assets[0];
+
+    if (isChatVideoAsset(asset)) {
+      let pending: PendingChatImage;
+      try {
+        pending = buildPendingChatVideo(asset);
+      } catch (err) {
+        Alert.alert(
+          "Error",
+          err instanceof Error ? err.message : "Failed to prepare video"
+        );
+        return;
+      }
+      setPendingImages((prev) => [...prev, pending]);
+      try {
+        const data = await uploadPendingChatVideo(asset, pending, {
+          role: "customer",
+        });
+        setPendingImages((prev) =>
+          prev.map((img) =>
+            img.localId === pending.localId
+              ? {
+                  ...img,
+                  id: data.id,
+                  url: data.url,
+                  filename: data.filename,
+                  mimeType: data.mimeType,
+                  status: "ready",
+                }
+              : img
+          )
+        );
+      } catch (err) {
+        setPendingImages((prev) =>
+          prev.map((img) =>
+            img.localId === pending.localId ? { ...img, status: "failed" } : img
+          )
+        );
+        Alert.alert(
+          "Error",
+          err instanceof ApiError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : "Failed to upload video"
+        );
+      }
+      return;
+    }
 
     let pending: PendingChatImage;
     let formData: FormData;
     try {
-      ({ pending, formData } = await buildPendingChatImage(result.assets[0]));
+      ({ pending, formData } = await buildPendingChatImage(asset));
     } catch (err) {
       Alert.alert(
         "Error",
@@ -705,6 +765,7 @@ export default function CustomerChatScreen() {
         id: string;
         url: string;
         filename: string;
+        mimeType?: string;
       }>("/api/chat/upload", formData, { role: "customer" });
       setPendingImages((prev) =>
         prev.map((img) =>
@@ -714,6 +775,7 @@ export default function CustomerChatScreen() {
                 id: data.id,
                 url: data.url,
                 filename: data.filename,
+                mimeType: data.mimeType ?? img.mimeType,
                 status: "ready",
               }
             : img
@@ -996,6 +1058,11 @@ export default function CustomerChatScreen() {
           height: 60,
           borderRadius: borderRadius.lg,
           backgroundColor: theme.surfaceBorder,
+        },
+        pendingVideo: {
+          backgroundColor: "#111",
+          alignItems: "center",
+          justifyContent: "center",
         },
         pendingUploading: {
           ...StyleSheet.absoluteFillObject,
@@ -1392,21 +1459,22 @@ export default function CustomerChatScreen() {
                 {splitBubble ? (
                   <View style={styles.imageMessage}>
                     {item.attachments?.map(
-                      (att: { id: string; url: string }) => (
-                        <TouchableOpacity
+                      (att: { id: string; url: string; mimeType?: string }) => (
+                        <ChatAttachmentMedia
                           key={att.id}
-                          activeOpacity={0.8}
-                          onPress={() =>
-                            setViewingImageUrl(resolveCustomerUrl(att.url))
-                          }
+                          url={resolveCustomerUrl(att.url)}
+                          mimeType={att.mimeType}
+                          style={styles.standaloneImage}
+                          onPress={() => {
+                            const resolved = resolveCustomerUrl(att.url);
+                            if (isVideoMimeType(att.mimeType)) {
+                              setViewingVideoUrl(resolved);
+                            } else {
+                              setViewingImageUrl(resolved);
+                            }
+                          }}
                           onLongPress={() => setActiveMessage(item)}
-                        >
-                          <Image
-                            source={{ uri: resolveCustomerUrl(att.url) }}
-                            style={styles.standaloneImage}
-                            resizeMode="cover"
-                          />
-                        </TouchableOpacity>
+                        />
                       )
                     )}
                     <TouchableOpacity
@@ -1458,21 +1526,22 @@ export default function CustomerChatScreen() {
                     }
                   >
                     {item.attachments?.map(
-                      (att: { id: string; url: string }) => (
-                        <TouchableOpacity
+                      (att: { id: string; url: string; mimeType?: string }) => (
+                        <ChatAttachmentMedia
                           key={att.id}
-                          activeOpacity={0.8}
-                          onPress={() =>
-                            setViewingImageUrl(resolveCustomerUrl(att.url))
-                          }
+                          url={resolveCustomerUrl(att.url)}
+                          mimeType={att.mimeType}
+                          style={styles.standaloneImage}
+                          onPress={() => {
+                            const resolved = resolveCustomerUrl(att.url);
+                            if (isVideoMimeType(att.mimeType)) {
+                              setViewingVideoUrl(resolved);
+                            } else {
+                              setViewingImageUrl(resolved);
+                            }
+                          }}
                           onLongPress={() => setActiveMessage(item)}
-                        >
-                          <Image
-                            source={{ uri: resolveCustomerUrl(att.url) }}
-                            style={styles.standaloneImage}
-                            resizeMode="cover"
-                          />
-                        </TouchableOpacity>
+                        />
                       )
                     )}
                     {item.body ? (
@@ -1602,11 +1671,17 @@ export default function CustomerChatScreen() {
           <View style={styles.pendingRow}>
             {pendingImages.map((p) => (
               <View key={p.localId} style={styles.pendingWrapper}>
-                <Image
-                  source={{ uri: pendingChatImageDisplayUri(p) }}
-                  style={styles.pendingImg}
-                  resizeMode="cover"
-                />
+                {p.kind === "video" ? (
+                  <View style={[styles.pendingImg, styles.pendingVideo]}>
+                    <Ionicons name="videocam" size={22} color={colors.white} />
+                  </View>
+                ) : (
+                  <Image
+                    source={{ uri: pendingChatImageDisplayUri(p) }}
+                    style={styles.pendingImg}
+                    resizeMode="cover"
+                  />
+                )}
                 {p.status === "uploading" ? (
                   <View style={styles.pendingUploading} pointerEvents="none">
                     <ActivityIndicator size="small" color={colors.white} />
@@ -1688,6 +1763,7 @@ export default function CustomerChatScreen() {
       </KeyboardAvoidingView>
 
       <ImageViewer uri={viewingImageUrl} onClose={() => setViewingImageUrl(null)} />
+      <VideoViewer uri={viewingVideoUrl} onClose={() => setViewingVideoUrl(null)} />
 
       <Modal
         visible={!!activeMessage}
