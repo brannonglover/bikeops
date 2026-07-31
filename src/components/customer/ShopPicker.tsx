@@ -12,15 +12,31 @@ import { Ionicons } from "@expo/vector-icons";
 import {
   platformApi,
   PlatformApiError,
+  PLATFORM_ROOT_DOMAIN,
   type NearbyShop,
 } from "@/lib/platform-api";
 import type { PastShop } from "@/lib/customer-profile";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
 import { BottomSheetModal } from "@/components/ui/BottomSheetModal";
 
 export type SelectedShop = { subdomain: string; name: string };
+
+function normalizeShopCode(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(new RegExp(`\\.${PLATFORM_ROOT_DOMAIN.replace(/\./g, "\\.")}$`), "")
+    .split("/")[0]
+    ?.split(".")[0] ?? "";
+}
+
+function isValidShopCode(value: string): boolean {
+  return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value);
+}
 
 function formatDistanceMiles(shop: NearbyShop): string {
   const miles =
@@ -109,6 +125,22 @@ export function ShopPickerModal({
   const [nearbyLoading, setNearbyLoading] = useState(false);
   const [nearbyError, setNearbyError] = useState<string | null>(null);
   const [nearbyFetched, setNearbyFetched] = useState(false);
+  const [shopCode, setShopCode] = useState("");
+  const [shopCodeError, setShopCodeError] = useState<string | null>(null);
+
+  const selectShopCode = () => {
+    const normalized = normalizeShopCode(shopCode);
+    if (!normalized) {
+      setShopCodeError("Enter your shop's code (for example, bbm).");
+      return;
+    }
+    if (!isValidShopCode(normalized)) {
+      setShopCodeError("Use letters, numbers, and hyphens only.");
+      return;
+    }
+    setShopCodeError(null);
+    onSelect({ subdomain: normalized, name: normalized });
+  };
 
   const findNearbyShops = async () => {
     setNearbyLoading(true);
@@ -143,7 +175,7 @@ export function ShopPickerModal({
     } catch (e) {
       const message =
         e instanceof PlatformApiError && (e.status === 404 || e.status >= 500)
-          ? "Nearby shop search isn't available yet. Pick a shop you've used before, or try again later."
+          ? "Nearby shop search isn't available yet. Enter a shop code, or try again later."
           : /ExpoLocation|native module/i.test(
                 e instanceof Error ? e.message : ""
               )
@@ -221,6 +253,22 @@ export function ShopPickerModal({
           textAlign: "center",
           padding: spacing[4],
         },
+        shopCodeRow: {
+          flexDirection: "row",
+          alignItems: "flex-start",
+          gap: spacing[2],
+          paddingHorizontal: spacing[3],
+          marginTop: spacing[1],
+        },
+        shopCodeInput: {
+          flex: 1,
+          marginBottom: 0,
+        },
+        shopCodeButton: {
+          marginTop: spacing[0.5],
+          alignSelf: "stretch",
+          justifyContent: "center",
+        },
       }),
     [theme]
   );
@@ -231,7 +279,10 @@ export function ShopPickerModal({
       title="Select a shop"
       onClose={onClose}
     >
-      <ScrollView style={styles.modalList}>
+      <ScrollView
+        style={styles.modalList}
+        keyboardShouldPersistTaps="handled"
+      >
         {pastShops.length > 0 ? (
           <>
             <Text style={styles.modalSectionLabel}>Your shops</Text>
@@ -268,9 +319,36 @@ export function ShopPickerModal({
           </>
         ) : (
           <Text style={styles.emptyShopHint}>
-            No past shops yet. Find one nearby to get started.
+            No past shops yet. Enter a shop code or find one nearby to get
+            started.
           </Text>
         )}
+
+        <Text style={styles.modalSectionLabel}>Shop code</Text>
+        <View style={styles.shopCodeRow}>
+          <Input
+            placeholder={`e.g. bbm`}
+            value={shopCode}
+            onChangeText={(value) => {
+              setShopCode(value);
+              if (shopCodeError) setShopCodeError(null);
+            }}
+            autoCapitalize="none"
+            autoCorrect={false}
+            autoComplete="off"
+            returnKeyType="done"
+            onSubmitEditing={selectShopCode}
+            error={shopCodeError ?? undefined}
+            containerStyle={styles.shopCodeInput}
+          />
+          <Button
+            title="Use"
+            onPress={selectShopCode}
+            variant="secondary"
+            size="sm"
+            style={styles.shopCodeButton}
+          />
+        </View>
 
         <Text style={styles.modalSectionLabel}>Nearby</Text>
         <Button
@@ -285,7 +363,7 @@ export function ShopPickerModal({
         ) : null}
         {!nearbyError && nearbyFetched && nearbyShops.length === 0 ? (
           <Text style={styles.nearbyStatus}>
-            No shops found nearby. Try again later.
+            No shops found nearby. Try a shop code instead.
           </Text>
         ) : null}
         {nearbyShops.map((shop) => {
@@ -361,7 +439,8 @@ export function ShopPicker({
       />
       {hint !== null && (hint || !selectedShop) ? (
         <Text style={styles.hint}>
-          {hint ?? "Choose a shop you've used before, or find one nearby."}
+          {hint ??
+            "Choose a shop you've used before, enter a shop code, or find one nearby."}
         </Text>
       ) : null}
       <ShopPickerModal

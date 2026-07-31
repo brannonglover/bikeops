@@ -36,6 +36,11 @@ import { useTheme } from "@/lib/ThemeContext";
 
 /** Temporary App Store Review demo email — password lives only on the server. */
 const APPLE_REVIEW_EMAIL = "appreview@bikeops.co";
+/** Must match APPLE_REVIEW_SHOP_SUBDOMAIN on the server (default: bbm). */
+const APPLE_REVIEW_SHOP: SelectedShop = {
+  subdomain: "bbm",
+  name: "Basement Bike Mechanic",
+};
 
 export default function LoginScreen() {
   const { theme } = useTheme();
@@ -63,6 +68,13 @@ export default function LoginScreen() {
   const isAppleReviewEmail =
     customerEmail.trim().toLowerCase() === APPLE_REVIEW_EMAIL;
 
+  const selectCustomerShop = useCallback(async (shop: SelectedShop) => {
+    await setCustomerShop(shop.subdomain, shop.name);
+    const profile = await rememberShop(shop.subdomain, shop.name);
+    setPastShops(profile.pastShops);
+    setSelectedShop(shop);
+  }, []);
+
   useEffect(() => {
     getLastStaffShopSubdomain()
       .then((lastShop) => {
@@ -70,6 +82,15 @@ export default function LoginScreen() {
       })
       .catch(() => {});
   }, []);
+
+  // Fresh installs have no past shops; nearby search won't find the demo shop
+  // from Apple's review devices. Auto-select the review shop when they use the
+  // demo email so they aren't stuck on "No past shops yet".
+  useEffect(() => {
+    if (!isAppleReviewEmail) return;
+    if (selectedShop?.subdomain === APPLE_REVIEW_SHOP.subdomain) return;
+    void selectCustomerShop(APPLE_REVIEW_SHOP);
+  }, [isAppleReviewEmail, selectedShop?.subdomain, selectCustomerShop]);
 
   useEffect(() => {
     if (params.mode === "staff") {
@@ -109,13 +130,6 @@ export default function LoginScreen() {
       cancelled = true;
     };
   }, [mode]);
-
-  const selectCustomerShop = useCallback(async (shop: SelectedShop) => {
-    await setCustomerShop(shop.subdomain, shop.name);
-    const profile = await rememberShop(shop.subdomain, shop.name);
-    setPastShops(profile.pastShops);
-    setSelectedShop(shop);
-  }, []);
 
   const handleCustomerLogin = async () => {
     if (!customerEmail.trim() || !selectedShop) return;
@@ -309,7 +323,7 @@ export default function LoginScreen() {
             }}
           >
             {isAppleReviewEmail
-              ? "Enter the App Review password for this demo account."
+              ? "Demo shop is selected. Enter the App Review password to sign in."
               : "Choose your bike shop, then enter your email for a login link."}
           </Text>
           <View style={styles.shopField}>
