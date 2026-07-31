@@ -36,10 +36,10 @@ import { useTheme } from "@/lib/ThemeContext";
 
 /** Temporary App Store Review demo email — password lives only on the server. */
 const APPLE_REVIEW_EMAIL = "appreview@bikeops.co";
-/** Must match APPLE_REVIEW_SHOP_SUBDOMAIN on the server (default: bbm). */
+/** Must match APPLE_REVIEW_SHOP_SUBDOMAIN on the server (default: appreview). */
 const APPLE_REVIEW_SHOP: SelectedShop = {
-  subdomain: "bbm",
-  name: "Basement Bike Mechanic",
+  subdomain: "appreview",
+  name: "Stevens Creek Cycles",
 };
 
 export default function LoginScreen() {
@@ -323,7 +323,7 @@ export default function LoginScreen() {
             }}
           >
             {isAppleReviewEmail
-              ? "Demo shop is selected. Enter the App Review password to sign in."
+              ? "Demo shop is selected (Stevens Creek Cycles). Enter the App Review password to sign in."
               : "Choose your bike shop, then enter your email for a login link."}
           </Text>
           <View style={styles.shopField}>

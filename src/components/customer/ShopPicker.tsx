@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -142,7 +142,7 @@ export function ShopPickerModal({
     onSelect({ subdomain: normalized, name: normalized });
   };
 
-  const findNearbyShops = async () => {
+  const findNearbyShops = useCallback(async () => {
     setNearbyLoading(true);
     setNearbyError(null);
     try {
@@ -191,7 +191,22 @@ export function ShopPickerModal({
     } finally {
       setNearbyLoading(false);
     }
-  };
+  }, []);
+
+  // Fresh installs have no past shops — auto-search nearby so App Review
+  // (and new customers) see shops without hunting for the button.
+  useEffect(() => {
+    if (!visible) return;
+    if (pastShops.length > 0) return;
+    if (nearbyFetched || nearbyLoading) return;
+    void findNearbyShops();
+  }, [
+    visible,
+    pastShops.length,
+    nearbyFetched,
+    nearbyLoading,
+    findNearbyShops,
+  ]);
 
   const styles = useMemo(
     () =>
