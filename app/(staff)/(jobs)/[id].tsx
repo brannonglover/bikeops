@@ -1114,6 +1114,14 @@ export default function JobDetailScreen() {
           }
           patch.waitForPartsJobBikeId = bikeId;
           if (effectiveWorkingOn === bikeId) patch.workingOnJobBikeId = null;
+          // Mirror web handleWaitForParts: move the job column so web/board sync.
+          if (
+            job.stage !== "WAITING_ON_PARTS" &&
+            job.stage !== "CANCELLED" &&
+            job.stage !== "COMPLETED"
+          ) {
+            patch.stage = "WAITING_ON_PARTS";
+          }
           break;
         case "done":
           patch.completeJobBikeId = bikeId;

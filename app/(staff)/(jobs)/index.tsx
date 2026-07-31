@@ -143,15 +143,51 @@ export default function JobBoardScreen() {
       const prevJobs = queryClient.getQueryData<Job[]>(["jobs"]);
       const prevJob = queryClient.getQueryData<Job>(["job", jobId]);
 
-      const apply = (j: Job): Job => ({
-        ...j,
-        stage,
-        ...(stage === "BIKE_READY" || stage === "COMPLETED"
-          ? { workingOnJobBikeId: null }
-          : {}),
-        ...(typeof notifyCustomer === "boolean" ? { notifyCustomer } : {}),
-        ...(typeof completedAt !== "undefined" ? { completedAt } : {}),
-      });
+      /** Mirror API / web withOptimisticStageChange so Waiting→Working doesn't snap back. */
+      const apply = (j: Job): Job => {
+        const bikes = j.jobBikes ?? [];
+        const incomplete = bikes.filter((b) => !b.completedAt);
+        let next: Job = {
+          ...j,
+          stage,
+          ...(typeof notifyCustomer === "boolean" ? { notifyCustomer } : {}),
+          ...(typeof completedAt !== "undefined" ? { completedAt } : {}),
+        };
+
+        if (stage === "WAITING_ON_PARTS") {
+          const wid = j.workingOnJobBikeId;
+          if (j.stage !== "WAITING_ON_PARTS" && wid) {
+            const now = new Date().toISOString();
+            next = {
+              ...next,
+              workingOnJobBikeId: null,
+              jobBikes: bikes.map((b) =>
+                b.id === wid && !b.completedAt
+                  ? { ...b, waitingOnPartsAt: now }
+                  : b
+              ),
+            };
+          }
+        } else {
+          next = {
+            ...next,
+            jobBikes: bikes.map((b) =>
+              b.completedAt ? b : { ...b, waitingOnPartsAt: null }
+            ),
+          };
+          if (stage === "WORKING_ON" && incomplete.length === 1) {
+            next = { ...next, workingOnJobBikeId: incomplete[0].id };
+          } else if (stage !== "WORKING_ON") {
+            next = { ...next, workingOnJobBikeId: null };
+          }
+        }
+
+        if (stage === "BIKE_READY" || stage === "COMPLETED") {
+          next = { ...next, workingOnJobBikeId: null };
+        }
+
+        return next;
+      };
 
       if (prevJobs && Array.isArray(prevJobs)) {
         queryClient.setQueryData(

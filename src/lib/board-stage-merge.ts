@@ -1,6 +1,6 @@
 import type { Job, JobBike, Stage } from "@/lib/types";
 
-/** Board column order — keep a forward stage when a slow GET returns an older stage. */
+/** Board column order — ranking for merge uses {@link boardStageRank}. */
 export const BOARD_STAGE_FLOW: Stage[] = [
   "PENDING_APPROVAL",
   "BOOKED_IN",
@@ -12,8 +12,21 @@ export const BOARD_STAGE_FLOW: Stage[] = [
   "COMPLETED",
 ];
 
-function boardStageIndex(stage: Stage): number {
-  return BOARD_STAGE_FLOW.indexOf(stage);
+/** Working / waiting columns toggle sideways — not a strict forward progression. */
+const IN_PROGRESS_STAGES = new Set<Stage>([
+  "WORKING_ON",
+  "WAITING_ON_CUSTOMER",
+  "WAITING_ON_PARTS",
+]);
+
+function boardStageRank(stage: Stage): number {
+  if (stage === "PENDING_APPROVAL") return 0;
+  if (stage === "BOOKED_IN") return 1;
+  if (stage === "RECEIVED") return 2;
+  if (IN_PROGRESS_STAGES.has(stage)) return 3;
+  if (stage === "BIKE_READY") return 4;
+  if (stage === "COMPLETED") return 5;
+  return -1;
 }
 
 /** Drop working-on when it points at a missing or completed bike. */
@@ -44,9 +57,11 @@ function finalizeJobBoardState(job: Job): Job {
 function mergeForwardJobBikes(
   liveBikes: JobBike[] | undefined,
   incomingBikes: JobBike[] | undefined,
-  workingOnJobBikeId: string | null | undefined
+  opts?: { preserveLiveWaiting?: boolean }
 ): JobBike[] | undefined {
   if (!liveBikes?.length || !incomingBikes?.length) return incomingBikes;
+
+  const preserveLiveWaiting = opts?.preserveLiveWaiting ?? false;
 
   let changed = false;
   const merged = incomingBikes.map((incomingBike) => {
@@ -62,8 +77,12 @@ function mergeForwardJobBikes(
       // Optimistic resume-work cleared waiting before the PATCH response landed.
       next = { ...next, waitingOnPartsAt: null };
       changed = true;
-    } else if (liveBike.waitingOnPartsAt && !incomingBike.waitingOnPartsAt) {
-      // Optimistic wait-for-parts ahead of a stale GET.
+    } else if (
+      preserveLiveWaiting &&
+      liveBike.waitingOnPartsAt &&
+      !incomingBike.waitingOnPartsAt
+    ) {
+      // Optimistic wait-for-parts ahead of a stale GET (only while still waiting).
       next = { ...next, waitingOnPartsAt: liveBike.waitingOnPartsAt };
       changed = true;
     }
@@ -101,12 +120,11 @@ function mergeJobBikeState(
   incoming: Job,
   overrides: Partial<Job> = {}
 ): Job {
+  const stage = overrides.stage ?? incoming.stage;
   const preliminaryWorkingOn = live.workingOnJobBikeId ?? incoming.workingOnJobBikeId;
-  const jobBikes = mergeForwardJobBikes(
-    live.jobBikes,
-    incoming.jobBikes,
-    preliminaryWorkingOn
-  );
+  const jobBikes = mergeForwardJobBikes(live.jobBikes, incoming.jobBikes, {
+    preserveLiveWaiting: stage === "WAITING_ON_PARTS",
+  });
   const workingOnJobBikeId = mergeWorkingOnJobBikeId(live, incoming, jobBikes);
 
   return finalizeJobBoardState({
@@ -118,12 +136,9 @@ function mergeJobBikeState(
 }
 
 function mergeSameStageJob(live: Job, incoming: Job): Job {
-  const preliminaryWorkingOn = live.workingOnJobBikeId ?? incoming.workingOnJobBikeId;
-  const jobBikes = mergeForwardJobBikes(
-    live.jobBikes,
-    incoming.jobBikes,
-    preliminaryWorkingOn
-  );
+  const jobBikes = mergeForwardJobBikes(live.jobBikes, incoming.jobBikes, {
+    preserveLiveWaiting: live.stage === "WAITING_ON_PARTS",
+  });
   const workingOnJobBikeId = mergeWorkingOnJobBikeId(live, incoming, jobBikes);
 
   if (
@@ -139,23 +154,39 @@ function mergeSameStageJob(live: Job, incoming: Job): Job {
 /**
  * When the board already shows a later column than an incoming payload (optimistic
  * PATCH or a GET that started before the PATCH), keep the forward stage on the job.
+ *
+ * Waiting on parts/customer are peers of Working on — moving Waiting → Working must not
+ * be treated as a regression (that snapped the app status back and hid updates on web).
  */
 export function keepForwardBoardStage(live: Job, incoming: Job): Job {
   if (live.stage === incoming.stage) {
     return mergeSameStageJob(live, incoming);
   }
 
-  const liveIdx = boardStageIndex(live.stage);
-  const incomingIdx = boardStageIndex(incoming.stage);
-  if (liveIdx === -1 || incomingIdx === -1 || liveIdx <= incomingIdx) {
-    const preliminaryWorkingOn = live.workingOnJobBikeId ?? incoming.workingOnJobBikeId;
-    const resumedWork =
-      live.stage === "WORKING_ON" &&
-      incoming.stage === "WAITING_ON_PARTS" &&
-      preliminaryWorkingOn != null;
+  const liveRank = boardStageRank(live.stage);
+  const incomingRank = boardStageRank(incoming.stage);
 
+  if (
+    liveRank !== -1 &&
+    incomingRank !== -1 &&
+    liveRank === incomingRank &&
+    IN_PROGRESS_STAGES.has(live.stage) &&
+    IN_PROGRESS_STAGES.has(incoming.stage)
+  ) {
+    // Protect optimistic Working against a stale Waiting poll.
+    if (
+      live.stage === "WORKING_ON" &&
+      (incoming.stage === "WAITING_ON_PARTS" ||
+        incoming.stage === "WAITING_ON_CUSTOMER")
+    ) {
+      return mergeJobBikeState(live, incoming, { stage: live.stage });
+    }
+    return mergeJobBikeState(live, incoming, { stage: incoming.stage });
+  }
+
+  if (liveRank === -1 || incomingRank === -1 || liveRank <= incomingRank) {
     return mergeJobBikeState(live, incoming, {
-      stage: resumedWork ? live.stage : incoming.stage,
+      stage: incoming.stage,
     });
   }
 
