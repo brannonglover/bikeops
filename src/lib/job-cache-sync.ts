@@ -1,5 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query";
-import { keepForwardBoardStage } from "@/lib/board-stage-merge";
+import { mergeBoardJob } from "@/lib/board-stage-merge";
 import type { Job } from "@/lib/types";
 
 const JOB_LIST_QUERY_KEYS = [["jobs"], ["jobs", "archived"]] as const;
@@ -11,7 +11,7 @@ export function updateJobInListCaches(queryClient: QueryClient, job: Job): void 
     if (prevJobs && Array.isArray(prevJobs)) {
       queryClient.setQueryData(
         queryKey,
-        prevJobs.map((j) => (j.id === job.id ? keepForwardBoardStage(j, job) : j))
+        prevJobs.map((j) => (j.id === job.id ? mergeBoardJob(j, job) : j))
       );
     }
   }
@@ -24,7 +24,7 @@ export function syncJobToCaches(
   incoming: Job
 ): Job {
   const liveJob = queryClient.getQueryData<Job>(["job", jobId]);
-  const merged = liveJob ? keepForwardBoardStage(liveJob, incoming) : incoming;
+  const merged = liveJob ? mergeBoardJob(liveJob, incoming) : incoming;
 
   queryClient.setQueryData(["job", jobId], merged);
   updateJobInListCaches(queryClient, merged);

@@ -34,7 +34,7 @@ import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { ImageViewer } from "@/components/ui/ImageViewer";
 import { InvoiceTab } from "@/components/jobs/InvoiceTab";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
-import { keepForwardBoardStage, sanitizeWorkingOnJobBikeId } from "@/lib/board-stage-merge";
+import { mergeBoardJob, sanitizeWorkingOnJobBikeId } from "@/lib/board-stage-merge";
 import { syncJobToCaches } from "@/lib/job-cache-sync";
 import {
   customerName,
@@ -143,8 +143,16 @@ type JobPatchBody = Partial<Job> & {
 };
 
 function applyJobPatchOptimistically(job: Job, patch: JobPatchBody): Job {
-  const next: Job = { ...job, ...patch };
   const nowIso = new Date().toISOString();
+  // Drop patch-only control fields so they are not stored on the cached Job.
+  const {
+    completeJobBikeId: _completeJobBikeId,
+    uncompleteJobBikeId: _uncompleteJobBikeId,
+    waitForPartsJobBikeId: _waitForPartsJobBikeId,
+    unwaitForPartsJobBikeId: _unwaitForPartsJobBikeId,
+    ...jobFields
+  } = patch;
+  const next: Job = { ...job, ...jobFields, updatedAt: nowIso };
 
   if (patch.completeJobBikeId) {
     next.jobBikes = (next.jobBikes ?? []).map((jb) =>
@@ -173,7 +181,12 @@ function applyJobPatchOptimistically(job: Job, patch: JobPatchBody): Job {
     );
   }
 
-  if (next.stage === "BIKE_READY" || next.stage === "COMPLETED") {
+  if (
+    next.stage === "BIKE_READY" ||
+    next.stage === "COMPLETED" ||
+    next.stage === "WAITING_ON_PARTS" ||
+    next.stage === "WAITING_ON_CUSTOMER"
+  ) {
     next.workingOnJobBikeId = null;
   } else {
     next.workingOnJobBikeId = sanitizeWorkingOnJobBikeId(
@@ -775,7 +788,7 @@ export default function JobDetailScreen() {
     enabled: !!id,
     structuralSharing: (prev: unknown, next: unknown) => {
       if (!prev || !next) return replaceEqualDeep(prev, next);
-      return keepForwardBoardStage(prev as Job, next as Job);
+      return mergeBoardJob(prev as Job, next as Job);
     },
   });
 
@@ -823,14 +836,14 @@ export default function JobDetailScreen() {
     },
     onSuccess: (updated) => {
       const liveJob = queryClient.getQueryData<Job>(["job", id]);
-      const merged = liveJob ? keepForwardBoardStage(liveJob, updated) : updated;
+      const merged = liveJob ? mergeBoardJob(liveJob, updated) : updated;
       queryClient.setQueryData(["job", id], merged);
       const prevJobs = queryClient.getQueryData<Job[]>(["jobs"]);
       if (prevJobs && Array.isArray(prevJobs)) {
         queryClient.setQueryData(
           ["jobs"],
           prevJobs.map((j) =>
-            j.id === merged.id ? keepForwardBoardStage(j, merged) : j
+            j.id === merged.id ? mergeBoardJob(j, merged) : j
           )
         );
       }

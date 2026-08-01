@@ -19,6 +19,14 @@ const IN_PROGRESS_STAGES = new Set<Stage>([
   "WAITING_ON_PARTS",
 ]);
 
+/** Stages that never keep an active working-on bike pointer. */
+const CLEARS_WORKING_ON = new Set<Stage>([
+  "WAITING_ON_CUSTOMER",
+  "WAITING_ON_PARTS",
+  "BIKE_READY",
+  "COMPLETED",
+]);
+
 function boardStageRank(stage: Stage): number {
   if (stage === "PENDING_APPROVAL") return 0;
   if (stage === "BOOKED_IN") return 1;
@@ -41,7 +49,7 @@ export function sanitizeWorkingOnJobBikeId(
 }
 
 function finalizeJobBoardState(job: Job): Job {
-  if (job.stage === "BIKE_READY" || job.stage === "COMPLETED") {
+  if (CLEARS_WORKING_ON.has(job.stage)) {
     if (job.workingOnJobBikeId == null) return job;
     return { ...job, workingOnJobBikeId: null };
   }
@@ -97,8 +105,11 @@ function mergeForwardJobBikes(
 function mergeWorkingOnJobBikeId(
   live: Job,
   incoming: Job,
-  jobBikes: JobBike[] | undefined
+  jobBikes: JobBike[] | undefined,
+  stage: Stage
 ): string | null {
+  if (CLEARS_WORKING_ON.has(stage)) return null;
+
   const bikes = jobBikes ?? incoming.jobBikes ?? live.jobBikes;
 
   if (live.workingOnJobBikeId === incoming.workingOnJobBikeId) {
@@ -121,11 +132,15 @@ function mergeJobBikeState(
   overrides: Partial<Job> = {}
 ): Job {
   const stage = overrides.stage ?? incoming.stage;
-  const preliminaryWorkingOn = live.workingOnJobBikeId ?? incoming.workingOnJobBikeId;
   const jobBikes = mergeForwardJobBikes(live.jobBikes, incoming.jobBikes, {
     preserveLiveWaiting: stage === "WAITING_ON_PARTS",
   });
-  const workingOnJobBikeId = mergeWorkingOnJobBikeId(live, incoming, jobBikes);
+  const workingOnJobBikeId = mergeWorkingOnJobBikeId(
+    live,
+    incoming,
+    jobBikes,
+    stage
+  );
 
   return finalizeJobBoardState({
     ...incoming,
@@ -139,7 +154,12 @@ function mergeSameStageJob(live: Job, incoming: Job): Job {
   const jobBikes = mergeForwardJobBikes(live.jobBikes, incoming.jobBikes, {
     preserveLiveWaiting: live.stage === "WAITING_ON_PARTS",
   });
-  const workingOnJobBikeId = mergeWorkingOnJobBikeId(live, incoming, jobBikes);
+  const workingOnJobBikeId = mergeWorkingOnJobBikeId(
+    live,
+    incoming,
+    jobBikes,
+    live.stage
+  );
 
   if (
     workingOnJobBikeId === incoming.workingOnJobBikeId &&
@@ -173,14 +193,8 @@ export function keepForwardBoardStage(live: Job, incoming: Job): Job {
     IN_PROGRESS_STAGES.has(live.stage) &&
     IN_PROGRESS_STAGES.has(incoming.stage)
   ) {
-    // Protect optimistic Working against a stale Waiting poll.
-    if (
-      live.stage === "WORKING_ON" &&
-      (incoming.stage === "WAITING_ON_PARTS" ||
-        incoming.stage === "WAITING_ON_CUSTOMER")
-    ) {
-      return mergeJobBikeState(live, incoming, { stage: live.stage });
-    }
+    // Equal-timestamp fallback only: prefer the incoming peer stage so Working→Waiting
+    // (and Waiting→Working) both apply. Stale polls are handled by {@link mergeBoardJob}.
     return mergeJobBikeState(live, incoming, { stage: incoming.stage });
   }
 
@@ -194,4 +208,36 @@ export function keepForwardBoardStage(live: Job, incoming: Job): Job {
     stage: live.stage,
     completedAt: live.completedAt ?? incoming.completedAt,
   });
+}
+
+function parseJobUpdatedAtMs(job: Job): number | null {
+  const ms = Date.parse(job.updatedAt);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Merge a polled/refetched job into what the client already shows. Newer updatedAt
+ * always wins for stage and bike pointers; equal/unknown timestamps fall back to
+ * {@link keepForwardBoardStage}.
+ */
+export function mergeBoardJob(live: Job, incoming: Job): Job {
+  const liveMs = parseJobUpdatedAtMs(live);
+  const incomingMs = parseJobUpdatedAtMs(incoming);
+
+  if (liveMs !== null && incomingMs !== null) {
+    if (incomingMs > liveMs) {
+      return finalizeJobBoardState(incoming);
+    }
+    if (incomingMs < liveMs) {
+      return finalizeJobBoardState({
+        ...incoming,
+        stage: live.stage,
+        completedAt: live.completedAt,
+        workingOnJobBikeId: live.workingOnJobBikeId,
+        jobBikes: live.jobBikes ?? incoming.jobBikes,
+      });
+    }
+  }
+
+  return keepForwardBoardStage(live, incoming);
 }

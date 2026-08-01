@@ -25,7 +25,7 @@ import { BikeLoader } from "@/components/ui/BikeLoader";
 import { fetchStaffJobs, jobsQueryKey } from "@/lib/staff-queries";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { customerName, formatDate, getJobBikeDisplayTitle } from "@/lib/format";
-import { keepForwardBoardStage } from "@/lib/board-stage-merge";
+import { mergeBoardJob } from "@/lib/board-stage-merge";
 
 const COLUMN_STAGES = DISPLAY_STAGES.filter(
   (stage) => stage !== "PENDING_APPROVAL"
@@ -99,7 +99,7 @@ export default function JobBoardScreen() {
       const prevById = new Map(prevJobs.map((j) => [j.id, j]));
       return nextJobs.map((j) => {
         const live = prevById.get(j.id);
-        return live ? keepForwardBoardStage(live, j) : j;
+        return live ? mergeBoardJob(live, j) : j;
       });
     },
   });
@@ -143,13 +143,15 @@ export default function JobBoardScreen() {
       const prevJobs = queryClient.getQueryData<Job[]>(["jobs"]);
       const prevJob = queryClient.getQueryData<Job>(["job", jobId]);
 
-      /** Mirror API / web withOptimisticStageChange so Waiting→Working doesn't snap back. */
+      /** Mirror API / web withOptimisticStageChange so Waiting↔Working doesn't snap back. */
       const apply = (j: Job): Job => {
         const bikes = j.jobBikes ?? [];
         const incomplete = bikes.filter((b) => !b.completedAt);
+        const now = new Date().toISOString();
         let next: Job = {
           ...j,
           stage,
+          updatedAt: now,
           ...(typeof notifyCustomer === "boolean" ? { notifyCustomer } : {}),
           ...(typeof completedAt !== "undefined" ? { completedAt } : {}),
         };
@@ -157,7 +159,6 @@ export default function JobBoardScreen() {
         if (stage === "WAITING_ON_PARTS") {
           const wid = j.workingOnJobBikeId;
           if (j.stage !== "WAITING_ON_PARTS" && wid) {
-            const now = new Date().toISOString();
             next = {
               ...next,
               workingOnJobBikeId: null,
@@ -167,6 +168,8 @@ export default function JobBoardScreen() {
                   : b
               ),
             };
+          } else {
+            next = { ...next, workingOnJobBikeId: null };
           }
         } else {
           next = {
@@ -182,7 +185,11 @@ export default function JobBoardScreen() {
           }
         }
 
-        if (stage === "BIKE_READY" || stage === "COMPLETED") {
+        if (
+          stage === "BIKE_READY" ||
+          stage === "COMPLETED" ||
+          stage === "WAITING_ON_CUSTOMER"
+        ) {
           next = { ...next, workingOnJobBikeId: null };
         }
 
