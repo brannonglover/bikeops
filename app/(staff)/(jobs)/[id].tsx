@@ -281,7 +281,19 @@ export default function JobDetailScreen() {
   const [internalNotesValue, setInternalNotesValue] = useState("");
   const [savingInternalNotes, setSavingInternalNotes] = useState(false);
   const [openingChat, setOpeningChat] = useState(false);
+  const scrollViewRef = useRef<ScrollView>(null);
+  const internalNotesOffsetY = useRef(0);
   const { uploadingBikeImageId, showBikeImageActionSheet } = useJobBikeImageUpload(id ?? "");
+
+  const scrollInternalNotesIntoView = useCallback(() => {
+    // Wait for KeyboardAvoidingView to resize before scrolling.
+    setTimeout(() => {
+      scrollViewRef.current?.scrollTo({
+        y: Math.max(0, internalNotesOffsetY.current - spacing[4]),
+        animated: true,
+      });
+    }, 100);
+  }, []);
 
   const styles = useMemo(
     () =>
@@ -1665,12 +1677,18 @@ export default function JobDetailScreen() {
           ),
         }}
       />
-      <View style={{ flex: 1 }}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 64 : 0}
+      >
       <ScrollView
+        ref={scrollViewRef}
         style={styles.container}
         contentContainerStyle={
           activeTab === "invoice" ? styles.invoiceContainer : styles.content
         }
+        keyboardShouldPersistTaps="handled"
         refreshControl={
           <RefreshControl refreshing={isManualRefresh} onRefresh={handleRefresh} />
         }
@@ -1838,6 +1856,11 @@ export default function JobDetailScreen() {
                 ) : null}
               </Card>
             ) : null}
+            <View
+              onLayout={(e) => {
+                internalNotesOffsetY.current = e.nativeEvent.layout.y;
+              }}
+            >
             <Card style={styles.section}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: spacing[2] }}>
                 <Text style={styles.sectionTitle}>Internal Notes</Text>
@@ -1849,6 +1872,7 @@ export default function JobDetailScreen() {
               <TextInput
                 value={internalNotesValue}
                 onChangeText={setInternalNotesValue}
+                onFocus={scrollInternalNotesIntoView}
                 onBlur={handleSaveInternalNotes}
                 placeholder="Add private notes about this job…"
                 placeholderTextColor={theme.textSecondary}
@@ -1871,6 +1895,7 @@ export default function JobDetailScreen() {
                 <Text style={{ ...fontSize.xs, color: theme.textSecondary }}>Saving…</Text>
               ) : null}
             </Card>
+            </View>
           </>
         ) : (
         <>
@@ -2348,7 +2373,7 @@ export default function JobDetailScreen() {
         </>
         )}
       </ScrollView>
-      </View>
+      </KeyboardAvoidingView>
       <ImageViewer uri={viewingImageUrl} onClose={() => setViewingImageUrl(null)} />
 
       {/* Action menu dropdown */}

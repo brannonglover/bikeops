@@ -1876,14 +1876,12 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
           behavior={Platform.OS === "ios" ? "padding" : "height"}
           style={{ flex: 1 }}
         >
-          <Pressable
-            style={styles.pickerBackdrop}
-            onPress={closeServicePicker}
-          >
+          <View style={styles.pickerBackdrop}>
             <Pressable
-              style={styles.pickerSheet}
-              onPress={(e) => e.stopPropagation()}
-            >
+              style={StyleSheet.absoluteFillObject}
+              onPress={closeServicePicker}
+            />
+            <View style={styles.pickerSheet}>
               <View style={styles.pickerHandle} />
               <Text style={styles.pickerTitle}>Add Service</Text>
               <TextInput
@@ -1950,10 +1948,10 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
                     </Text>
                   )
                 }
-                keyboardShouldPersistTaps="handled"
+                keyboardShouldPersistTaps="always"
               />
-            </Pressable>
-          </Pressable>
+            </View>
+          </View>
         </KeyboardAvoidingView>
       </Modal>
 
@@ -1969,14 +1967,12 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
           behavior={Platform.OS === "ios" ? "padding" : "height"}
           style={{ flex: 1 }}
         >
-          <Pressable
-            style={styles.pickerBackdrop}
-            onPress={closeProductPicker}
-          >
+          <View style={styles.pickerBackdrop}>
             <Pressable
-              style={styles.pickerSheet}
-              onPress={(e) => e.stopPropagation()}
-            >
+              style={StyleSheet.absoluteFillObject}
+              onPress={closeProductPicker}
+            />
+            <View style={styles.pickerSheet}>
               <View style={styles.pickerHandle} />
               <Text style={styles.pickerTitle}>Add Product</Text>
               <TextInput
@@ -2031,10 +2027,10 @@ export function InvoiceTab({ job, onJobUpdated }: InvoiceTabProps) {
                 ListEmptyComponent={
                   <Text style={styles.pickerEmpty}>No matching products</Text>
                 }
-                keyboardShouldPersistTaps="handled"
+                keyboardShouldPersistTaps="always"
               />
-            </Pressable>
-          </Pressable>
+            </View>
+          </View>
         </KeyboardAvoidingView>
       </Modal>
 
