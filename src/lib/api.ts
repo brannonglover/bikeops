@@ -13,10 +13,13 @@ const CUSTOMER_SHOP_NAME_KEY = "customer_shop_name";
 
 /** iOS keychain reads can hang at cold start until the app is backgrounded. */
 const SECURE_STORE_READ_TIMEOUT_MS = 700;
+/** API calls can wait longer so a notification cold-start doesn't send an unauthenticated request. */
+const SECURE_STORE_REQUEST_WAIT_MS = 2500;
 
 // In-memory cache so each apiFetch call doesn't hit SecureStore on disk.
 // Values are invalidated on write/delete so they stay consistent.
 const cookieMemCache = new Map<string, string | null>();
+const inflightSecureReads = new Map<string, Promise<string | null>>();
 let staffApiUrlMemCache: string | null | undefined;
 let customerApiUrlMemCache: string | null | undefined;
 let customerShopSubdomainMemCache: string | null | undefined;
@@ -26,7 +29,28 @@ type SecureReadResult =
   | { status: "ok"; value: string | null }
   | { status: "timeout" };
 
-function readSecureStore(key: string, ms: number): Promise<SecureReadResult> {
+function loadSecureValue(key: string): Promise<string | null> {
+  if (cookieMemCache.has(key)) {
+    return Promise.resolve(cookieMemCache.get(key) ?? null);
+  }
+  const existing = inflightSecureReads.get(key);
+  if (existing) return existing;
+
+  const promise = SecureStore.getItemAsync(key)
+    .then((value) => {
+      cookieMemCache.set(key, value);
+      return value;
+    })
+    .catch(() => null)
+    .finally(() => {
+      inflightSecureReads.delete(key);
+    });
+
+  inflightSecureReads.set(key, promise);
+  return promise;
+}
+
+function raceSecureRead(key: string, ms: number): Promise<SecureReadResult> {
   return new Promise((resolve) => {
     let settled = false;
     const timer = setTimeout(() => {
@@ -35,40 +59,56 @@ function readSecureStore(key: string, ms: number): Promise<SecureReadResult> {
       resolve({ status: "timeout" });
     }, ms);
 
-    SecureStore.getItemAsync(key).then(
-      (value) => {
-        // Always warm the cache when the keychain eventually answers — even
-        // after a timeout — so a later retry (or AppState refresh) is instant.
-        cookieMemCache.set(key, value);
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve({ status: "ok", value });
-      },
-      () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve({ status: "ok", value: null });
-      }
-    );
+    loadSecureValue(key).then((value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ status: "ok", value });
+    });
   });
 }
 
 async function getStoredCookie(key: string): Promise<string | null> {
   if (cookieMemCache.has(key)) return cookieMemCache.get(key) ?? null;
   try {
-    let result = await readSecureStore(key, SECURE_STORE_READ_TIMEOUT_MS);
+    let result = await raceSecureRead(key, SECURE_STORE_READ_TIMEOUT_MS);
     if (result.status === "timeout") {
       // One short retry — cold keychain often answers on the second try.
       await new Promise((r) => setTimeout(r, 50));
-      result = await readSecureStore(key, SECURE_STORE_READ_TIMEOUT_MS);
+      if (cookieMemCache.has(key)) return cookieMemCache.get(key) ?? null;
+      result = await raceSecureRead(key, SECURE_STORE_READ_TIMEOUT_MS);
     }
     if (result.status === "timeout") return null;
     return result.value;
   } catch {
     return null;
   }
+}
+
+/** Wait out a cold keychain instead of proceeding as if the user had no session. */
+async function getStoredCookieForRequest(key: string): Promise<string | null> {
+  if (cookieMemCache.has(key)) return cookieMemCache.get(key) ?? null;
+  try {
+    const result = await raceSecureRead(key, SECURE_STORE_REQUEST_WAIT_MS);
+    if (cookieMemCache.has(key)) return cookieMemCache.get(key) ?? null;
+    if (result.status === "ok") return result.value;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** Kick off session cookie / shop URL reads so the first API call can join them. */
+export function warmStaffRequestCredentials(): void {
+  void loadSecureValue(STAFF_COOKIE_KEY);
+  void loadSecureValue(STAFF_API_URL_KEY);
+  void loadSecureValue(STAFF_SHOP_SUBDOMAIN_KEY);
+}
+
+export function warmCustomerRequestCredentials(): void {
+  void loadSecureValue(CUSTOMER_COOKIE_KEY);
+  void loadSecureValue(CUSTOMER_SHOP_SUBDOMAIN_KEY);
+  void loadSecureValue(CUSTOMER_SHOP_NAME_KEY);
 }
 
 async function storeCookie(key: string, value: string): Promise<void> {
@@ -126,11 +166,18 @@ async function storeStaffApiUrl(apiUrl: string, shopSubdomain: string): Promise<
 }
 
 async function getStaffApiUrl(): Promise<string> {
-  if (staffApiUrlMemCache !== undefined) {
-    return staffApiUrlMemCache ?? DEFAULT_API_URL;
+  if (typeof staffApiUrlMemCache === "string") {
+    return staffApiUrlMemCache;
   }
-  const stored = await getStoredCookie(STAFF_API_URL_KEY);
-  staffApiUrlMemCache = stored ? trimTrailingSlash(stored) : null;
+  const stored = await getStoredCookieForRequest(STAFF_API_URL_KEY);
+  if (stored) {
+    staffApiUrlMemCache = trimTrailingSlash(stored);
+    return staffApiUrlMemCache;
+  }
+  // A keychain timeout is not "no shop URL" — don't pin localhost/root forever.
+  if (cookieMemCache.has(STAFF_API_URL_KEY)) {
+    staffApiUrlMemCache = null;
+  }
   return staffApiUrlMemCache ?? DEFAULT_API_URL;
 }
 
@@ -149,16 +196,20 @@ async function getCustomerApiUrl(): Promise<string> {
   if (customerApiUrlMemCache === null) {
     throw new Error("Select a bike shop before continuing.");
   }
-  const stored = await getStoredCookie(CUSTOMER_SHOP_SUBDOMAIN_KEY);
-  customerShopSubdomainMemCache = stored;
-  const name = await getStoredCookie(CUSTOMER_SHOP_NAME_KEY);
+  const stored = await getStoredCookieForRequest(CUSTOMER_SHOP_SUBDOMAIN_KEY);
+  const name = await getStoredCookieForRequest(CUSTOMER_SHOP_NAME_KEY);
   customerShopNameMemCache = name;
-  if (!stored) {
-    customerApiUrlMemCache = null;
-    throw new Error("Select a bike shop before continuing.");
+  if (stored) {
+    customerShopSubdomainMemCache = stored;
+    customerApiUrlMemCache = buildCustomerApiUrlFromSubdomain(stored);
+    return customerApiUrlMemCache;
   }
-  customerApiUrlMemCache = buildCustomerApiUrlFromSubdomain(stored);
-  return customerApiUrlMemCache;
+  // Don't treat a keychain timeout as "no shop selected".
+  if (cookieMemCache.has(CUSTOMER_SHOP_SUBDOMAIN_KEY)) {
+    customerShopSubdomainMemCache = stored;
+    customerApiUrlMemCache = null;
+  }
+  throw new Error("Select a bike shop before continuing.");
 }
 
 export async function setCustomerShop(
@@ -361,7 +412,12 @@ async function apiFetch<T = unknown>(
   } = options;
   const cookieKey =
     role === "customer" ? CUSTOMER_COOKIE_KEY : STAFF_COOKIE_KEY;
-  const storedCookie = cookieOverride ?? (await getStoredCookie(cookieKey));
+  const [storedCookie, apiUrl] = await Promise.all([
+    cookieOverride
+      ? Promise.resolve(cookieOverride)
+      : getStoredCookieForRequest(cookieKey),
+    getApiUrl(role),
+  ]);
 
   const headers: Record<string, string> = {
     ...extraHeaders,
@@ -383,7 +439,6 @@ async function apiFetch<T = unknown>(
     headers["Content-Type"] = "application/json";
   }
 
-  const apiUrl = await getApiUrl(role);
   const url = `${apiUrl}${path}`;
   const timeout = createTimeoutSignal(timeoutMs);
   let response: Response;

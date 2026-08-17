@@ -794,6 +794,8 @@ export default function ConversationScreen() {
     data: messagesData,
     isLoading,
     isError,
+    isFetching,
+    isPending,
     refetch: refetchMessages,
   } = useQuery({
     queryKey: ["messages", id],
@@ -841,7 +843,16 @@ export default function ConversationScreen() {
       return { ...data, messages: combined, hasMore: nextHasMore };
     },
     enabled: !!id,
-    refetchInterval: POLL_MS,
+    retry: (failureCount, error) => {
+      if (failureCount >= 4) return false;
+      if (error instanceof ApiError && (error.status === 403 || error.status === 404)) {
+        return false;
+      }
+      return true;
+    },
+    retryDelay: (attempt) => Math.min(400 * 2 ** attempt, 2000),
+    refetchInterval: (query) =>
+      query.state.status === "error" ? 1500 : POLL_MS,
   });
 
   const messages: ChatMessage[] = Array.isArray(messagesData)
@@ -1532,11 +1543,11 @@ export default function ConversationScreen() {
     );
   }
 
-  if (isLoading && !cachedMessages && messages.length === 0) {
+  if ((isPending || isFetching) && !cachedMessages && messages.length === 0) {
     return <LoadingScreen message="Loading messages..." />;
   }
 
-  if (isError) {
+  if (isError && messages.length === 0) {
     return (
       <>
         <Stack.Screen options={{ title: "Conversation" }} />

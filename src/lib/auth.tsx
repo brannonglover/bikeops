@@ -18,6 +18,8 @@ import {
   persistCustomerRole,
   clearCustomerRole,
   hasPersistedCustomerRole,
+  warmStaffRequestCredentials,
+  warmCustomerRequestCredentials,
   type AuthRole,
 } from "./api";
 import { unregisterPushToken } from "./notifications";
@@ -55,6 +57,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const refresh = useCallback(async () => {
     try {
+      // Start session-cookie / shop-URL reads alongside role restore so a
+      // notification tap doesn't fetch chat before the keychain answers.
+      warmStaffRequestCredentials();
       // Parallel keychain reads — sequential SecureStore at cold start is a
       // common hang on iOS (unblocks when the app is backgrounded).
       const [cachedSession, customerPersisted] = await Promise.all([
@@ -65,6 +70,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (cachedSession?.user) {
         setRole("staff");
         setStaffUser(cachedSession.user);
+        warmStaffRequestCredentials();
         clearCustomerRole().catch(() => {});
         return;
       }
@@ -74,6 +80,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // background — don't block startup on /api/chat/me.
         setRole("customer");
         setStaffUser(null);
+        warmCustomerRequestCredentials();
         void isCustomerAuthenticated().then(async (stillAuthed) => {
           if (stillAuthed) return;
           await clearCustomerRole();

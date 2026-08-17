@@ -20,7 +20,7 @@ import {
   routeForNotification,
   routeForUniversalLink,
 } from "@/lib/notification-routing";
-import { api } from "@/lib/api";
+import { api, warmCustomerRequestCredentials, warmStaffRequestCredentials } from "@/lib/api";
 import {
   conversationsQueryKey,
   fetchStaffConversations,
@@ -128,6 +128,9 @@ export function useNotifications() {
   const prefetchChatForNotification = useCallback(
     async (data: NotificationData | null) => {
       if (!data || data.type !== "new_message" || !role) return;
+
+      if (role === "staff") warmStaffRequestCredentials();
+      else if (role === "customer") warmCustomerRequestCredentials();
 
       const key =
         role === "staff" && data.conversationId
@@ -311,10 +314,10 @@ export function useNotifications() {
         }
         const route = data ? routeForNotification(data, role) : null;
         syncBadgeCount();
+        void prefetchChatForNotification(data);
         if (route) {
           router.replace(route as never);
         }
-        void prefetchChatForNotification(data);
       });
 
     return () => responseSubscription.remove();
