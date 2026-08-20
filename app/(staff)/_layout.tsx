@@ -78,15 +78,16 @@ function StaffTabs() {
         }}
         listeners={({ navigation }) => ({
           tabPress: (e) => {
-            // Pop to inbox only when Chat is already the active tab. Detect via
-            // parent tab state — isFocused() can be true mid-transition and was
-            // incorrectly resetting to the list when returning from other tabs.
-            const parentState = navigation.getParent()?.getState();
-            const activeName =
-              parentState?.routes?.[parentState.index ?? 0]?.name;
+            // Pop to inbox only when Chat is already the active tab. Use this
+            // screen's tab state (not getParent — that is the root stack and
+            // never reports "chat", so re-taps never returned to threads).
+            // tabPress fires before the switch, so index is still the previous
+            // tab when arriving from Jobs/Customers/etc.
+            const state = navigation.getState();
+            const activeName = state?.routes?.[state.index ?? 0]?.name;
             if (activeName !== "chat") return;
             e.preventDefault();
-            router.navigate("/(staff)/chat");
+            router.replace("/(staff)/chat");
           },
         })}
       />

@@ -24,19 +24,16 @@ export default function ChatLayout() {
         name="[id]"
         options={{
           title: "Conversation",
+          headerBackVisible: false,
           headerLeft: () => (
             <TouchableOpacity
               onPress={() => {
-                if (router.canGoBack()) {
-                  router.back();
-                } else {
-                  router.navigate("/(staff)/chat");
-                }
+                router.replace("/(staff)/chat");
               }}
               hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
               style={{ padding: 4 }}
               accessibilityRole="button"
-              accessibilityLabel="Go back"
+              accessibilityLabel="Back to chat threads"
             >
               <Ionicons name="chevron-back" size={24} color={theme.text} />
             </TouchableOpacity>

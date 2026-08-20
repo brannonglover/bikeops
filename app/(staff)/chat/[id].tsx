@@ -19,7 +19,7 @@ import {
   type NativeSyntheticEvent,
   type NativeScrollEvent,
 } from "react-native";
-import { useLocalSearchParams, Stack, useRouter, useFocusEffect } from "expo-router";
+import { useLocalSearchParams, Stack, useRouter, useFocusEffect, useNavigation } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
@@ -140,6 +140,7 @@ const REACTION_EMOJIS = ["\u{1F44D}", "\u{2764}\u{FE0F}", "\u{1F602}", "\u{1F62E
 export default function ConversationScreen() {
   const { theme } = useTheme();
   const router = useRouter();
+  const navigation = useNavigation();
   const params = useLocalSearchParams<{
     id?: string | string[];
     fromJobId?: string | string[];
@@ -148,6 +149,39 @@ export default function ConversationScreen() {
   const id = paramToString(params.id);
   const fromJobId = paramToString(params.fromJobId);
   const messageId = paramToString(params.messageId);
+
+  const goToChatThreads = useCallback(() => {
+    const state = navigation.getState();
+    const prev = state?.routes?.[(state.index ?? 0) - 1];
+    if (prev?.name === "index") {
+      navigation.goBack();
+      return;
+    }
+    router.replace("/(staff)/chat");
+  }, [navigation, router]);
+
+  // Swipe/hardware back still follows history (often the job card). Pop to
+  // the inbox when it's already under this thread; otherwise replace onto it.
+  useEffect(() => {
+    const unsubscribe = navigation.addListener("beforeRemove", (e) => {
+      const actionType = e.data.action.type;
+      if (
+        actionType !== "GO_BACK" &&
+        actionType !== "POP" &&
+        actionType !== "POP_TO" &&
+        actionType !== "POP_TO_TOP"
+      ) {
+        return;
+      }
+      const state = navigation.getState();
+      const prev = state?.routes?.[(state.index ?? 0) - 1];
+      if (prev?.name === "index") return;
+      e.preventDefault();
+      router.replace("/(staff)/chat");
+    });
+    return unsubscribe;
+  }, [navigation, router]);
+
   const queryClient = useQueryClient();
   const flatListRef = useRef<FlatList<ChatMessage>>(null);
   const isAtBottomRef = useRef(true);
@@ -1058,12 +1092,7 @@ export default function ConversationScreen() {
       resolvedConversation?.jobId ??
       activeCustomerJob?.id;
     if (directJobId) {
-      if (directJobId === fromJobId && router.canGoBack()) {
-        router.back();
-        return;
-      }
-
-      router.push({
+      router.navigate({
         pathname: "/(staff)/(jobs)/[id]",
         params: { id: directJobId },
       } as never);
@@ -1088,12 +1117,7 @@ export default function ConversationScreen() {
         return;
       }
 
-      if (activeJob.id === fromJobId && router.canGoBack()) {
-        router.back();
-        return;
-      }
-
-      router.push({
+      router.navigate({
         pathname: "/(staff)/(jobs)/[id]",
         params: { id: activeJob.id },
       } as never);
@@ -1579,20 +1603,15 @@ export default function ConversationScreen() {
     <>
       <Stack.Screen
         options={{
+          headerBackVisible: false,
           headerLeft: () => (
             <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
               <TouchableOpacity
-                onPress={() => {
-                  if (router.canGoBack()) {
-                    router.back();
-                  } else {
-                    router.navigate("/(staff)/chat");
-                  }
-                }}
+                onPress={goToChatThreads}
                 hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                 style={{ padding: 4 }}
                 accessibilityRole="button"
-                accessibilityLabel="Go back"
+                accessibilityLabel="Back to chat threads"
               >
                 <Ionicons name="chevron-back" size={24} color={theme.text} />
               </TouchableOpacity>
