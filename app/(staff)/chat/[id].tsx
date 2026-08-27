@@ -41,6 +41,8 @@ import {
   prependOlderMessages,
   staffMessagesPath,
 } from "@/lib/chat-messages";
+import { mergeMessagesCache } from "@/lib/chat-notification-prefetch";
+import { conversationsQueryKey } from "@/lib/staff-queries";
 import {
   clearChatDraft,
   getChatDraft,
@@ -821,6 +823,30 @@ export default function ConversationScreen() {
     customerBikesQuery.isFetched,
     hasJobContext,
   ]);
+
+  useEffect(() => {
+    if (!id) return;
+    const existing = queryClient.getQueryData<MessagesData>(["messages", id]);
+    const existingMessages = existing
+      ? Array.isArray(existing)
+        ? existing
+        : existing.messages
+      : [];
+    if (existingMessages.length > 0) return;
+
+    const convs = queryClient.getQueryData<Conversation[]>(conversationsQueryKey);
+    const conv = convs?.find((c) => c.id === id);
+    const latest = conv?.messages?.[0];
+    if (!latest) return;
+
+    mergeMessagesCache(queryClient, ["messages", id], {
+      messages: [latest],
+      customerTypingAt: conv?.customerTypingAt ?? null,
+      customerLastReadAt: conv?.customerLastReadAt ?? null,
+      staffLastReadAt: conv?.staffLastReadAt ?? null,
+      hasMore: true,
+    });
+  }, [id, queryClient]);
 
   const cachedMessages = queryClient.getQueryData<MessagesData>(["messages", id]);
 

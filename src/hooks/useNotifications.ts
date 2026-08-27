@@ -20,7 +20,10 @@ import {
   routeForNotification,
   routeForUniversalLink,
 } from "@/lib/notification-routing";
-import { api, warmCustomerRequestCredentials, warmStaffRequestCredentials } from "@/lib/api";
+import {
+  CUSTOMER_MESSAGES_QUERY_KEY,
+  prefetchChatForNotification,
+} from "@/lib/chat-notification-prefetch";
 import {
   conversationsQueryKey,
   fetchStaffConversations,
@@ -28,31 +31,17 @@ import {
   jobsQueryKey,
   prefetchStaffHomeData,
 } from "@/lib/staff-queries";
-import {
-  CHAT_MESSAGE_PAGE_SIZE,
-  customerMessagesPath,
-  staffMessagesPath,
-} from "@/lib/chat-messages";
-import { type ChatMessage, type Conversation } from "@/lib/types";
+import { type Conversation } from "@/lib/types";
 import type { QueryClient } from "@tanstack/react-query";
+
+export { CUSTOMER_MESSAGES_QUERY_KEY };
 
 const FOREGROUND_REGISTER_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const BADGE_SYNC_INTERVAL_MS = 60 * 1000;
-export const CUSTOMER_MESSAGES_QUERY_KEY = ["customerMessages"] as const;
 
-type MessagesData =
-  | ChatMessage[]
-  | {
-      messages: ChatMessage[];
-      customerTypingAt?: string | null;
-      customerLastReadAt?: string | null;
-      staffLastReadAt?: string | null;
-      hasMore?: boolean;
-    };
-
-function lastConversationMessage(conv: Conversation): ChatMessage | null {
+function lastConversationMessage(conv: Conversation) {
   if (!conv.messages || conv.messages.length === 0) return null;
-  return conv.messages[conv.messages.length - 1] ?? null;
+  return conv.messages[0] ?? null;
 }
 
 function hasUnreadStaffMessage(conv: Conversation): boolean {
@@ -94,76 +83,13 @@ export function useNotifications() {
   const coldStartPrefetchDone = useRef(false);
   const lastRegisteredAt = useRef(0);
   const syncingBadge = useRef(false);
-  const prefetchingChat = useRef<Record<string, boolean>>({});
 
-  const cacheMessages = useCallback(
-    (queryKey: readonly unknown[], data: MessagesData) => {
-      queryClient.setQueryData<MessagesData>(queryKey, (old) => {
-        const oldMessages = old
-          ? Array.isArray(old)
-            ? old
-            : old.messages
-          : [];
-        const serverMessages = Array.isArray(data) ? data : data.messages ?? [];
-        const oldById = new Map(oldMessages.map((m) => [m.id, m]));
-        const merged = serverMessages.map((m) => {
-          const previous = oldById.get(m.id);
-          return previous?.clientDeliveryState
-            ? { ...m, clientDeliveryState: previous.clientDeliveryState }
-            : m;
-        });
-        const serverIds = new Set(serverMessages.map((m) => m.id));
-        const optimistic = oldMessages.filter(
-          (m) => m.id.startsWith("temp-") && !serverIds.has(m.id)
-        );
-        const messages = [...merged, ...optimistic];
-
-        if (Array.isArray(data)) return messages;
-        return { ...data, messages };
-      });
+  const warmChatFromNotification = useCallback(
+    async (data: NotificationData | null, body?: string | null) => {
+      if (!data || !role) return;
+      await prefetchChatForNotification(queryClient, role, data, { body });
     },
-    [queryClient]
-  );
-
-  const prefetchChatForNotification = useCallback(
-    async (data: NotificationData | null) => {
-      if (!data || data.type !== "new_message" || !role) return;
-
-      if (role === "staff") warmStaffRequestCredentials();
-      else if (role === "customer") warmCustomerRequestCredentials();
-
-      const key =
-        role === "staff" && data.conversationId
-          ? `staff:${data.conversationId}`
-          : role === "customer"
-            ? "customer"
-            : null;
-      if (!key || prefetchingChat.current[key]) return;
-
-      prefetchingChat.current[key] = true;
-      try {
-        if (role === "staff" && data.conversationId) {
-          const { data: messagesData } = await api.get<MessagesData>(
-            staffMessagesPath(data.conversationId, {
-              limit: CHAT_MESSAGE_PAGE_SIZE,
-            })
-          );
-          cacheMessages(["messages", data.conversationId], messagesData);
-          queryClient.invalidateQueries({ queryKey: ["conversations"] });
-        } else if (role === "customer") {
-          const { data: messagesData } = await api.get<MessagesData>(
-            customerMessagesPath({ limit: CHAT_MESSAGE_PAGE_SIZE }),
-            { role: "customer" }
-          );
-          cacheMessages(CUSTOMER_MESSAGES_QUERY_KEY, messagesData);
-        }
-      } catch {
-        // Best-effort warm cache; the chat screens still fetch normally.
-      } finally {
-        delete prefetchingChat.current[key];
-      }
-    },
-    [cacheMessages, queryClient, role]
+    [queryClient, role]
   );
 
   const prefetchPresentedChatNotifications = useCallback(async () => {
@@ -171,15 +97,16 @@ export function useNotifications() {
       const notifications = await Notifications.getPresentedNotificationsAsync();
       await Promise.all(
         notifications.map((notification) =>
-          prefetchChatForNotification(
-            normalizeNotificationData(notification.request.content.data)
+          warmChatFromNotification(
+            normalizeNotificationData(notification.request.content.data),
+            notification.request.content.body ?? null
           )
         )
       );
     } catch {
       // Not available on every platform/version; normal screen fetches remain.
     }
-  }, [prefetchChatForNotification]);
+  }, [warmChatFromNotification]);
 
   const syncBadgeCount = useCallback(async () => {
     if (syncingBadge.current) return;
@@ -204,10 +131,6 @@ export function useNotifications() {
       setBadgeCount(0);
       return;
     }
-    // Re-register whenever the auth role changes (e.g. customer → staff).
-    // Previously we only registered once per app session, so logging into
-    // staff after using customer chat left the Expo token tagged as customer
-    // and staff never received new-message pushes.
     if (registeredForRole.current === role) return;
 
     let cancelled = false;
@@ -267,7 +190,6 @@ export function useNotifications() {
     };
   }, [role, syncBadgeCount, prefetchPresentedChatNotifications]);
 
-  // Warm caches on cold start (navigation is handled in app/index.tsx).
   useEffect(() => {
     if (!role || coldStartPrefetchDone.current) return;
     coldStartPrefetchDone.current = true;
@@ -278,12 +200,12 @@ export function useNotifications() {
 
     Notifications.getLastNotificationResponseAsync().then((response) => {
       if (!response) return;
-      const data = normalizeNotificationData(
-        response.notification.request.content.data
+      void warmChatFromNotification(
+        normalizeNotificationData(response.notification.request.content.data),
+        response.notification.request.content.body ?? null
       );
-      void prefetchChatForNotification(data);
     });
-  }, [role, prefetchChatForNotification, queryClient]);
+  }, [role, warmChatFromNotification, queryClient]);
 
   useEffect(() => {
     if (role !== "staff") return;
@@ -314,14 +236,19 @@ export function useNotifications() {
         }
         const route = data ? routeForNotification(data, role) : null;
         syncBadgeCount();
-        void prefetchChatForNotification(data);
-        if (route) {
-          router.replace(route as never);
-        }
+        void (async () => {
+          await warmChatFromNotification(
+            data,
+            response.notification.request.content.body ?? null
+          );
+          if (route) {
+            router.replace(route as never);
+          }
+        })();
       });
 
     return () => responseSubscription.remove();
-  }, [role, router, syncBadgeCount, prefetchChatForNotification]);
+  }, [role, router, syncBadgeCount, warmChatFromNotification]);
 
   useEffect(() => {
     if (!role) return;
@@ -331,7 +258,10 @@ export function useNotifications() {
         const data = normalizeNotificationData(
           notification.request.content.data
         );
-        prefetchChatForNotification(data);
+        void warmChatFromNotification(
+          data,
+          notification.request.content.body ?? null
+        );
         syncBadgeCount();
         if (
           role === "customer" &&
@@ -345,5 +275,5 @@ export function useNotifications() {
       });
 
     return () => receivedSubscription.remove();
-  }, [role, queryClient, syncBadgeCount, prefetchChatForNotification]);
+  }, [role, queryClient, syncBadgeCount, warmChatFromNotification]);
 }

@@ -15,6 +15,7 @@ import {
   customerJobsSummaryQueryKey,
   fetchCustomerJobsSummary,
 } from "@/lib/customer-load-priority";
+import { prefetchChatForNotification } from "@/lib/chat-notification-prefetch";
 
 type LaunchRoute = string | null | "pending";
 
@@ -60,6 +61,12 @@ export default function Index() {
         void Notifications.clearLastNotificationResponseAsync();
       }
       const notificationRoute = data ? routeForNotification(data, role) : null;
+
+      if (data?.type === "new_message") {
+        await prefetchChatForNotification(queryClient, role, data, {
+          body: response?.notification.request.content.body ?? null,
+        });
+      }
 
       if (!cancelled && notificationRoute) {
         setLaunchRoute(notificationRoute);
