@@ -14,7 +14,7 @@ import {
 import { useRouter, useFocusEffect } from "expo-router";
 import { useQuery, useMutation, useQueryClient, replaceEqualDeep } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { type Job, type Stage, DISPLAY_STAGES, STAGE_LABELS, STAGE_COLORS } from "@/lib/types";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
@@ -86,10 +86,16 @@ export default function JobBoardScreen() {
     });
   }, []);
 
-  const { data, isLoading, refetch } = useQuery({
+  const { data, isLoading, error, isFetching, refetch } = useQuery({
     queryKey: jobsQueryKey,
     queryFn: fetchStaffJobs,
-    refetchInterval: 15_000,
+    retry: 3,
+    retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 15_000),
+    refetchInterval: (query) => {
+      // Back off when the board keeps failing — saves battery on bad cellular.
+      if (query.state.status === "error") return 60_000;
+      return 15_000;
+    },
     structuralSharing: (prev: unknown, next: unknown) => {
       if (!Array.isArray(prev) || !Array.isArray(next)) {
         return replaceEqualDeep(prev, next);
@@ -531,6 +537,37 @@ export default function JobBoardScreen() {
       {showInitialLoad ? (
         <View style={styles.initialLoad}>
           <BikeLoader label="Loading jobs…" />
+        </View>
+      ) : error && jobs.length === 0 ? (
+        <View style={styles.initialLoad}>
+          {isFetching ? (
+            <BikeLoader label="Retrying…" />
+          ) : (
+            <>
+              <Ionicons
+                name={error instanceof ApiError && (error.status === 401 || error.status === 403) ? "log-in-outline" : "cloud-offline-outline"}
+                size={48}
+                color={theme.textMuted}
+              />
+              <Text style={[styles.errorTitle, { color: theme.textHeading }]}>
+                {error instanceof ApiError && (error.status === 401 || error.status === 403)
+                  ? "Session expired"
+                  : "Couldn't load jobs"}
+              </Text>
+              <Text style={[styles.errorMessage, { color: theme.textSecondary }]}>
+                {error instanceof ApiError && (error.status === 401 || error.status === 403)
+                  ? "Please log out and sign in again."
+                  : "Check your connection and try again."}
+              </Text>
+              <TouchableOpacity
+                onPress={handleRefresh}
+                disabled={isManualRefresh}
+                style={[styles.retryButton, isManualRefresh && styles.disabledButton]}
+              >
+                <Text style={styles.retryText}>Retry</Text>
+              </TouchableOpacity>
+            </>
+          )}
         </View>
       ) : jobs.length === 0 ? (
         <EmptyState
@@ -1023,5 +1060,28 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     paddingVertical: spacing[12],
+    gap: spacing[3],
+  },
+  errorTitle: {
+    ...fontSize.lg,
+    fontWeight: "700",
+    marginTop: spacing[2],
+  },
+  errorMessage: {
+    ...fontSize.sm,
+    textAlign: "center",
+    paddingHorizontal: spacing[8],
+  },
+  retryButton: {
+    marginTop: spacing[2],
+    paddingHorizontal: spacing[5],
+    paddingVertical: spacing[2.5],
+    backgroundColor: colors.amber[500],
+    borderRadius: borderRadius.xl,
+  },
+  retryText: {
+    ...fontSize.sm,
+    fontWeight: "600",
+    color: colors.white,
   },
 });

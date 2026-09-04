@@ -386,7 +386,7 @@ function extractCustomerSessionFromResponse(data: unknown): string | null {
     : null;
 }
 
-const DEFAULT_FETCH_TIMEOUT_MS = 20_000;
+const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
 const FORM_UPLOAD_TIMEOUT_MS = 90_000;
 
 function createTimeoutSignal(ms: number): { signal: AbortSignal; clear: () => void } {

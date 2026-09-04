@@ -15,7 +15,8 @@ import { defaultRouteForRole } from "@/lib/notification-routing";
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      retry: 1,
+      retry: 2,
+      retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 15_000),
       staleTime: 30_000,
     },
   },
