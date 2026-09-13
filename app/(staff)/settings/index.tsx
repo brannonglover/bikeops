@@ -1,4 +1,4 @@
-import { View, Text, TouchableOpacity, Alert } from "react-native";
+import { View, Text, TouchableOpacity, Alert, ScrollView } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/lib/auth";
@@ -6,11 +6,13 @@ import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { Card } from "@/components/ui/Card";
 import { AppearancePicker } from "@/components/ui/AppearancePicker";
+import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 
 export default function SettingsScreen() {
   const router = useRouter();
   const { staffLogout, staffUser } = useAuth();
   const { isDark, resetTheme, theme } = useTheme();
+  const layout = useResponsiveLayout();
 
   const handleLogout = () => {
     Alert.alert("Sign Out", "Are you sure you want to sign out?", [
@@ -28,7 +30,18 @@ export default function SettingsScreen() {
   };
 
   return (
-    <View style={{ flex: 1, backgroundColor: theme.background, padding: spacing[4], gap: spacing[4] }}>
+    <ScrollView
+      style={{ flex: 1, backgroundColor: theme.background }}
+      contentContainerStyle={[
+        { padding: spacing[4], gap: spacing[4], paddingBottom: spacing[12] },
+        layout.isTablet && {
+          width: "100%" as const,
+          maxWidth: 760,
+          alignSelf: "center" as const,
+          padding: spacing[6],
+        },
+      ]}
+    >
       {staffUser ? (
         <Card style={{ flexDirection: "row", alignItems: "center", gap: spacing[3], backgroundColor: theme.surface, borderColor: theme.surfaceBorder }}>
           <View
@@ -105,6 +118,6 @@ export default function SettingsScreen() {
           Sign Out
         </Text>
       </TouchableOpacity>
-    </View>
+    </ScrollView>
   );
 }

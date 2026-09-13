@@ -233,35 +233,36 @@ export default function CustomersScreen() {
               style={[
                 styles.customerRow,
                 layout.isTablet && styles.tabletConstrained,
+                layout.isTabletPortrait && styles.customerRowTabletPortrait,
                 {
                   backgroundColor: theme.surface,
                   borderBottomColor: theme.surfaceBorderSubtle,
                 },
               ]}
             >
-              <View style={styles.customerAvatar}>
-                <Text style={styles.customerInitial}>
+              <View style={[styles.customerAvatar, layout.isTabletPortrait && styles.customerAvatarTabletPortrait]}>
+                <Text style={[styles.customerInitial, layout.isTabletPortrait && styles.customerInitialTabletPortrait]}>
                   {item.firstName[0]?.toUpperCase()}
                 </Text>
               </View>
               <View style={styles.customerInfo}>
-                <Text style={[styles.customerRowName, { color: theme.text }]}>
+                <Text style={[styles.customerRowName, layout.isTabletPortrait && styles.customerRowNameTabletPortrait, { color: theme.text }]}>
                   {customerName(item)}
                 </Text>
                 {item.email ? (
-                  <Text style={[styles.customerMeta, { color: theme.textSecondary }]}>
+                  <Text style={[styles.customerMeta, layout.isTabletPortrait && styles.customerMetaTabletPortrait, { color: theme.textSecondary }]}>
                     {item.email}
                   </Text>
                 ) : null}
                 {item.phone ? (
-                  <Text style={[styles.customerMeta, { color: theme.textSecondary }]}>
+                  <Text style={[styles.customerMeta, layout.isTabletPortrait && styles.customerMetaTabletPortrait, { color: theme.textSecondary }]}>
                     {formatPhoneNumber(item.phone)}
                   </Text>
                 ) : null}
                 {item.bikes && item.bikes.length > 0 ? (
                   <View style={styles.bikeBadgeRow}>
-                    <Ionicons name="bicycle" size={12} color={theme.textTertiary} />
-                    <Text style={[styles.customerMeta, { color: theme.textTertiary }]}>
+                    <Ionicons name="bicycle" size={layout.isTabletPortrait ? 14 : 12} color={theme.textTertiary} />
+                    <Text style={[styles.customerMeta, layout.isTabletPortrait && styles.customerMetaTabletPortrait, { color: theme.textTertiary }]}>
                       {item.bikes.length} {item.bikes.length === 1 ? "bike" : "bikes"}
                     </Text>
                   </View>
@@ -269,7 +270,7 @@ export default function CustomersScreen() {
               </View>
               <Ionicons
                 name="chevron-forward"
-                size={16}
+                size={layout.isTabletPortrait ? 18 : 16}
                 color={theme.iconMuted}
               />
             </TouchableOpacity>
@@ -387,6 +388,9 @@ const styles = StyleSheet.create({
     padding: spacing[3],
     borderBottomWidth: 1,
   },
+  customerRowTabletPortrait: {
+    padding: spacing[4],
+  },
   customerAvatar: {
     width: 40,
     height: 40,
@@ -395,10 +399,18 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
   },
+  customerAvatarTabletPortrait: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+  },
   customerInitial: {
     ...fontSize.base,
     fontWeight: "600",
     color: colors.amber[700],
+  },
+  customerInitialTabletPortrait: {
+    ...fontSize.lg,
   },
   customerInfo: {
     flex: 1,
@@ -408,8 +420,14 @@ const styles = StyleSheet.create({
     ...fontSize.sm,
     fontWeight: "600",
   },
+  customerRowNameTabletPortrait: {
+    ...fontSize.base,
+  },
   customerMeta: {
     ...fontSize.xs,
+  },
+  customerMetaTabletPortrait: {
+    ...fontSize.sm,
   },
   bikeBadgeRow: {
     flexDirection: "row",

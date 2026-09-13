@@ -9,9 +9,11 @@ import { useTheme } from "@/lib/ThemeContext";
 import { JobCard } from "@/components/jobs/JobCard";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 
 export default function ArchiveScreen() {
   const { theme } = useTheme();
+  const layout = useResponsiveLayout();
   const router = useRouter();
 
   const {
@@ -51,7 +53,7 @@ export default function ArchiveScreen() {
           data={jobs}
           keyExtractor={(item) => item.id}
           renderItem={({ item }) => (
-            <View style={styles.cardWrapper}>
+            <View style={[styles.cardWrapper, layout.isTablet && styles.tabletConstrained]}>
               <JobCard
                 job={item}
                 onPress={() => router.push(`/(staff)/(jobs)/${item.id}`)}
@@ -79,5 +81,10 @@ const styles = StyleSheet.create({
   },
   cardWrapper: {
     marginBottom: spacing[2],
+  },
+  tabletConstrained: {
+    width: "100%",
+    maxWidth: 1040,
+    alignSelf: "center",
   },
 });

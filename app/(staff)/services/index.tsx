@@ -170,6 +170,7 @@ export default function ServicesScreen() {
               style={[
                 styles.row,
                 layout.isTablet && styles.tabletConstrained,
+                layout.isTabletPortrait && styles.rowTabletPortrait,
                 {
                   backgroundColor: theme.surface,
                   borderBottomColor: theme.surfaceBorderSubtle,
@@ -177,17 +178,17 @@ export default function ServicesScreen() {
               ]}
             >
               <View style={styles.rowInfo}>
-                <Text style={[styles.rowName, { color: theme.text }]}>{item.name}</Text>
+                <Text style={[styles.rowName, layout.isTabletPortrait && styles.rowNameTabletPortrait, { color: theme.text }]}>{item.name}</Text>
                 {item.description ? (
                   <Text
-                    style={[styles.rowDesc, { color: theme.textSecondary }]}
+                    style={[styles.rowDesc, layout.isTabletPortrait && styles.rowDescTabletPortrait, { color: theme.textSecondary }]}
                     numberOfLines={1}
                   >
                     {item.description}
                   </Text>
                 ) : null}
               </View>
-              <Text style={[styles.rowPrice, { color: theme.textTertiary }]}>
+              <Text style={[styles.rowPrice, layout.isTabletPortrait && styles.rowPriceTabletPortrait, { color: theme.textTertiary }]}>
                 {formatCurrency(item.price)}
               </Text>
             </TouchableOpacity>
@@ -289,6 +290,9 @@ const styles = StyleSheet.create({
     padding: spacing[4],
     borderBottomWidth: 1,
   },
+  rowTabletPortrait: {
+    paddingVertical: spacing[5],
+  },
   rowInfo: {
     flex: 1,
     gap: 2,
@@ -297,13 +301,22 @@ const styles = StyleSheet.create({
     ...fontSize.sm,
     fontWeight: "600",
   },
+  rowNameTabletPortrait: {
+    ...fontSize.base,
+  },
   rowDesc: {
     ...fontSize.xs,
+  },
+  rowDescTabletPortrait: {
+    ...fontSize.sm,
   },
   rowPrice: {
     ...fontSize.sm,
     fontWeight: "600",
     fontVariant: ["tabular-nums"],
+  },
+  rowPriceTabletPortrait: {
+    ...fontSize.base,
   },
   modalContainer: {
     flex: 1,

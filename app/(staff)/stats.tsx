@@ -9,6 +9,7 @@ import { useTheme } from "@/lib/ThemeContext";
 import { Card } from "@/components/ui/Card";
 import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { formatCurrency } from "@/lib/format";
+import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 
 const PERIODS = [
   { key: "day" as const, label: "Today" },
@@ -41,6 +42,7 @@ function RevenueBreakdown({
 
 export default function StatsScreen() {
   const { theme } = useTheme();
+  const layout = useResponsiveLayout();
   const { staffUser } = useAuth();
   const {
     data: stats,
@@ -69,7 +71,7 @@ export default function StatsScreen() {
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: theme.background }]}
-      contentContainerStyle={styles.content}
+      contentContainerStyle={[styles.content, layout.isTablet && styles.tabletContent]}
       refreshControl={
         <RefreshControl refreshing={isManualRefresh} onRefresh={handleRefresh} />
       }
@@ -157,6 +159,12 @@ const styles = StyleSheet.create({
     padding: spacing[4],
     gap: spacing[3],
     paddingBottom: spacing[12],
+  },
+  tabletContent: {
+    width: "100%",
+    maxWidth: 760,
+    alignSelf: "center",
+    padding: spacing[6],
   },
   description: {
     ...fontSize.sm,

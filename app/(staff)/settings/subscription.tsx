@@ -17,6 +17,7 @@ import { useTheme } from "@/lib/ThemeContext";
 import { getStaffBillingStatus, type StaffBillingStatus } from "@/lib/api";
 import { PlatformApiError, platformApi } from "@/lib/platform-api";
 import { formatDate } from "@/lib/format";
+import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import {
   completePurchase,
   disconnectIap,
@@ -40,6 +41,7 @@ function trialDaysLeft(trialEndsAt: string | null): number | null {
 
 export default function SubscriptionScreen() {
   const { theme } = useTheme();
+  const layout = useResponsiveLayout();
 
   const [billing, setBilling] = useState<StaffBillingStatus | null>(null);
   const [loadingBilling, setLoadingBilling] = useState(true);
@@ -177,6 +179,12 @@ export default function SubscriptionScreen() {
           padding: spacing[4],
           gap: spacing[4],
         },
+        tabletContent: {
+          width: "100%",
+          maxWidth: 760,
+          alignSelf: "center" as const,
+          padding: spacing[6],
+        },
         card: {
           backgroundColor: theme.surface,
           borderRadius: borderRadius["2xl"],
@@ -268,7 +276,7 @@ export default function SubscriptionScreen() {
   if (!billing) {
     return (
       <View style={styles.container}>
-        <View style={styles.content}>
+        <View style={[styles.content, layout.isTablet && styles.tabletContent]}>
           <View style={styles.card}>
             <Text style={styles.statusTitle}>Subscription</Text>
             {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -324,7 +332,7 @@ export default function SubscriptionScreen() {
   return (
     <ScrollView
       style={styles.container}
-      contentContainerStyle={styles.content}
+      contentContainerStyle={[styles.content, layout.isTablet && styles.tabletContent]}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
     >
       <View style={styles.card}>

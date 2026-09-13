@@ -19,6 +19,7 @@ import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { BikeLoader } from "@/components/ui/BikeLoader";
+import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import {
   conversationsQueryKey,
   fetchStaffConversations,
@@ -53,6 +54,7 @@ function pickConversationForCustomer(
 
 export default function ChatListScreen() {
   const { theme } = useTheme();
+  const layout = useResponsiveLayout();
   const router = useRouter();
   const params = useLocalSearchParams<{
     customer?: string | string[];
@@ -256,6 +258,8 @@ export default function ChatListScreen() {
                 }}
                 style={[
                   styles.row,
+                  layout.isTablet && styles.tabletConstrained,
+                  layout.isTabletPortrait && styles.rowTabletPortrait,
                   { borderBottomColor: theme.surfaceBorderSubtle },
                   unread && {
                     backgroundColor: theme.dark
@@ -267,12 +271,13 @@ export default function ChatListScreen() {
                 <View
                   style={[
                     styles.avatar,
+                    layout.isTabletPortrait && styles.avatarTabletPortrait,
                     { backgroundColor: theme.dark ? colors.slate[600] : colors.slate[400] },
                   ]}
                 >
                   <Ionicons
                     name="person"
-                    size={20}
+                    size={layout.isTabletPortrait ? 24 : 20}
                     color={colors.white}
                   />
                 </View>
@@ -281,6 +286,7 @@ export default function ChatListScreen() {
                     <Text
                       style={[
                         styles.rowName,
+                        layout.isTabletPortrait && styles.rowNameTabletPortrait,
                         { color: theme.text },
                         unread && styles.rowNameBold,
                       ]}
@@ -301,6 +307,7 @@ export default function ChatListScreen() {
                     <Text
                       style={[
                         styles.rowPreview,
+                        layout.isTabletPortrait && styles.rowPreviewTabletPortrait,
                         { color: theme.textSecondary },
                         unread && { fontWeight: "500", color: theme.textTertiary },
                       ]}
@@ -310,7 +317,13 @@ export default function ChatListScreen() {
                       {lastMsg.body || "(image)"}
                     </Text>
                   ) : (
-                    <Text style={[styles.rowPreview, { color: theme.textSecondary }]}>
+                    <Text
+                      style={[
+                        styles.rowPreview,
+                        layout.isTabletPortrait && styles.rowPreviewTabletPortrait,
+                        { color: theme.textSecondary },
+                      ]}
+                    >
                       No messages yet
                     </Text>
                   )}
@@ -421,6 +434,11 @@ const styles = StyleSheet.create({
   listContent: {
     paddingBottom: spacing[12],
   },
+  tabletConstrained: {
+    width: "100%",
+    maxWidth: 1040,
+    alignSelf: "center",
+  },
   row: {
     flexDirection: "row",
     alignItems: "center",
@@ -428,12 +446,20 @@ const styles = StyleSheet.create({
     gap: spacing[3],
     borderBottomWidth: 1,
   },
+  rowTabletPortrait: {
+    padding: spacing[4],
+  },
   avatar: {
     width: 40,
     height: 40,
     borderRadius: 20,
     justifyContent: "center",
     alignItems: "center",
+  },
+  avatarTabletPortrait: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
   },
   rowContent: {
     flex: 1,
@@ -448,6 +474,9 @@ const styles = StyleSheet.create({
     ...fontSize.sm,
     flex: 1,
   },
+  rowNameTabletPortrait: {
+    ...fontSize.base,
+  },
   rowNameBold: {
     fontWeight: "600",
   },
@@ -457,6 +486,9 @@ const styles = StyleSheet.create({
   },
   rowPreview: {
     ...fontSize.xs,
+  },
+  rowPreviewTabletPortrait: {
+    ...fontSize.sm,
   },
   unreadDot: {
     width: 8,

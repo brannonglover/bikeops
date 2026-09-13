@@ -74,6 +74,9 @@ export default function ProductsScreen() {
           borderBottomWidth: 1,
           borderBottomColor: theme.surfaceBorderSubtle,
         },
+        rowTabletPortrait: {
+          paddingVertical: spacing[5],
+        },
         productImage: {
           width: 48,
           height: 48,
@@ -90,13 +93,25 @@ export default function ProductsScreen() {
         },
         rowInfo: { flex: 1, gap: 2 },
         rowName: { ...fontSize.sm, fontWeight: "600", color: theme.text },
+        rowNameTabletPortrait: { ...fontSize.base },
         rowDesc: { ...fontSize.xs, color: theme.textSecondary },
+        rowDescTabletPortrait: { ...fontSize.sm },
         stockText: { ...fontSize.xs, color: theme.textMuted },
+        stockTextTabletPortrait: { ...fontSize.sm },
         rowPrice: {
           ...fontSize.sm,
           fontWeight: "600",
           color: theme.textTertiary,
           fontVariant: ["tabular-nums"],
+        },
+        rowPriceTabletPortrait: { ...fontSize.base },
+        productImageTabletPortrait: {
+          width: 56,
+          height: 56,
+        },
+        productPlaceholderTabletPortrait: {
+          width: 56,
+          height: 56,
         },
         modalContainer: { flex: 1, backgroundColor: theme.surface },
         modalHeader: {
@@ -108,7 +123,12 @@ export default function ProductsScreen() {
           borderBottomColor: theme.surfaceBorder,
         },
         modalTitle: { ...fontSize.lg, fontWeight: "600", color: theme.text },
-        modalContent: { padding: spacing[4] },
+        modalContent: {
+          padding: spacing[4],
+          width: "100%",
+          maxWidth: 720,
+          alignSelf: "center" as const,
+        },
         inputGap: { marginBottom: spacing[3] },
       }),
     [theme]
@@ -246,27 +266,27 @@ export default function ProductsScreen() {
                   },
                 ]);
               }}
-              style={[styles.row, layout.isTablet && styles.tabletConstrained]}
+              style={[styles.row, layout.isTablet && styles.tabletConstrained, layout.isTabletPortrait && styles.rowTabletPortrait]}
             >
               {item.imageUrl ? (
-                <Image source={{ uri: item.imageUrl }} style={styles.productImage} />
+                <Image source={{ uri: item.imageUrl }} style={[styles.productImage, layout.isTabletPortrait && styles.productImageTabletPortrait]} />
               ) : (
-                <View style={styles.productPlaceholder}>
-                  <Ionicons name="cube-outline" size={20} color={theme.iconMuted} />
+                <View style={[styles.productPlaceholder, layout.isTabletPortrait && styles.productPlaceholderTabletPortrait]}>
+                  <Ionicons name="cube-outline" size={layout.isTabletPortrait ? 24 : 20} color={theme.iconMuted} />
                 </View>
               )}
               <View style={styles.rowInfo}>
-                <Text style={styles.rowName}>{item.name}</Text>
+                <Text style={[styles.rowName, layout.isTabletPortrait && styles.rowNameTabletPortrait]}>{item.name}</Text>
                 {item.description ? (
-                  <Text style={styles.rowDesc} numberOfLines={1}>
+                  <Text style={[styles.rowDesc, layout.isTabletPortrait && styles.rowDescTabletPortrait]} numberOfLines={1}>
                     {item.description}
                   </Text>
                 ) : null}
-                <Text style={styles.stockText}>
+                <Text style={[styles.stockText, layout.isTabletPortrait && styles.stockTextTabletPortrait]}>
                   Stock: {item.stockQuantity}
                 </Text>
               </View>
-              <Text style={styles.rowPrice}>
+              <Text style={[styles.rowPrice, layout.isTabletPortrait && styles.rowPriceTabletPortrait]}>
                 {formatCurrency(item.price)}
               </Text>
             </TouchableOpacity>
