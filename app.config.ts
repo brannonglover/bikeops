@@ -28,6 +28,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   name: IS_DEV ? "BikeOps (Dev)" : "BikeOps",
   slug: "bikeops",
   version,
+  // No web target — without this, `expo export` (and so `eas update`) defaults
+  // to including web and fails on the missing react-native-web dependency.
+  platforms: ["ios", "android"],
   orientation: "default",
   icon: "./assets/icon.png",
   scheme: "bikeops",
