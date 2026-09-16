@@ -21,6 +21,8 @@ export type CallState = {
   isMuted: boolean;
 };
 
+const DISMISS_DELAY_MS = 3_000;
+
 const IDLE_STATE: CallState = {
   status: "idle",
   number: null,
@@ -102,6 +104,20 @@ export function useCallManager() {
         direction: "inbound",
       });
 
+      // On iOS the call is usually answered from the CallKit screen rather than
+      // our overlay, so accept() is never called from JS — the SDK reports it
+      // here instead. Without this the UI stays stuck on "incoming".
+      invite.on(CallInvite.Event.Accepted, (call) => {
+        inviteRef.current = null;
+        attachCallListeners(call);
+        setState((prev) => ({ ...prev, status: "connected" }));
+      });
+
+      invite.on(CallInvite.Event.Rejected, () => {
+        inviteRef.current = null;
+        setState(IDLE_STATE);
+      });
+
       invite.on(CallInvite.Event.Cancelled, () => {
         inviteRef.current = null;
         setState((prev) =>
@@ -109,7 +125,7 @@ export function useCallManager() {
         );
       });
     });
-  }, []);
+  }, [attachCallListeners]);
 
   const acceptIncoming = useCallback(async () => {
     const invite = inviteRef.current;
@@ -137,6 +153,14 @@ export function useCallManager() {
       setState(IDLE_STATE);
     }
   }, []);
+
+  // "Call ended"/"Call failed" are terminal — show them briefly, then clear the
+  // overlay instead of leaving it pinned over the app.
+  useEffect(() => {
+    if (state.status !== "disconnected" && state.status !== "failed") return;
+    const timer = setTimeout(() => setState(IDLE_STATE), DISMISS_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [state.status]);
 
   const hangUp = useCallback(async () => {
     await callRef.current?.disconnect();
