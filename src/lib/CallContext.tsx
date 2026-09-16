@@ -1,5 +1,5 @@
-import { createContext, useContext, useEffect, type ReactNode } from "react";
-import { Pressable, Text, View } from "react-native";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { AppState, Pressable, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useCallManager, type CallState } from "@/hooks/useCallManager";
 import { useAuth } from "@/lib/auth";
@@ -8,8 +8,15 @@ import { useTheme } from "@/lib/ThemeContext";
 import { formatPhoneNumber } from "@/lib/format";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 
+export type RegistrationState = {
+  status: "idle" | "registering" | "registered" | "failed";
+  error: string | null;
+};
+
 type CallContextValue = {
   state: CallState;
+  /** Whether this device can actually receive inbound calls. */
+  registration: RegistrationState;
   startCall: (toNumber: string, displayName?: string) => Promise<void>;
   acceptIncoming: () => Promise<void>;
   rejectIncoming: () => Promise<void>;
@@ -154,25 +161,71 @@ function CallOverlay({
   );
 }
 
+const MAX_REGISTER_ATTEMPTS = 5;
+const REGISTER_BACKOFF_MS = [2_000, 5_000, 15_000, 30_000, 60_000];
+
 export function CallProvider({ children }: { children: ReactNode }) {
   const { state, startCall, acceptIncoming, rejectIncoming, hangUp, toggleMute } =
     useCallManager();
   const { staffUser } = useAuth();
+  const [registration, setRegistration] = useState<RegistrationState>({
+    status: "idle",
+    error: null,
+  });
+  const registrationRef = useRef(registration);
+  registrationRef.current = registration;
 
   // Only staff receive shop calls, and the token endpoint is staff-gated, so
   // registration follows the staff session rather than app launch.
+  //
+  // This retries rather than firing once: the token endpoint 404s while voice
+  // is disabled for the shop, and a single silent failure left the device
+  // permanently unable to receive calls until the app was force-quit.
   useEffect(() => {
-    if (!staffUser) return;
-    let cancelled = false;
+    if (!staffUser) {
+      setRegistration({ status: "idle", error: null });
+      return;
+    }
 
-    void registerForIncomingCalls().catch((error) => {
-      if (!cancelled) {
-        console.warn("[voice] incoming call registration failed:", error);
+    let cancelled = false;
+    let attempt = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const register = async () => {
+      if (cancelled) return;
+      setRegistration((prev) => ({ status: "registering", error: prev.error }));
+      try {
+        await registerForIncomingCalls();
+        if (cancelled) return;
+        attempt = 0;
+        setRegistration({ status: "registered", error: null });
+      } catch (error) {
+        if (cancelled) return;
+        const message =
+          error instanceof Error ? error.message : "Could not register for calls";
+        setRegistration({ status: "failed", error: message });
+        attempt += 1;
+        if (attempt <= MAX_REGISTER_ATTEMPTS) {
+          timer = setTimeout(register, REGISTER_BACKOFF_MS[attempt - 1]);
+        }
       }
+    };
+
+    void register();
+
+    // Coming back to the foreground is the cheapest signal that whatever was
+    // wrong (server config, connectivity) may now be fixed.
+    const sub = AppState.addEventListener("change", (next) => {
+      if (next !== "active") return;
+      if (registrationRef.current.status === "registered") return;
+      attempt = 0;
+      void register();
     });
 
     return () => {
       cancelled = true;
+      if (timer) clearTimeout(timer);
+      sub.remove();
       void unregisterForIncomingCalls().catch(() => {
         // Logout/teardown — nothing useful to do if Twilio is already gone.
       });
@@ -181,6 +234,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
 
   const value: CallContextValue = {
     state,
+    registration,
     startCall,
     acceptIncoming,
     rejectIncoming,

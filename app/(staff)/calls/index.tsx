@@ -42,7 +42,7 @@ export default function CallsScreen() {
   const { theme } = useTheme();
   const layout = useResponsiveLayout();
   const router = useRouter();
-  const { startCall } = useCall();
+  const { startCall, registration } = useCall();
   const [filter, setFilter] = useState<Filter>("all");
   const [isManualRefresh, setIsManualRefresh] = useState(false);
 
@@ -133,6 +133,17 @@ export default function CallsScreen() {
           );
         })}
       </View>
+
+      {registration.status === "failed" ? (
+        // Inbound calls silently fail when this device isn't registered with
+        // Twilio, and nothing else in the UI would ever show it.
+        <View style={[styles.warningBanner, { backgroundColor: colors.amber[600] }]}>
+          <Ionicons name="warning-outline" size={16} color={colors.white} />
+          <Text style={[styles.warningText, { color: colors.white }]} numberOfLines={2}>
+            Not receiving calls on this device{registration.error ? ` — ${registration.error}` : ""}
+          </Text>
+        </View>
+      ) : null}
 
       {showInitialLoad ? (
         <View style={styles.initialLoad}>
@@ -322,4 +333,16 @@ const styles = StyleSheet.create({
     marginLeft: spacing[1],
   },
   callBackButton: { padding: spacing[2] },
+  warningBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing[2],
+    paddingVertical: spacing[2],
+    paddingHorizontal: spacing[3],
+  },
+  warningText: {
+    ...fontSize.xs,
+    fontWeight: "500",
+    flex: 1,
+  },
 });
