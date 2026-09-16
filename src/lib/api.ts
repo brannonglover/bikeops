@@ -757,3 +757,35 @@ export async function getVoiceAccessToken(
   );
   return data;
 }
+
+export type AuthedMediaSource = { uri: string; headers: Record<string, string> };
+
+/**
+ * Absolute URL plus auth headers for a staff-only media endpoint, for players
+ * that fetch bytes themselves instead of going through `api`. Mirrors
+ * apiFetch's header pair — Cookie for the browser path, Bearer because native
+ * cookie handling isn't reliable.
+ */
+export async function getStaffMediaSource(path: string): Promise<AuthedMediaSource> {
+  const [cookie, apiUrl] = await Promise.all([
+    getStoredCookieForRequest(STAFF_COOKIE_KEY),
+    getApiUrl("staff"),
+  ]);
+
+  const headers: Record<string, string> = {};
+  if (cookie) {
+    headers["Cookie"] = cookie;
+    const token = extractTokenFromCookie(cookie);
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  return {
+    uri: `${apiUrl}${path.startsWith("/") ? "" : "/"}${path}`,
+    headers,
+  };
+}
+
+/** Authed audio source for a call's voicemail recording. */
+export function getCallRecordingSource(callId: string): Promise<AuthedMediaSource> {
+  return getStaffMediaSource(`/api/calls/${encodeURIComponent(callId)}/recording`);
+}

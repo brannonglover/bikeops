@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -7,6 +7,8 @@ import {
   RefreshControl,
   StyleSheet,
   Alert,
+  Animated,
+  Easing,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
@@ -16,6 +18,8 @@ import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { BikeLoader } from "@/components/ui/BikeLoader";
+import { SlideDown } from "@/components/ui/SlideDown";
+import { VoicemailPanel } from "@/components/calls/VoicemailPanel";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { callsQueryKey, fetchStaffCalls } from "@/lib/staff-queries";
 import { formatDateTime, formatPhoneNumber } from "@/lib/format";
@@ -25,7 +29,9 @@ import {
   callOutcome,
   counterpartyNumber,
   formatCallDuration,
+  hasVoicemail,
   isUnknownCaller,
+  voicemailTranscript,
   type CallOutcome,
 } from "@/lib/calls";
 
@@ -45,6 +51,9 @@ export default function CallsScreen() {
   const { startCall, registration } = useCall();
   const [filter, setFilter] = useState<Filter>("all");
   const [isManualRefresh, setIsManualRefresh] = useState(false);
+  // One open panel at a time — two voicemails playing over each other is never
+  // what anyone wants, and collapsing tears the other player down.
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const {
     data: calls = [],
@@ -70,6 +79,16 @@ export default function CallsScreen() {
 
   const visible =
     filter === "missed" ? calls.filter((c) => callOutcome(c) === "missed") : calls;
+
+  // Switching filters can hide the open row; leaving expandedId set would
+  // silently reopen it on the way back.
+  useEffect(() => {
+    setExpandedId(null);
+  }, [filter]);
+
+  const toggleExpanded = useCallback((call: Call) => {
+    setExpandedId((current) => (current === call.id ? null : call.id));
+  }, []);
 
   const outcomeColor = (outcome: CallOutcome): string => {
     if (outcome === "missed") return colors.red[600];
@@ -180,89 +199,197 @@ export default function CallsScreen() {
             <RefreshControl refreshing={isManualRefresh} onRefresh={handleRefresh} />
           }
           contentContainerStyle={styles.listContent}
-          renderItem={({ item }) => {
-            const outcome = callOutcome(item);
-            const missed = outcome === "missed";
-            const unknown = isUnknownCaller(item);
-            const duration = formatCallDuration(item.durationSeconds);
-            const tint = outcomeColor(outcome);
-
-            return (
-              <TouchableOpacity
-                onPress={() => openCustomer(item)}
-                style={[
-                  styles.row,
-                  layout.isTablet && styles.tabletConstrained,
-                  layout.isTabletPortrait && styles.rowTabletPortrait,
-                  { borderBottomColor: theme.surfaceBorderSubtle },
-                ]}
-              >
-                <View
-                  style={[
-                    styles.avatar,
-                    { backgroundColor: theme.dark ? colors.slate[600] : colors.slate[400] },
-                  ]}
-                >
-                  <Ionicons
-                    name={unknown ? "help" : "person"}
-                    size={20}
-                    color={colors.white}
-                  />
-                </View>
-
-                <View style={styles.rowContent}>
-                  <View style={styles.rowHeader}>
-                    <Text
-                      style={[
-                        styles.rowName,
-                        { color: missed ? colors.red[600] : theme.text },
-                        missed && styles.rowNameBold,
-                      ]}
-                      numberOfLines={1}
-                    >
-                      {callDisplayName(item)}
-                    </Text>
-                    <Text style={[styles.rowTime, { color: theme.textMuted }]}>
-                      {formatDateTime(item.createdAt)}
-                    </Text>
-                  </View>
-
-                  <View style={styles.rowMeta}>
-                    <Ionicons name={OUTCOME_ICON[outcome]} size={12} color={tint} />
-                    <Text style={[styles.rowMetaText, { color: theme.textSecondary }]}>
-                      {outcome === "taken"
-                        ? "Answered"
-                        : outcome === "missed"
-                          ? item.recordingUrl
-                            ? "Missed · voicemail"
-                            : "Missed"
-                          : outcome === "outgoing"
-                            ? "Outgoing"
-                            : "In progress"}
-                      {duration ? ` · ${duration}` : ""}
-                    </Text>
-                    {unknown ? (
-                      <Text style={[styles.newBadge, { color: colors.amber[600] }]}>
-                        New
-                      </Text>
-                    ) : null}
-                  </View>
-                </View>
-
-                <TouchableOpacity
-                  onPress={() => startCall(counterpartyNumber(item), callDisplayName(item))}
-                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                  style={styles.callBackButton}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Call ${callDisplayName(item)} back`}
-                >
-                  <Ionicons name="call" size={18} color={colors.emerald[600]} />
-                </TouchableOpacity>
-              </TouchableOpacity>
-            );
-          }}
+          renderItem={({ item }) => (
+            <CallRow
+              call={item}
+              expanded={expandedId === item.id}
+              onToggle={() => toggleExpanded(item)}
+              onOpenCustomer={() => openCustomer(item)}
+              onCallBack={() => startCall(counterpartyNumber(item), callDisplayName(item))}
+              onMessage={() => {
+                if (item.customer) {
+                  router.push(`/(staff)/chat?customer=${item.customer.id}` as never);
+                }
+              }}
+              onAddCustomer={() =>
+                router.push(
+                  `/(staff)/customers?newPhone=${encodeURIComponent(counterpartyNumber(item))}`
+                )
+              }
+              outcomeColor={outcomeColor}
+              constrained={layout.isTablet}
+              tabletPortrait={layout.isTabletPortrait}
+            />
+          )}
         />
       )}
+    </View>
+  );
+}
+
+interface CallRowProps {
+  call: Call;
+  expanded: boolean;
+  onToggle: () => void;
+  onOpenCustomer: () => void;
+  onCallBack: () => void;
+  onMessage: () => void;
+  onAddCustomer: () => void;
+  outcomeColor: (outcome: CallOutcome) => string;
+  constrained: boolean;
+  tabletPortrait: boolean;
+}
+
+/**
+ * A call log row. Rows with a voicemail expand in place instead of navigating,
+ * so listening to a message never loses the reader's position in the list;
+ * every other row keeps its old behaviour of opening the customer.
+ */
+function CallRow({
+  call,
+  expanded,
+  onToggle,
+  onOpenCustomer,
+  onCallBack,
+  onMessage,
+  onAddCustomer,
+  outcomeColor,
+  constrained,
+  tabletPortrait,
+}: CallRowProps) {
+  const { theme } = useTheme();
+  const outcome = callOutcome(call);
+  const missed = outcome === "missed";
+  const unknown = isUnknownCaller(call);
+  const duration = formatCallDuration(call.durationSeconds);
+  const tint = outcomeColor(outcome);
+  const voicemail = hasVoicemail(call);
+  const transcript = voicemailTranscript(call);
+
+  const chevronSpin = useRef(new Animated.Value(expanded ? 1 : 0)).current;
+  useEffect(() => {
+    Animated.timing(chevronSpin, {
+      toValue: expanded ? 1 : 0,
+      duration: 220,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [expanded, chevronSpin]);
+
+  const outcomeLabel = missed
+    ? voicemail
+      ? "Missed · voicemail"
+      : "Missed"
+    : outcome === "taken"
+      ? "Answered"
+      : outcome === "outgoing"
+        ? "Outgoing"
+        : "In progress";
+
+  return (
+    <View style={[constrained && styles.tabletConstrained]}>
+      <TouchableOpacity
+        onPress={voicemail ? onToggle : onOpenCustomer}
+        style={[
+          styles.row,
+          tabletPortrait && styles.rowTabletPortrait,
+          { borderBottomColor: theme.surfaceBorderSubtle },
+          // The panel owns the bottom edge while open, so the row shouldn't
+          // draw a divider through the middle of the pair.
+          expanded && styles.rowExpanded,
+        ]}
+        accessibilityRole="button"
+        accessibilityState={voicemail ? { expanded } : undefined}
+      >
+        <View
+          style={[
+            styles.avatar,
+            { backgroundColor: theme.dark ? colors.slate[600] : colors.slate[400] },
+          ]}
+        >
+          <Ionicons name={unknown ? "help" : "person"} size={20} color={colors.white} />
+        </View>
+
+        <View style={styles.rowContent}>
+          <View style={styles.rowHeader}>
+            <Text
+              style={[
+                styles.rowName,
+                { color: missed ? colors.red[600] : theme.text },
+                missed && styles.rowNameBold,
+              ]}
+              numberOfLines={1}
+            >
+              {callDisplayName(call)}
+            </Text>
+            <Text style={[styles.rowTime, { color: theme.textMuted }]}>
+              {formatDateTime(call.createdAt)}
+            </Text>
+          </View>
+
+          <View style={styles.rowMeta}>
+            <Ionicons
+              name={voicemail ? "recording-outline" : OUTCOME_ICON[outcome]}
+              size={12}
+              color={tint}
+            />
+            <Text style={[styles.rowMetaText, { color: theme.textSecondary }]}>
+              {outcomeLabel}
+              {duration ? ` · ${duration}` : ""}
+            </Text>
+            {unknown ? (
+              <Text style={[styles.newBadge, { color: colors.amber[600] }]}>New</Text>
+            ) : null}
+          </View>
+
+          {/* A one-line transcript makes the log skimmable without opening
+              anything; the panel shows the whole thing once expanded. */}
+          {voicemail && !expanded && transcript.state === "ready" ? (
+            <Text
+              style={[styles.rowTranscript, { color: theme.textMuted }]}
+              numberOfLines={1}
+            >
+              {transcript.text}
+            </Text>
+          ) : null}
+        </View>
+
+        {voicemail ? (
+          <Animated.View
+            style={{
+              transform: [
+                {
+                  rotate: chevronSpin.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: ["0deg", "180deg"],
+                  }),
+                },
+              ],
+            }}
+          >
+            <Ionicons name="chevron-down" size={18} color={theme.textMuted} />
+          </Animated.View>
+        ) : (
+          <TouchableOpacity
+            onPress={onCallBack}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            style={styles.callBackButton}
+            accessibilityRole="button"
+            accessibilityLabel={`Call ${callDisplayName(call)} back`}
+          >
+            <Ionicons name="call" size={18} color={colors.emerald[600]} />
+          </TouchableOpacity>
+        )}
+      </TouchableOpacity>
+
+      <SlideDown expanded={expanded}>
+        <VoicemailPanel
+          call={call}
+          onCallBack={onCallBack}
+          onMessage={onMessage}
+          onAddCustomer={unknown ? onAddCustomer : null}
+        />
+      </SlideDown>
     </View>
   );
 }
@@ -305,6 +432,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
   },
   rowTabletPortrait: { padding: spacing[4] },
+  rowExpanded: { borderBottomWidth: 0 },
   avatar: {
     width: 40,
     height: 40,
@@ -327,6 +455,7 @@ const styles = StyleSheet.create({
     gap: spacing[1],
   },
   rowMetaText: { ...fontSize.xs },
+  rowTranscript: { ...fontSize.xs, fontStyle: "italic", marginTop: 1 },
   newBadge: {
     ...fontSize.xs,
     fontWeight: "600",

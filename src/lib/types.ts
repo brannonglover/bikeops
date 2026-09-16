@@ -330,8 +330,14 @@ export interface Call {
   answeredAt: string | null;
   endedAt: string | null;
   durationSeconds: number | null;
-  recordingUrl: string | null;
+  /** True when a voicemail exists. The audio streams from
+   *  GET /api/calls/:id/recording — the server never hands out the Twilio URL. */
+  hasRecording: boolean;
   recordingStatus: string | null;
+  /** Voicemail transcript, once Twilio's transcribeCallback has landed. */
+  transcriptionText: string | null;
+  /** "in-progress" while awaiting the callback, then "completed" | "failed". */
+  transcriptionStatus: string | null;
   createdAt: string;
   customer: Pick<Customer, "id" | "firstName" | "lastName" | "phone"> | null;
 }

@@ -38,3 +38,41 @@ export function formatCallDuration(seconds: number | null): string | null {
   const secs = seconds % 60;
   return `${mins}:${String(secs).padStart(2, "0")}`;
 }
+
+/**
+ * A missed call worth opening. `hasRecording` alone isn't enough — the row
+ * arrives with the flag set before Twilio finishes processing, and a player
+ * pointed at an unprocessed recording just fails.
+ */
+export function hasVoicemail(call: Call): boolean {
+  return call.hasRecording && call.recordingStatus === "completed";
+}
+
+export type VoicemailTranscript =
+  | { state: "none" }
+  | { state: "pending" }
+  | { state: "failed" }
+  | { state: "ready"; text: string };
+
+/**
+ * Transcript state for display. Kept as a union rather than a nullable string
+ * so the panel can say "Transcribing…" and "Transcript unavailable" instead of
+ * collapsing both into an empty space.
+ */
+export function voicemailTranscript(call: Call): VoicemailTranscript {
+  const text = call.transcriptionText?.trim();
+  if (text) return { state: "ready", text };
+  if (call.transcriptionStatus === "in-progress") return { state: "pending" };
+  if (call.transcriptionStatus === "failed") return { state: "failed" };
+  // "completed" with no text means the caller left silence.
+  if (call.transcriptionStatus === "completed") return { state: "failed" };
+  return { state: "none" };
+}
+
+/** Elapsed/total readout for the voicemail scrubber, e.g. "0:07 / 0:24". */
+export function formatPlaybackTime(seconds: number): string {
+  const safe = Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0;
+  const mins = Math.floor(safe / 60);
+  const secs = safe % 60;
+  return `${mins}:${String(secs).padStart(2, "0")}`;
+}
