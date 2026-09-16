@@ -27,6 +27,7 @@ import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { ImageViewer } from "@/components/ui/ImageViewer";
 import { customerName, formatPhoneNumber, unformatPhoneNumber } from "@/lib/format";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
+import { useCall } from "@/lib/CallContext";
 
 type BikeTypeOption = "REGULAR" | "E_BIKE" | null;
 
@@ -43,6 +44,7 @@ export default function CustomerDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const queryClient = useQueryClient();
+  const { startCall } = useCall();
   const [editing, setEditing] = useState(false);
   const [viewingImageUrl, setViewingImageUrl] = useState<string | null>(null);
   const [checkingDuplicate, setCheckingDuplicate] = useState(false);
@@ -861,6 +863,13 @@ export default function CustomerDetailScreen() {
                 ) : null}
               </Card>
 
+            {customer.phone ? (
+              <Button
+                title="Call"
+                onPress={() => startCall(customer.phone!, customerName(customer))}
+                variant="secondary"
+              />
+            ) : null}
             <Button
               title="Open Chat"
               onPress={() =>

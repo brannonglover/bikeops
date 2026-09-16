@@ -9,6 +9,7 @@ import { api, parseShopSubdomainFromUrl, setCustomerShop } from "@/lib/api";
 import { consumeCustomerLoginReturnPath } from "@/lib/customer-login-return";
 import { NotificationProvider } from "@/lib/NotificationProvider";
 import { ThemeProvider, useTheme } from "@/lib/ThemeContext";
+import { CallProvider } from "@/lib/CallContext";
 import { BikeLoader } from "@/components/ui/BikeLoader";
 import { defaultRouteForRole } from "@/lib/notification-routing";
 
@@ -162,7 +163,9 @@ export default function RootLayout() {
         <AuthProvider>
           <NotificationProvider>
             <ThemeProvider>
-              <RootNav />
+              <CallProvider>
+                <RootNav />
+              </CallProvider>
             </ThemeProvider>
           </NotificationProvider>
         </AuthProvider>

@@ -744,3 +744,16 @@ export async function getStaffSession(): Promise<StaffSession | null> {
     return null;
   }
 }
+
+type VoiceAccessTokenResult = { token: string; identity: string };
+
+/** Mints a Twilio Voice Access Token for the current staff user's device. */
+export async function getVoiceAccessToken(
+  platform: "ios" | "android"
+): Promise<VoiceAccessTokenResult> {
+  const { data } = await api.get<VoiceAccessTokenResult>(
+    `/api/voice/token?platform=${platform}`,
+    { role: "staff" }
+  );
+  return data;
+}

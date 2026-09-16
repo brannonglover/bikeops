@@ -51,7 +51,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     userInterfaceStyle: "automatic",
     associatedDomains: ["applinks:bikeops.co", "applinks:*.bikeops.co"],
     infoPlist: {
-      UIBackgroundModes: ["remote-notification", "fetch", "processing"],
+      UIBackgroundModes: ["remote-notification", "fetch", "processing", "audio", "voip"],
       ITSAppUsesNonExemptEncryption: false,
       LSApplicationCategoryType: "public.app-category.utilities",
       LSApplicationQueriesSchemes: ["googlegmail"],
@@ -59,6 +59,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
         "BikeOps uses the camera to take photos of bikes for repair jobs and customer profile pictures, for example when a mechanic documents a bike on a work order.",
       NSPhotoLibraryUsageDescription:
         "BikeOps uses your photo library so you can choose an existing bike, profile photo, or video to attach in chat and on jobs.",
+      NSMicrophoneUsageDescription:
+        "BikeOps needs microphone access so you can talk with customers during in-app calls.",
       BGTaskSchedulerPermittedIdentifiers: [
         IS_DEV
           ? "com.brannonglover.bikeops.app.dev.notifications"

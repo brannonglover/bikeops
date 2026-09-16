@@ -73,6 +73,7 @@ import {
   isVideoMimeType,
 } from "@/components/chat/ChatAttachmentMedia";
 import { customerName, formatTime } from "@/lib/format";
+import { useCall } from "@/lib/CallContext";
 
 function paramToString(v: string | string[] | undefined): string | undefined {
   if (v === undefined) return undefined;
@@ -143,6 +144,7 @@ export default function ConversationScreen() {
   const { theme } = useTheme();
   const router = useRouter();
   const navigation = useNavigation();
+  const { startCall } = useCall();
   const params = useLocalSearchParams<{
     id?: string | string[];
     fromJobId?: string | string[];
@@ -1709,27 +1711,43 @@ export default function ConversationScreen() {
               ? colors.emerald[500]
               : theme.iconMuted;
             const canInvite = !!conversation?.customer?.email;
+            const customerPhone = resolvedConversation?.customer?.phone?.trim();
 
             return (
-              <TouchableOpacity
-                onPress={canInvite ? handleInvitePress : undefined}
-                disabled={!canInvite || sendingInvite}
-                style={{
-                  padding: spacing[2],
-                  opacity: sendingInvite ? 0.5 : 1,
-                }}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                accessibilityRole="button"
-                accessibilityLabel={
-                  hasSmsConsent ? "SMS consent given" : "SMS consent not given"
-                }
-              >
-                <Ionicons
-                  name="chatbubble-ellipses-outline"
-                  size={20}
-                  color={smsIconColor}
-                />
-              </TouchableOpacity>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+                {customerPhone ? (
+                  <TouchableOpacity
+                    onPress={() =>
+                      startCall(customerPhone, customerName(resolvedConversation!.customer))
+                    }
+                    style={{ padding: spacing[2] }}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Call customer"
+                  >
+                    <Ionicons name="call-outline" size={20} color={theme.icon} />
+                  </TouchableOpacity>
+                ) : null}
+                <TouchableOpacity
+                  onPress={canInvite ? handleInvitePress : undefined}
+                  disabled={!canInvite || sendingInvite}
+                  style={{
+                    padding: spacing[2],
+                    opacity: sendingInvite ? 0.5 : 1,
+                  }}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    hasSmsConsent ? "SMS consent given" : "SMS consent not given"
+                  }
+                >
+                  <Ionicons
+                    name="chatbubble-ellipses-outline"
+                    size={20}
+                    color={smsIconColor}
+                  />
+                </TouchableOpacity>
+              </View>
             );
           },
         }}
