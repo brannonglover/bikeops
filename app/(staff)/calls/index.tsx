@@ -49,6 +49,8 @@ export default function CallsScreen() {
   const {
     data: calls = [],
     isLoading,
+    isError,
+    error,
     refetch,
   } = useQuery({
     queryKey: callsQueryKey,
@@ -136,6 +138,19 @@ export default function CallsScreen() {
         <View style={styles.initialLoad}>
           <BikeLoader label="Loading calls…" />
         </View>
+      ) : isError ? (
+        // Distinct from the empty state on purpose: /api/calls 404s when voice
+        // is disabled for the shop, and silently rendering "No calls yet" for
+        // that made a config problem look like an absence of calls.
+        <EmptyState
+          icon="alert-circle-outline"
+          title="Couldn't load calls"
+          message={
+            error instanceof Error && error.message
+              ? error.message
+              : "Retrying automatically."
+          }
+        />
       ) : visible.length === 0 ? (
         <EmptyState
           icon="call-outline"
