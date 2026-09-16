@@ -41,9 +41,25 @@ export async function placeOutboundCall(
  * / TWILIO_ANDROID_PUSH_CREDENTIAL_SID) — the access token carries it, and
  * without one Twilio has no way to wake a backgrounded app.
  */
+/**
+ * Stands up the SDK's own PushKit registry. Required on iOS because this app
+ * has no native PushKit module of its own — without it no device token is
+ * ever delivered and register() rejects with "Failed to initialize PushKit
+ * device token" after its 3s wait. Safe to call repeatedly; no-op on Android.
+ */
+export async function initializePushRegistry(): Promise<void> {
+  if (Platform.OS !== "ios") return;
+  await getVoiceDevice().initializePushRegistry();
+}
+
 export async function registerForIncomingCalls(): Promise<void> {
+  const voice = getVoiceDevice();
+  // Start the registry before minting the token: PushKit delivers the device
+  // token asynchronously, and the token request's round trip gives it a head
+  // start, so register() is less likely to hit its 3s timeout.
+  await initializePushRegistry();
   const { token } = await getVoiceAccessToken(currentPlatform());
-  await getVoiceDevice().register(token);
+  await voice.register(token);
 }
 
 export async function unregisterForIncomingCalls(): Promise<void> {

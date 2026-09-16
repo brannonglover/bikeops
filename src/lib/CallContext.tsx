@@ -3,7 +3,11 @@ import { AppState, Pressable, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useCallManager, type CallState } from "@/hooks/useCallManager";
 import { useAuth } from "@/lib/auth";
-import { registerForIncomingCalls, unregisterForIncomingCalls } from "@/lib/voice";
+import {
+  initializePushRegistry,
+  registerForIncomingCalls,
+  unregisterForIncomingCalls,
+} from "@/lib/voice";
 import { useTheme } from "@/lib/ThemeContext";
 import { formatPhoneNumber } from "@/lib/format";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
@@ -174,6 +178,15 @@ export function CallProvider({ children }: { children: ReactNode }) {
   });
   const registrationRef = useRef(registration);
   registrationRef.current = registration;
+
+  // The SDK wants its PushKit registry stood up at launch, not at first use,
+  // so a VoIP push can wake the app when it isn't running. Independent of the
+  // staff session for that reason.
+  useEffect(() => {
+    void initializePushRegistry().catch((error) => {
+      console.warn("[voice] PushKit registry init failed:", error);
+    });
+  }, []);
 
   // Only staff receive shop calls, and the token endpoint is staff-gated, so
   // registration follows the staff session rather than app launch.
