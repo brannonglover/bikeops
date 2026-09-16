@@ -92,6 +92,16 @@ function StaffTabs() {
         })}
       />
       <Tabs.Screen
+        name="calls"
+        options={{
+          title: "Calls",
+          headerShown: false,
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="call" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="customers"
         options={{
           title: "Customers",

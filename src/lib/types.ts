@@ -303,3 +303,35 @@ export const STAGES: Stage[] = [
 ];
 
 export const DISPLAY_STAGES: Stage[] = STAGES.filter((s) => s !== "CANCELLED");
+
+export type CallDirection = "INBOUND" | "OUTBOUND";
+
+export type CallStatus =
+  | "QUEUED"
+  | "RINGING"
+  | "IN_PROGRESS"
+  | "COMPLETED"
+  | "BUSY"
+  | "FAILED"
+  | "NO_ANSWER"
+  | "CANCELED"
+  | "VOICEMAIL";
+
+/** A row from GET /api/calls — `customer` is null for callers not yet in the database. */
+export interface Call {
+  id: string;
+  customerId: string | null;
+  conversationId: string | null;
+  direction: CallDirection;
+  status: CallStatus;
+  fromNumber: string;
+  toNumber: string;
+  startedAt: string | null;
+  answeredAt: string | null;
+  endedAt: string | null;
+  durationSeconds: number | null;
+  recordingUrl: string | null;
+  recordingStatus: string | null;
+  createdAt: string;
+  customer: Pick<Customer, "id" | "firstName" | "lastName" | "phone"> | null;
+}
