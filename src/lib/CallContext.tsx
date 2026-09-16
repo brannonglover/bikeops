@@ -1,13 +1,18 @@
-import { createContext, useContext, type ReactNode } from "react";
+import { createContext, useContext, useEffect, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { useOutboundCall, type OutboundCallState } from "@/hooks/useOutboundCall";
+import { useCallManager, type CallState } from "@/hooks/useCallManager";
+import { useAuth } from "@/lib/auth";
+import { registerForIncomingCalls, unregisterForIncomingCalls } from "@/lib/voice";
 import { useTheme } from "@/lib/ThemeContext";
+import { formatPhoneNumber } from "@/lib/format";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 
 type CallContextValue = {
-  state: OutboundCallState;
+  state: CallState;
   startCall: (toNumber: string, displayName?: string) => Promise<void>;
+  acceptIncoming: () => Promise<void>;
+  rejectIncoming: () => Promise<void>;
   hangUp: () => Promise<void>;
   toggleMute: () => Promise<void>;
 };
@@ -20,21 +25,34 @@ export function useCall(): CallContextValue {
   return ctx;
 }
 
-const STATUS_LABEL: Record<OutboundCallState["status"], string> = {
+const STATUS_LABEL: Record<CallState["status"], string> = {
   idle: "",
   connecting: "Calling…",
   ringing: "Ringing…",
+  incoming: "Incoming call",
   connected: "On call",
   disconnected: "Call ended",
   failed: "Call failed",
 };
 
-function CallOverlay({ state, hangUp, toggleMute }: CallContextValue) {
-  const { theme } = useTheme();
+function CallOverlay({
+  state,
+  acceptIncoming,
+  rejectIncoming,
+  hangUp,
+  toggleMute,
+}: CallContextValue) {
+  useTheme();
 
   if (state.status === "idle") return null;
 
-  const isActive = state.status === "connecting" || state.status === "ringing" || state.status === "connected";
+  const isIncoming = state.status === "incoming";
+  const isActive =
+    state.status === "connecting" || state.status === "ringing" || state.status === "connected";
+
+  // Unknown callers have no name — the number is the only identity we have.
+  const title =
+    state.displayName ?? (state.number ? formatPhoneNumber(state.number) : "Unknown caller");
 
   return (
     <View
@@ -43,10 +61,10 @@ function CallOverlay({ state, hangUp, toggleMute }: CallContextValue) {
         top: 0,
         left: 0,
         right: 0,
-        paddingTop: spacing[10] ?? 40,
+        paddingTop: spacing[10],
         paddingBottom: spacing[3],
         paddingHorizontal: spacing[4],
-        backgroundColor: colors.emerald[600],
+        backgroundColor: isIncoming ? colors.slate[700] : colors.emerald[600],
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
@@ -57,15 +75,45 @@ function CallOverlay({ state, hangUp, toggleMute }: CallContextValue) {
         <Text style={{ color: colors.white, fontWeight: "600", ...fontSize.sm }}>
           {STATUS_LABEL[state.status]}
         </Text>
-        {state.displayName ? (
-          <Text style={{ color: colors.emerald[50], ...fontSize.xs }}>{state.displayName}</Text>
-        ) : null}
+        <Text style={{ color: colors.emerald[50], ...fontSize.xs }}>{title}</Text>
         {state.error ? (
           <Text style={{ color: colors.emerald[50], ...fontSize.xs }}>{state.error}</Text>
         ) : null}
       </View>
 
-      {isActive ? (
+      {isIncoming ? (
+        <View style={{ flexDirection: "row", gap: spacing[2] }}>
+          <Pressable
+            onPress={rejectIncoming}
+            style={{
+              padding: spacing[2],
+              borderRadius: borderRadius.full,
+              backgroundColor: colors.red[600],
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Decline call"
+          >
+            <Ionicons
+              name="call"
+              size={20}
+              color={colors.white}
+              style={{ transform: [{ rotate: "135deg" }] }}
+            />
+          </Pressable>
+          <Pressable
+            onPress={acceptIncoming}
+            style={{
+              padding: spacing[2],
+              borderRadius: borderRadius.full,
+              backgroundColor: colors.emerald[600],
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Answer call"
+          >
+            <Ionicons name="call" size={20} color={colors.white} />
+          </Pressable>
+        </View>
+      ) : isActive ? (
         <View style={{ flexDirection: "row", gap: spacing[2] }}>
           <Pressable
             onPress={toggleMute}
@@ -93,7 +141,12 @@ function CallOverlay({ state, hangUp, toggleMute }: CallContextValue) {
             accessibilityRole="button"
             accessibilityLabel="Hang up"
           >
-            <Ionicons name="call" size={20} color={colors.white} style={{ transform: [{ rotate: "135deg" }] }} />
+            <Ionicons
+              name="call"
+              size={20}
+              color={colors.white}
+              style={{ transform: [{ rotate: "135deg" }] }}
+            />
           </Pressable>
         </View>
       ) : null}
@@ -102,8 +155,38 @@ function CallOverlay({ state, hangUp, toggleMute }: CallContextValue) {
 }
 
 export function CallProvider({ children }: { children: ReactNode }) {
-  const { state, startCall, hangUp, toggleMute } = useOutboundCall();
-  const value: CallContextValue = { state, startCall, hangUp, toggleMute };
+  const { state, startCall, acceptIncoming, rejectIncoming, hangUp, toggleMute } =
+    useCallManager();
+  const { staffUser } = useAuth();
+
+  // Only staff receive shop calls, and the token endpoint is staff-gated, so
+  // registration follows the staff session rather than app launch.
+  useEffect(() => {
+    if (!staffUser) return;
+    let cancelled = false;
+
+    void registerForIncomingCalls().catch((error) => {
+      if (!cancelled) {
+        console.warn("[voice] incoming call registration failed:", error);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      void unregisterForIncomingCalls().catch(() => {
+        // Logout/teardown — nothing useful to do if Twilio is already gone.
+      });
+    };
+  }, [staffUser]);
+
+  const value: CallContextValue = {
+    state,
+    startCall,
+    acceptIncoming,
+    rejectIncoming,
+    hangUp,
+    toggleMute,
+  };
 
   return (
     <CallContext.Provider value={value}>

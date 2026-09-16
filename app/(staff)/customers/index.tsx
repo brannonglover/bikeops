@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import {
   View,
   Text,
@@ -10,7 +10,7 @@ import {
   Alert,
   Modal,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { useRouter, useLocalSearchParams } from "expo-router";
 import {
   useQuery,
   useMutation,
@@ -34,6 +34,7 @@ export default function CustomersScreen() {
   const layout = useResponsiveLayout();
   const router = useRouter();
   const queryClient = useQueryClient();
+  const params = useLocalSearchParams<{ newPhone?: string | string[] }>();
   const [search, setSearch] = useState("");
   const [showNewModal, setShowNewModal] = useState(false);
   const [firstName, setFirstName] = useState("");
@@ -41,6 +42,18 @@ export default function CustomersScreen() {
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [checkingDuplicate, setCheckingDuplicate] = useState(false);
+  const prefilledPhoneRef = useRef(false);
+
+  // Deep link from the call log: open the new-customer form with the caller's
+  // number already filled in, so an unknown caller is one step from a record.
+  useEffect(() => {
+    if (prefilledPhoneRef.current) return;
+    const raw = Array.isArray(params.newPhone) ? params.newPhone[0] : params.newPhone;
+    if (!raw) return;
+    prefilledPhoneRef.current = true;
+    setPhone(formatPhoneNumber(raw));
+    setShowNewModal(true);
+  }, [params.newPhone]);
 
   const {
     data: customers = [],

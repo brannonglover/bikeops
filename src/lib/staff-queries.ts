@@ -5,10 +5,11 @@ import {
   staffMessagesPath,
   type ChatMessagesPage,
 } from "@/lib/chat-messages";
-import type { Conversation, Job } from "@/lib/types";
+import type { Call, Conversation, Job } from "@/lib/types";
 
 export const jobsQueryKey = ["jobs"] as const;
 export const conversationsQueryKey = ["conversations"] as const;
+export const callsQueryKey = ["calls"] as const;
 
 export async function fetchStaffJobs(): Promise<Job[]> {
   // Board payload is what the web kanban uses — far lighter than full job includes.
@@ -18,6 +19,15 @@ export async function fetchStaffJobs(): Promise<Job[]> {
 
 export async function fetchStaffConversations(): Promise<Conversation[]> {
   const { data } = await api.get<Conversation[]>("/api/conversations");
+  return data;
+}
+
+/**
+ * Shop-wide call history, newest first. Callers with no customer record yet
+ * come back with `customer: null` — only `fromNumber` identifies them.
+ */
+export async function fetchStaffCalls(): Promise<Call[]> {
+  const { data } = await api.get<Call[]>("/api/calls");
   return data;
 }
 
