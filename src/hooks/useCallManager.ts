@@ -5,7 +5,9 @@ import {
   listAudioDevices,
   onAudioDevicesUpdated,
   placeOutboundCall,
+  releaseStrayCalls,
   selectAudioDevice,
+  withConnectTimeout,
 } from "@/lib/voice";
 import { declineCall } from "@/lib/api";
 
@@ -36,6 +38,13 @@ export type CallState = {
 };
 
 const DISMISS_DELAY_MS = 3_000;
+
+/**
+ * How long to wait for the SDK to hand back a Call before giving up. The
+ * native connect() can hang forever when CallKit refuses the call, so this is
+ * the only thing standing between a refused call and a permanently stuck UI.
+ */
+const CONNECT_TIMEOUT_MS = 12_000;
 
 const IDLE_STATE: CallState = {
   status: "idle",
@@ -109,8 +118,14 @@ export function useCallManager() {
       });
 
       try {
-        attachCallListeners(await placeOutboundCall(toNumber, displayName));
+        // Clear anything a previous failed attempt left holding CallKit's
+        // single call slot, or this dial is refused before it starts.
+        await releaseStrayCalls();
+        attachCallListeners(
+          await withConnectTimeout(placeOutboundCall(toNumber, displayName), CONNECT_TIMEOUT_MS)
+        );
       } catch (error) {
+        await releaseStrayCalls();
         setState((prev) => ({
           ...prev,
           status: "failed",
@@ -160,10 +175,16 @@ export function useCallManager() {
     if (!callId) return;
     setState((prev) => ({ ...prev, status: "connecting" }));
     try {
+      await releaseStrayCalls();
       attachCallListeners(
-        await answerQueuedCall(callId, state.displayName ?? undefined)
+        await withConnectTimeout(
+          answerQueuedCall(callId, state.displayName ?? undefined),
+          CONNECT_TIMEOUT_MS
+        )
       );
     } catch (error) {
+      // Leaving the refused call in place would block the next answer too.
+      await releaseStrayCalls();
       setState((prev) => ({
         ...prev,
         status: "failed",
@@ -193,8 +214,21 @@ export function useCallManager() {
     return () => clearTimeout(timer);
   }, [state.status]);
 
+  /**
+   * End always clears the screen, even when no Call object was ever handed
+   * back. Without that, a connect() that never settled left the user staring
+   * at "Calling…" with an inert button and no way out but force-quitting.
+   */
   const hangUp = useCallback(async () => {
-    await callRef.current?.disconnect();
+    const call = callRef.current;
+    callRef.current = null;
+    setState(IDLE_STATE);
+    try {
+      if (call) await call.disconnect();
+    } finally {
+      // Covers the wedged case, where CallKit holds a call the JS never saw.
+      await releaseStrayCalls();
+    }
   }, []);
 
   const toggleMute = useCallback(async () => {

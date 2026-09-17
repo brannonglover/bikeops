@@ -13,6 +13,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useCallManager, type CallState } from "@/hooks/useCallManager";
 import { useAuth } from "@/lib/auth";
 import { normalizeNotificationData } from "@/lib/notification-routing";
+import { initializePushRegistry } from "@/lib/voice";
 import { useTheme } from "@/lib/ThemeContext";
 import { formatPhoneNumber } from "@/lib/format";
 import { CallScreen } from "@/components/calls/CallScreen";
@@ -243,6 +244,15 @@ export function CallProvider({ children }: { children: ReactNode }) {
 
   const minimize = useCallback(() => setMinimized(true), []);
   const expand = useCallback(() => setMinimized(false), []);
+
+  // Required for the Twilio SDK to place calls at all on iOS — see
+  // initializePushRegistry. Not tied to the staff session: it has to run at
+  // launch, before anyone tries to dial or answer.
+  useEffect(() => {
+    void initializePushRegistry().catch((error) => {
+      console.warn("[voice] PushKit registry init failed:", error);
+    });
+  }, []);
 
   /**
    * Notification permission is what decides whether calls ring on this device

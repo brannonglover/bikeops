@@ -16,6 +16,20 @@ function currentPlatform(): "ios" | "android" {
 }
 
 /**
+ * Stands up the SDK's PushKit registry at launch.
+ *
+ * Nothing registers with Twilio for push any more, so no VoIP push will ever
+ * arrive and CallKit will never show an incoming call. This is kept purely
+ * because the Twilio iOS SDK needs it during startup: without it the SDK's
+ * CallKit path could not start calls at all, and every connect() — answering
+ * and plain outbound dialing alike — hung with no call ever reaching Twilio.
+ */
+export async function initializePushRegistry(): Promise<void> {
+  if (Platform.OS !== "ios") return;
+  await getVoiceDevice().initializePushRegistry();
+}
+
+/**
  * Places an outbound call to a phone number via the shop's Twilio number.
  * The custom `To` param is read by the /outgoing TwiML webhook to dial the
  * PSTN leg — see bikeopsco's src/lib/voice.ts for the server-side half.
@@ -85,5 +99,54 @@ export async function answerQueuedCall(
   return getVoiceDevice().connect(token, {
     params: { Mode: "answer", CallId: callId },
     contactHandle: displayName,
+  });
+}
+
+/**
+ * Disconnects any call the SDK still knows about.
+ *
+ * CallKit is configured by the SDK with maximumCallGroups = 1 and
+ * maximumCallsPerCallGroup = 1, so a single call left half-open blocks every
+ * later one: CXStartCallAction is refused, and the SDK's connect() then
+ * neither resolves nor rejects (it only logs), wedging the UI on "Calling…"
+ * with no Call object to hang up. Sweeping before dialing and after a failure
+ * is what keeps one bad attempt from poisoning all the rest.
+ */
+export async function releaseStrayCalls(): Promise<void> {
+  try {
+    const calls = await getVoiceDevice().getCalls();
+    await Promise.all(
+      Array.from(calls.values()).map((call) =>
+        call.disconnect().catch(() => {
+          // Already gone — nothing to release.
+        })
+      )
+    );
+  } catch {
+    // Best-effort cleanup; never block placing or ending a call.
+  }
+}
+
+/**
+ * Rejects if the SDK doesn't settle in time. connect() can hang indefinitely
+ * when CallKit refuses the call, and an unbounded await there is what left the
+ * call screen stuck with a dead End button.
+ */
+export function withConnectTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error("The call couldn't be connected. Please try again.")),
+      ms
+    );
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
   });
 }

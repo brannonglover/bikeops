@@ -40,6 +40,7 @@ export function VoicemailGreetingRecorder() {
   const recorderState = useAudioRecorderState(recorder, 250);
 
   const [pendingUri, setPendingUri] = useState<string | null>(null);
+  const [pendingSeconds, setPendingSeconds] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -57,9 +58,13 @@ export function VoicemailGreetingRecorder() {
   const elapsed = recorderState.durationMillis / 1000;
 
   const stopRecording = useCallback(async () => {
+    // Read the length before stopping: the recorder resets its status on stop,
+    // so anything polled from recorderState afterwards reads back as zero.
+    const captured = recorder.currentTime || recorderState.durationMillis / 1000;
     await recorder.stop();
+    setPendingSeconds(captured);
     setPendingUri(recorder.uri ?? null);
-  }, [recorder]);
+  }, [recorder, recorderState.durationMillis]);
 
   // Hard cap so a forgotten recording can't run past what a caller will sit
   // through — or past what the upload limit allows.
@@ -83,6 +88,7 @@ export function VoicemailGreetingRecorder() {
       await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
 
       setPendingUri(null);
+      setPendingSeconds(0);
       await recorder.prepareToRecordAsync();
       recorder.record();
     } catch {
@@ -100,7 +106,7 @@ export function VoicemailGreetingRecorder() {
 
   const handleSave = async () => {
     if (!pendingUri) return;
-    if (elapsed < MIN_GREETING_SECONDS) {
+    if (pendingSeconds < MIN_GREETING_SECONDS) {
       setError("That recording is too short to use as a greeting.");
       return;
     }
@@ -111,6 +117,7 @@ export function VoicemailGreetingRecorder() {
       await uploadVoicemailGreeting(pendingUri);
       await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
       setPendingUri(null);
+      setPendingSeconds(0);
       await queryClient.invalidateQueries({ queryKey: greetingQueryKey });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't save the greeting.");
@@ -165,7 +172,7 @@ export function VoicemailGreetingRecorder() {
         <>
           <Text style={[styles.body, { color: theme.textSecondary }]}>
             {pendingUri
-              ? "Listen back, then save it — or record again to replace this take."
+              ? `Listen back (${formatGreetingClock(pendingSeconds)}), then save it — or record again to replace this take.`
               : savedUrl
                 ? "Callers hear your recorded greeting before the beep."
                 : "Callers hear a default message. Record one to use your own voice."}

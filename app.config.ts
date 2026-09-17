@@ -54,11 +54,14 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     userInterfaceStyle: "automatic",
     associatedDomains: ["applinks:bikeops.co", "applinks:*.bikeops.co"],
     infoPlist: {
-      // No "voip" mode: inbound calls ring through ordinary push notifications
-      // rather than PushKit, so the app never receives a VoIP push. Declaring
-      // it unused invites App Review questions. "audio" stays — it keeps call
-      // audio alive when the app is backgrounded mid-call.
-      UIBackgroundModes: ["remote-notification", "fetch", "processing", "audio"],
+      // "voip" is required even though inbound calls now ring via ordinary
+      // push notifications. Removing it broke the Twilio SDK's ability to
+      // start ANY call — outbound dialing included — because its iOS CallKit
+      // path depends on the VoIP background mode being declared. It does not
+      // by itself bring back the native incoming-call screen: that needs
+      // voice.register(), which this app no longer calls, so Twilio never
+      // sends a VoIP push and CallKit never receives an incoming call.
+      UIBackgroundModes: ["remote-notification", "fetch", "processing", "audio", "voip"],
       ITSAppUsesNonExemptEncryption: false,
       LSApplicationCategoryType: "public.app-category.utilities",
       LSApplicationQueriesSchemes: ["googlegmail"],

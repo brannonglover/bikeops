@@ -8,9 +8,24 @@ export type CallOutcome = "taken" | "missed" | "outgoing" | "in-progress";
  * "taken" — an inbound call that rang every staff device and timed out to
  * voicemail never gets one, which is exactly the missed case.
  */
+/**
+ * Past this, a call still marked live is a record that never got closed out,
+ * not a call anyone is still on. Generous enough to cover a long conversation.
+ */
+const MAX_LIVE_CALL_MS = 60 * 60_000;
+
+function looksStale(call: Call): boolean {
+  const started = Date.parse(call.startedAt ?? call.createdAt);
+  return Number.isFinite(started) && Date.now() - started > MAX_LIVE_CALL_MS;
+}
+
 export function callOutcome(call: Call): CallOutcome {
   if (call.status === "RINGING" || call.status === "QUEUED" || call.status === "IN_PROGRESS") {
-    return "in-progress";
+    // A webhook that never arrived leaves the row live forever; showing an
+    // hours-old call as "In progress" is worse than reading it as it ended.
+    if (!looksStale(call)) return "in-progress";
+    if (call.direction === "OUTBOUND") return "outgoing";
+    return call.answeredAt ? "taken" : "missed";
   }
   if (call.direction === "OUTBOUND") return "outgoing";
   return call.answeredAt ? "taken" : "missed";
