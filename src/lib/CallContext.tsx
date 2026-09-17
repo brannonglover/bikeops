@@ -180,33 +180,37 @@ function CallBanner({
 
 /**
  * Pulls the call details out of a notification, or null if it isn't one.
- * `receivedAt` guards against a stale tap: the caller behind an old
- * notification has long since gone to voicemail.
  */
 function incomingCallFromNotification(
-  notification: Notifications.Notification,
-  now: number
+  notification: Notifications.Notification
 ): { callId: string; number: string; displayName: string | null } | null {
   const data = normalizeNotificationData(notification.request.content.data);
   if (!data || data.type !== "incoming_call") return null;
   if (typeof data.callId !== "string" || typeof data.from !== "string") return null;
-
-  // date is typed Date | number across platforms; an unreadable one fails
-  // open, since dropping a live call is worse than ringing for a dead one.
-  const rawDate: unknown = notification.date;
-  const receivedAt =
-    typeof rawDate === "number"
-      ? rawDate
-      : rawDate instanceof Date
-        ? rawDate.getTime()
-        : null;
-  if (receivedAt !== null && now - receivedAt > CALL_NOTIFICATION_TTL_MS) return null;
 
   return {
     callId: data.callId,
     number: data.from,
     displayName: typeof data.customerName === "string" ? data.customerName : null,
   };
+}
+
+/**
+ * Age of a notification in milliseconds, or null when it can't be determined.
+ *
+ * `date` is not one unit across platforms: iOS serializes
+ * timeIntervalSince1970 (SECONDS), Android getTime() (milliseconds). Comparing
+ * the iOS value against Date.now() directly makes every notification look
+ * decades old — which silently swallowed every inbound call until this was
+ * normalized. Anything below the year-2001-in-milliseconds mark has to be
+ * seconds, since as milliseconds it would predate the product by decades.
+ */
+function notificationAgeMs(notification: Notifications.Notification): number | null {
+  const raw: unknown = notification.date;
+  const value = raw instanceof Date ? raw.getTime() : typeof raw === "number" ? raw : null;
+  if (value === null || !Number.isFinite(value) || value <= 0) return null;
+  const millis = value < 1e12 ? value * 1000 : value;
+  return Date.now() - millis;
 }
 
 export function CallProvider({ children }: { children: ReactNode }) {
@@ -293,11 +297,12 @@ export function CallProvider({ children }: { children: ReactNode }) {
     if (!staffUser) return;
 
     const present = (notification: Notifications.Notification) => {
-      const incoming = incomingCallFromNotification(notification, Date.now());
+      const incoming = incomingCallFromNotification(notification);
       if (incoming) presentIncomingCall(incoming);
     };
 
-    // Arrived while the app is open — ring immediately instead of showing a
+    // Live events need no freshness check — they are happening right now.
+    // Arrived while the app is open: ring immediately rather than show a
     // banner the user then has to tap.
     const received = Notifications.addNotificationReceivedListener(present);
     // Tapped from the background or lock screen.
@@ -305,9 +310,15 @@ export function CallProvider({ children }: { children: ReactNode }) {
       present(response.notification)
     );
 
-    // Cold start: the tap that launched the app has already been delivered.
+    // Cold start replays the tap that launched the app — and keeps replaying it
+    // on every later launch until something clears it, so this is the one path
+    // that must not ring for a call that is long over. An unreadable age fails
+    // open: a spurious ring is cheaper than a missed customer.
     void Notifications.getLastNotificationResponseAsync().then((response) => {
-      if (response) present(response.notification);
+      if (!response) return;
+      const age = notificationAgeMs(response.notification);
+      if (age !== null && age > CALL_NOTIFICATION_TTL_MS) return;
+      present(response.notification);
     });
 
     return () => {
