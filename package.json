@@ -16,6 +16,7 @@
     "@tanstack/react-query": "^5.96.1",
     "@twilio/voice-react-native-sdk": "^1.7.0",
     "expo": "~54.0.33",
+    "expo-asset": "~12.0.12",
     "expo-audio": "~1.1.1",
     "expo-build-properties": "~1.0.10",
     "expo-clipboard": "~8.0.8",
@@ -53,7 +54,8 @@
     "typescript": "~5.9.2"
   },
   "overrides": {
-    "react-dom": "19.1.0"
+    "react-dom": "19.1.0",
+    "expo-asset": "~12.0.12"
   },
   "engines": {
     "node": ">=20.0.0"
