@@ -6,7 +6,6 @@ import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { Card } from "@/components/ui/Card";
 import { AppearancePicker } from "@/components/ui/AppearancePicker";
-import { VoicemailGreetingRecorder } from "@/components/calls/VoicemailGreetingRecorder";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 
 export default function SettingsScreen() {
@@ -67,8 +66,6 @@ export default function SettingsScreen() {
       ) : null}
 
       <AppearancePicker />
-
-      <VoicemailGreetingRecorder />
 
       <TouchableOpacity onPress={() => router.push("/(staff)/settings/subscription")}>
         <Card

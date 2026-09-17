@@ -5,13 +5,15 @@ import {
   useAudioRecorder,
   useAudioRecorderState,
   useAudioPlayer,
+  useAudioPlayerStatus,
   requestRecordingPermissionsAsync,
   setAudioModeAsync,
 } from "expo-audio";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
-import { resolveUrl } from "@/lib/api";
+import { ApiError, resolveUrl } from "@/lib/api";
+import { EmptyState } from "@/components/ui/EmptyState";
 import {
   GREETING_RECORDING_OPTIONS,
   MAX_GREETING_SECONDS,
@@ -48,6 +50,7 @@ export function VoicemailGreetingRecorder() {
     data: savedUrl,
     isLoading,
     isError,
+    error: loadError,
   } = useQuery({
     queryKey: greetingQueryKey,
     queryFn: fetchVoicemailGreeting,
@@ -148,13 +151,33 @@ export function VoicemailGreetingRecorder() {
     );
   };
 
-  // The endpoint 404s when voice is disabled for the shop, which is the app's
-  // only signal for it — no greeting UI belongs on a shop without phone service.
-  if (isError) return null;
+  // A 404 means voice is disabled for the shop — a real answer, distinct from
+  // a request that simply failed. Collapsing the two would make a dropped
+  // connection look like a deliberately unavailable feature.
+  if (isError) {
+    const voiceDisabled = loadError instanceof ApiError && loadError.status === 404;
+    return voiceDisabled ? (
+      <EmptyState
+        icon="call-outline"
+        title="Phone service is off"
+        message="Turn on voice for your shop to record a greeting for callers."
+      />
+    ) : (
+      <EmptyState
+        icon="alert-circle-outline"
+        title="Couldn't load your greeting"
+        message={
+          loadError instanceof Error && loadError.message
+            ? loadError.message
+            : "Check your connection and try again."
+        }
+      />
+    );
+  }
 
   if (!canRecordGreeting) {
     return (
-      <Section title="Voicemail greeting">
+      <Section>
         <Text style={[styles.body, { color: theme.textSecondary }]}>
           Recording a greeting isn&apos;t supported on Android yet — its recorder
           can&apos;t produce a format Twilio is able to play. Callers hear the
@@ -165,7 +188,7 @@ export function VoicemailGreetingRecorder() {
   }
 
   return (
-    <Section title="Voicemail greeting">
+    <Section>
       {isLoading ? (
         <ActivityIndicator size="small" color={theme.textMuted} />
       ) : (
@@ -257,7 +280,13 @@ export function VoicemailGreetingRecorder() {
 /** Plays the unsaved take straight off the local file. */
 function PreviewPlayer({ uri }: { uri: string }) {
   const player = useAudioPlayer({ uri });
-  return <PlayButton onPress={() => (player.playing ? player.pause() : player.play())} label="Play back" />;
+  const status = useAudioPlayerStatus(player);
+  return (
+    <PlayButton
+      onPress={() => (player.playing ? player.pause() : player.play())}
+      label={status.playing ? "Pause" : "Play back"}
+    />
+  );
 }
 
 /**
@@ -268,30 +297,62 @@ function PreviewPlayer({ uri }: { uri: string }) {
  */
 function SavedGreetingPlayer({ url }: { url: string }) {
   const player = useAudioPlayer({ uri: resolveUrl(url) });
+  const status = useAudioPlayerStatus(player);
+
+  // Recording leaves the session in play-and-record, which on iOS routes
+  // output to the earpiece — playback then sounds like nothing at all unless
+  // the phone is held to your ear.
+  useEffect(() => {
+    void setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
+  }, []);
+
+  const ready = status.isLoaded && !status.isBuffering;
+
   return (
     <PlayButton
       onPress={() => (player.playing ? player.pause() : player.play())}
-      label="Play current"
+      label={
+        status.playing ? "Pause" : ready ? "Play current" : "Loading current…"
+      }
+      disabled={!ready}
     />
   );
 }
 
-function PlayButton({ onPress, label }: { onPress: () => void; label: string }) {
+function PlayButton({
+  onPress,
+  label,
+  disabled = false,
+}: {
+  onPress: () => void;
+  label: string;
+  disabled?: boolean;
+}) {
   const { theme } = useTheme();
+  const isPause = label === "Pause";
   return (
     <TouchableOpacity
       onPress={onPress}
-      style={[styles.playRow, { borderColor: theme.surfaceBorder }]}
+      disabled={disabled}
+      style={[
+        styles.playRow,
+        { borderColor: theme.surfaceBorder, opacity: disabled ? 0.5 : 1 },
+      ]}
       accessibilityRole="button"
       accessibilityLabel={label}
+      accessibilityState={{ disabled }}
     >
-      <Ionicons name="play" size={14} color={colors.emerald[600]} />
+      <Ionicons
+        name={isPause ? "pause" : "play"}
+        size={14}
+        color={disabled ? theme.textMuted : colors.emerald[600]}
+      />
       <Text style={[styles.playLabel, { color: theme.textSecondary }]}>{label}</Text>
     </TouchableOpacity>
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ children }: { children: React.ReactNode }) {
   const { theme } = useTheme();
   return (
     <View
@@ -300,7 +361,6 @@ function Section({ title, children }: { title: string; children: React.ReactNode
         { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
       ]}
     >
-      <Text style={[styles.title, { color: theme.text }]}>{title}</Text>
       {children}
     </View>
   );
@@ -313,7 +373,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     gap: spacing[3],
   },
-  title: { ...fontSize.base, fontWeight: "600" },
   body: { ...fontSize.sm, lineHeight: 20 },
   buttonRow: { flexDirection: "row", gap: spacing[2] },
   button: {

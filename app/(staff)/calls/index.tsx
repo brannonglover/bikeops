@@ -153,6 +153,22 @@ export default function CallsScreen() {
           );
         })}
 
+        <View style={styles.toolbarSpacer} />
+
+        {/* What callers hear belongs next to the call log, not buried in
+            app settings. */}
+        <TouchableOpacity
+          onPress={() => router.push("/(staff)/calls/greeting")}
+          style={[styles.greetingButton, { borderColor: theme.surfaceBorder }]}
+          accessibilityRole="button"
+          accessibilityLabel="Voicemail greeting"
+        >
+          <Ionicons name="mic-outline" size={14} color={theme.textSecondary} />
+          <Text style={[styles.greetingButtonText, { color: theme.textSecondary }]}>
+            Greeting
+          </Text>
+        </TouchableOpacity>
+
         {/* The keypad is the only way to start a call to a number that isn't
             already in the log. */}
         <TouchableOpacity
@@ -435,6 +451,20 @@ const styles = StyleSheet.create({
   filterText: {
     ...fontSize.sm,
     fontWeight: "500",
+  },
+  toolbarSpacer: { flex: 1 },
+  greetingButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing[1.5],
+    paddingVertical: spacing[1.5],
+    paddingHorizontal: spacing[3],
+    borderRadius: borderRadius.full,
+    borderWidth: 1,
+  },
+  greetingButtonText: {
+    ...fontSize.xs,
+    fontWeight: "600",
   },
   listContent: { paddingBottom: spacing[12] },
   tabletConstrained: {
