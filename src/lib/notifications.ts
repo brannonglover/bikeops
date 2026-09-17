@@ -5,12 +5,19 @@ import { Platform } from "react-native";
 import { api, type AuthRole } from "./api";
 
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowBanner: true,
-    shouldShowList: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-  }),
+  handleNotification: async (notification) => {
+    // An incoming call already raises the full call screen when the app is
+    // open, so its banner would just cover the answer button.
+    const isCall =
+      (notification.request.content.data as { type?: unknown } | null)?.type ===
+      "incoming_call";
+    return {
+      shouldShowBanner: !isCall,
+      shouldShowList: !isCall,
+      shouldPlaySound: true,
+      shouldSetBadge: !isCall,
+    };
+  },
 });
 
 export type NotificationType =
@@ -18,13 +25,23 @@ export type NotificationType =
   | "job_update"
   | "new_message"
   | "booking_request"
-  | "staff_booking_digest";
+  | "staff_booking_digest"
+  // The ring for an inbound call. This app does not use PushKit, so an
+  // ordinary notification is what wakes the device for a call — see
+  // lib/voice.ts and the CallScreen.
+  | "incoming_call";
 
 export interface NotificationData {
   type: NotificationType;
   jobId?: string;
   conversationId?: string;
   messageId?: string;
+  /** incoming_call: server-side Call id, used to answer or decline. */
+  callId?: string;
+  /** incoming_call: caller's number in E.164. */
+  from?: string;
+  /** incoming_call: customer name when the number is a known customer. */
+  customerName?: string | null;
   todayJobIds?: string[] | string;
   tomorrowJobIds?: string[] | string;
   [key: string]: unknown;

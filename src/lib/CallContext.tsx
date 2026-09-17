@@ -1,15 +1,21 @@
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { AppState, Pressable, Text, View } from "react-native";
+import * as Notifications from "expo-notifications";
 import { Ionicons } from "@expo/vector-icons";
 import { useCallManager, type CallState } from "@/hooks/useCallManager";
 import { useAuth } from "@/lib/auth";
-import {
-  initializePushRegistry,
-  registerForIncomingCalls,
-  unregisterForIncomingCalls,
-} from "@/lib/voice";
+import { normalizeNotificationData } from "@/lib/notification-routing";
 import { useTheme } from "@/lib/ThemeContext";
 import { formatPhoneNumber } from "@/lib/format";
+import { CallScreen } from "@/components/calls/CallScreen";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 
 export type RegistrationState = {
@@ -17,15 +23,28 @@ export type RegistrationState = {
   error: string | null;
 };
 
+/**
+ * A notification older than this is from a call that has already timed out to
+ * voicemail, so tapping it should not raise a ringing screen for a caller who
+ * is no longer there. Comfortably longer than the server's ring window.
+ */
+const CALL_NOTIFICATION_TTL_MS = 45_000;
+
 type CallContextValue = {
   state: CallState;
-  /** Whether this device can actually receive inbound calls. */
+  /**
+   * Whether this device can actually receive inbound calls. Inbound calls ring
+   * via ordinary push notifications, so notification permission is the whole
+   * requirement — no Twilio-side registration is involved.
+   */
   registration: RegistrationState;
   startCall: (toNumber: string, displayName?: string) => Promise<void>;
   acceptIncoming: () => Promise<void>;
   rejectIncoming: () => Promise<void>;
   hangUp: () => Promise<void>;
   toggleMute: () => Promise<void>;
+  toggleSpeaker: () => Promise<void>;
+  sendDigits: (digits: string) => Promise<void>;
 };
 
 const CallContext = createContext<CallContextValue | null>(null);
@@ -42,31 +61,39 @@ const STATUS_LABEL: Record<CallState["status"], string> = {
   ringing: "Ringing…",
   incoming: "Incoming call",
   connected: "On call",
+  reconnecting: "Reconnecting…",
   disconnected: "Call ended",
   failed: "Call failed",
 };
 
-function CallOverlay({
+/**
+ * The call reduced to a status strip, for when staff minimize the call screen
+ * to look something up mid-call. Tapping it brings the full screen back.
+ */
+function CallBanner({
   state,
   acceptIncoming,
   rejectIncoming,
   hangUp,
-  toggleMute,
-}: CallContextValue) {
+  onExpand,
+}: {
+  state: CallState;
+  acceptIncoming: () => Promise<void>;
+  rejectIncoming: () => Promise<void>;
+  hangUp: () => Promise<void>;
+  onExpand: () => void;
+}) {
   useTheme();
 
   if (state.status === "idle") return null;
 
   const isIncoming = state.status === "incoming";
-  const isActive =
-    state.status === "connecting" || state.status === "ringing" || state.status === "connected";
-
-  // Unknown callers have no name — the number is the only identity we have.
   const title =
     state.displayName ?? (state.number ? formatPhoneNumber(state.number) : "Unknown caller");
 
   return (
-    <View
+    <Pressable
+      onPress={onExpand}
       style={{
         position: "absolute",
         top: 0,
@@ -81,6 +108,8 @@ function CallOverlay({
         justifyContent: "space-between",
         zIndex: 1000,
       }}
+      accessibilityRole="button"
+      accessibilityLabel="Return to call"
     >
       <View style={{ flex: 1 }}>
         <Text style={{ color: colors.white, fontWeight: "600", ...fontSize.sm }}>
@@ -92,10 +121,12 @@ function CallOverlay({
         ) : null}
       </View>
 
+      {/* A minimized call that is still ringing needs answer/decline here —
+          hangUp only disconnects an established call, so it would be inert. */}
       {isIncoming ? (
         <View style={{ flexDirection: "row", gap: spacing[2] }}>
           <Pressable
-            onPress={rejectIncoming}
+            onPress={() => void rejectIncoming()}
             style={{
               padding: spacing[2],
               borderRadius: borderRadius.full,
@@ -112,7 +143,7 @@ function CallOverlay({
             />
           </Pressable>
           <Pressable
-            onPress={acceptIncoming}
+            onPress={() => void acceptIncoming()}
             style={{
               padding: spacing[2],
               borderRadius: borderRadius.full,
@@ -124,76 +155,96 @@ function CallOverlay({
             <Ionicons name="call" size={20} color={colors.white} />
           </Pressable>
         </View>
-      ) : isActive ? (
-        <View style={{ flexDirection: "row", gap: spacing[2] }}>
-          <Pressable
-            onPress={toggleMute}
-            style={{
-              padding: spacing[2],
-              borderRadius: borderRadius.full,
-              backgroundColor: state.isMuted ? colors.white : "transparent",
-            }}
-            accessibilityRole="button"
-            accessibilityLabel={state.isMuted ? "Unmute" : "Mute"}
-          >
-            <Ionicons
-              name={state.isMuted ? "mic-off" : "mic"}
-              size={20}
-              color={state.isMuted ? colors.emerald[600] : colors.white}
-            />
-          </Pressable>
-          <Pressable
-            onPress={hangUp}
-            style={{
-              padding: spacing[2],
-              borderRadius: borderRadius.full,
-              backgroundColor: colors.red[600],
-            }}
-            accessibilityRole="button"
-            accessibilityLabel="Hang up"
-          >
-            <Ionicons
-              name="call"
-              size={20}
-              color={colors.white}
-              style={{ transform: [{ rotate: "135deg" }] }}
-            />
-          </Pressable>
-        </View>
-      ) : null}
-    </View>
+      ) : (
+        <Pressable
+          onPress={() => void hangUp()}
+          style={{
+            padding: spacing[2],
+            borderRadius: borderRadius.full,
+            backgroundColor: colors.red[600],
+          }}
+          accessibilityRole="button"
+          accessibilityLabel="Hang up"
+        >
+          <Ionicons
+            name="call"
+            size={20}
+            color={colors.white}
+            style={{ transform: [{ rotate: "135deg" }] }}
+          />
+        </Pressable>
+      )}
+    </Pressable>
   );
 }
 
-const MAX_REGISTER_ATTEMPTS = 5;
-const REGISTER_BACKOFF_MS = [2_000, 5_000, 15_000, 30_000, 60_000];
+/**
+ * Pulls the call details out of a notification, or null if it isn't one.
+ * `receivedAt` guards against a stale tap: the caller behind an old
+ * notification has long since gone to voicemail.
+ */
+function incomingCallFromNotification(
+  notification: Notifications.Notification,
+  now: number
+): { callId: string; number: string; displayName: string | null } | null {
+  const data = normalizeNotificationData(notification.request.content.data);
+  if (!data || data.type !== "incoming_call") return null;
+  if (typeof data.callId !== "string" || typeof data.from !== "string") return null;
+
+  // date is typed Date | number across platforms; an unreadable one fails
+  // open, since dropping a live call is worse than ringing for a dead one.
+  const rawDate: unknown = notification.date;
+  const receivedAt =
+    typeof rawDate === "number"
+      ? rawDate
+      : rawDate instanceof Date
+        ? rawDate.getTime()
+        : null;
+  if (receivedAt !== null && now - receivedAt > CALL_NOTIFICATION_TTL_MS) return null;
+
+  return {
+    callId: data.callId,
+    number: data.from,
+    displayName: typeof data.customerName === "string" ? data.customerName : null,
+  };
+}
 
 export function CallProvider({ children }: { children: ReactNode }) {
-  const { state, startCall, acceptIncoming, rejectIncoming, hangUp, toggleMute } =
-    useCallManager();
+  const {
+    state,
+    startCall,
+    presentIncomingCall,
+    acceptIncoming,
+    rejectIncoming,
+    hangUp,
+    toggleMute,
+    toggleSpeaker,
+    sendDigits,
+  } = useCallManager();
   const { staffUser } = useAuth();
   const [registration, setRegistration] = useState<RegistrationState>({
     status: "idle",
     error: null,
   });
-  const registrationRef = useRef(registration);
-  registrationRef.current = registration;
 
-  // The SDK wants its PushKit registry stood up at launch, not at first use,
-  // so a VoIP push can wake the app when it isn't running. Independent of the
-  // staff session for that reason.
+  // The full call screen is the default; minimizing trades it for the banner.
+  const [minimized, setMinimized] = useState(false);
+
+  // Every new call opens full-screen, however the last one was left.
   useEffect(() => {
-    void initializePushRegistry().catch((error) => {
-      console.warn("[voice] PushKit registry init failed:", error);
-    });
-  }, []);
+    if (state.status === "incoming" || state.status === "connecting") {
+      setMinimized(false);
+    }
+  }, [state.status]);
 
-  // Only staff receive shop calls, and the token endpoint is staff-gated, so
-  // registration follows the staff session rather than app launch.
-  //
-  // This retries rather than firing once: the token endpoint 404s while voice
-  // is disabled for the shop, and a single silent failure left the device
-  // permanently unable to receive calls until the app was force-quit.
+  const minimize = useCallback(() => setMinimized(true), []);
+  const expand = useCallback(() => setMinimized(false), []);
+
+  /**
+   * Notification permission is what decides whether calls ring on this device
+   * now that inbound calls no longer use a Twilio push registration. Rechecked
+   * on foreground because permission can be revoked from Settings at any time.
+   */
   useEffect(() => {
     if (!staffUser) {
       setRegistration({ status: "idle", error: null });
@@ -201,49 +252,89 @@ export function CallProvider({ children }: { children: ReactNode }) {
     }
 
     let cancelled = false;
-    let attempt = 0;
-    let timer: ReturnType<typeof setTimeout> | undefined;
 
-    const register = async () => {
-      if (cancelled) return;
+    const check = async () => {
       setRegistration((prev) => ({ status: "registering", error: prev.error }));
       try {
-        await registerForIncomingCalls();
+        const { granted } = await Notifications.getPermissionsAsync();
         if (cancelled) return;
-        attempt = 0;
-        setRegistration({ status: "registered", error: null });
+        setRegistration(
+          granted
+            ? { status: "registered", error: null }
+            : {
+                status: "failed",
+                error: "Notifications are off, so calls can't ring this device",
+              }
+        );
       } catch (error) {
         if (cancelled) return;
-        const message =
-          error instanceof Error ? error.message : "Could not register for calls";
-        setRegistration({ status: "failed", error: message });
-        attempt += 1;
-        if (attempt <= MAX_REGISTER_ATTEMPTS) {
-          timer = setTimeout(register, REGISTER_BACKOFF_MS[attempt - 1]);
-        }
+        setRegistration({
+          status: "failed",
+          error: error instanceof Error ? error.message : "Could not check notifications",
+        });
       }
     };
 
-    void register();
-
-    // Coming back to the foreground is the cheapest signal that whatever was
-    // wrong (server config, connectivity) may now be fixed.
+    void check();
     const sub = AppState.addEventListener("change", (next) => {
-      if (next !== "active") return;
-      if (registrationRef.current.status === "registered") return;
-      attempt = 0;
-      void register();
+      if (next === "active") void check();
     });
 
     return () => {
       cancelled = true;
-      if (timer) clearTimeout(timer);
       sub.remove();
-      void unregisterForIncomingCalls().catch(() => {
-        // Logout/teardown — nothing useful to do if Twilio is already gone.
-      });
     };
   }, [staffUser]);
+
+  // Inbound calls arrive as notifications rather than Twilio invites, so the
+  // ring is wired up here rather than in useNotifications — CallProvider sits
+  // inside NotificationProvider and so can't reach back up to it.
+  useEffect(() => {
+    if (!staffUser) return;
+
+    const present = (notification: Notifications.Notification) => {
+      const incoming = incomingCallFromNotification(notification, Date.now());
+      if (incoming) presentIncomingCall(incoming);
+    };
+
+    // Arrived while the app is open — ring immediately instead of showing a
+    // banner the user then has to tap.
+    const received = Notifications.addNotificationReceivedListener(present);
+    // Tapped from the background or lock screen.
+    const responded = Notifications.addNotificationResponseReceivedListener((response) =>
+      present(response.notification)
+    );
+
+    // Cold start: the tap that launched the app has already been delivered.
+    void Notifications.getLastNotificationResponseAsync().then((response) => {
+      if (response) present(response.notification);
+    });
+
+    return () => {
+      received.remove();
+      responded.remove();
+    };
+  }, [staffUser, presentIncomingCall]);
+
+  // Clear the "Incoming call" notification once the call is no longer ringing,
+  // so a handled call doesn't sit in the notification shade.
+  useEffect(() => {
+    if (state.status === "incoming" || state.status === "idle") return;
+    void Notifications.getPresentedNotificationsAsync()
+      .then((presented) =>
+        Promise.all(
+          presented
+            .filter(
+              (n) =>
+                normalizeNotificationData(n.request.content.data)?.type === "incoming_call"
+            )
+            .map((n) => Notifications.dismissNotificationAsync(n.request.identifier))
+        )
+      )
+      .catch(() => {
+        // Tray cleanup is cosmetic; not worth surfacing a failure.
+      });
+  }, [state.status]);
 
   const value: CallContextValue = {
     state,
@@ -253,12 +344,33 @@ export function CallProvider({ children }: { children: ReactNode }) {
     rejectIncoming,
     hangUp,
     toggleMute,
+    toggleSpeaker,
+    sendDigits,
   };
 
   return (
     <CallContext.Provider value={value}>
       {children}
-      <CallOverlay {...value} />
+      {minimized ? (
+        <CallBanner
+          state={state}
+          acceptIncoming={acceptIncoming}
+          rejectIncoming={rejectIncoming}
+          hangUp={hangUp}
+          onExpand={expand}
+        />
+      ) : (
+        <CallScreen
+          state={state}
+          acceptIncoming={acceptIncoming}
+          rejectIncoming={rejectIncoming}
+          hangUp={hangUp}
+          toggleMute={toggleMute}
+          toggleSpeaker={toggleSpeaker}
+          sendDigits={sendDigits}
+          onMinimize={minimize}
+        />
+      )}
     </CallContext.Provider>
   );
 }

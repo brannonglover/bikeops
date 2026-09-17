@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Call, CallInvite } from "@twilio/voice-react-native-sdk";
-import { callInviteFrom, onCallInvite, placeOutboundCall } from "@/lib/voice";
+import { AudioDevice, Call } from "@twilio/voice-react-native-sdk";
+import {
+  answerQueuedCall,
+  listAudioDevices,
+  onAudioDevicesUpdated,
+  placeOutboundCall,
+  selectAudioDevice,
+} from "@/lib/voice";
+import { declineCall } from "@/lib/api";
 
 export type CallStatus =
   | "idle"
@@ -8,6 +15,7 @@ export type CallStatus =
   | "ringing"
   | "incoming"
   | "connected"
+  | "reconnecting"
   | "disconnected"
   | "failed";
 
@@ -19,6 +27,12 @@ export type CallState = {
   direction: "inbound" | "outbound" | null;
   error: string | null;
   isMuted: boolean;
+  /** Where call audio is routed right now — drives the speaker toggle. */
+  audioRoute: AudioDevice.Type | null;
+  /** When the media legs joined, for the in-call duration timer. */
+  connectedAt: number | null;
+  /** Server-side Call id of a ringing inbound call, from its notification. */
+  pendingCallId: string | null;
 };
 
 const DISMISS_DELAY_MS = 3_000;
@@ -30,17 +44,23 @@ const IDLE_STATE: CallState = {
   direction: null,
   error: null,
   isMuted: false,
+  audioRoute: null,
+  connectedAt: null,
+  pendingCallId: null,
 };
 
 /**
- * Owns the single active call for the app — outbound dials and inbound
- * invites alike. Inbound requires registerForIncomingCalls() to have run;
- * this hook only listens, it does not register (see CallProvider).
+ * Owns the single active call for the app — outbound dials and inbound calls
+ * alike.
+ *
+ * Inbound calls arrive as ordinary push notifications, not Twilio invites:
+ * the caller holds in a server-side queue and presentIncomingCall() puts the
+ * ringing UI up. Answering dials into that queue. See lib/voice.ts for why
+ * this app avoids PushKit entirely.
  */
 export function useCallManager() {
   const [state, setState] = useState<CallState>(IDLE_STATE);
   const callRef = useRef<Call | null>(null);
-  const inviteRef = useRef<CallInvite | null>(null);
 
   /** Wires the shared lifecycle events every connected call needs. */
   const attachCallListeners = useCallback((call: Call) => {
@@ -50,20 +70,30 @@ export function useCallManager() {
       setState((prev) => ({ ...prev, status: "ringing" }));
     });
     call.on(Call.Event.Connected, () => {
-      setState((prev) => ({ ...prev, status: "connected" }));
+      setState((prev) => ({
+        ...prev,
+        status: "connected",
+        // Reconnects re-fire Connected; keep the original start so the timer
+        // shows the length of the call, not of the latest media session.
+        connectedAt: prev.connectedAt ?? Date.now(),
+      }));
     });
     call.on(Call.Event.Disconnected, (error) => {
       callRef.current = null;
-      inviteRef.current = null;
       setState((prev) => ({
         ...prev,
         status: "disconnected",
         error: error?.message ?? null,
       }));
     });
+    call.on(Call.Event.Reconnecting, () => {
+      setState((prev) => ({ ...prev, status: "reconnecting" }));
+    });
+    call.on(Call.Event.Reconnected, () => {
+      setState((prev) => ({ ...prev, status: "connected" }));
+    });
     call.on(Call.Event.ConnectFailure, (error) => {
       callRef.current = null;
-      inviteRef.current = null;
       setState((prev) => ({ ...prev, status: "failed", error: error?.message ?? null }));
     });
   }, []);
@@ -91,49 +121,48 @@ export function useCallManager() {
     [attachCallListeners]
   );
 
-  // Inbound invites. The caller may hang up before we answer, so Cancelled
-  // has to clear the ringing UI or it strands on screen.
-  useEffect(() => {
-    return onCallInvite((invite) => {
-      inviteRef.current = invite;
-      setState({
-        ...IDLE_STATE,
-        status: "incoming",
-        number: callInviteFrom(invite),
-        displayName: null,
-        direction: "inbound",
+  /**
+   * Puts the ringing UI up for an inbound call announced by a notification.
+   * Safe to call more than once for the same call: the notification fires on
+   * arrival when the app is foregrounded, and again when it is tapped.
+   */
+  const presentIncomingCall = useCallback(
+    (incoming: { callId: string; number: string; displayName?: string | null }) => {
+      setState((prev) => {
+        // A second caller must not hijack the screen mid-call, and a repeat
+        // notification for the call already showing must not reset it. The
+        // terminal states are fair game: they linger for a few seconds after
+        // a call ends, and a new call arriving in that window should ring.
+        const free =
+          prev.status === "idle" ||
+          prev.status === "disconnected" ||
+          prev.status === "failed";
+        if (!free) return prev;
+        return {
+          ...IDLE_STATE,
+          status: "incoming",
+          number: incoming.number,
+          displayName: incoming.displayName ?? null,
+          direction: "inbound",
+          pendingCallId: incoming.callId,
+        };
       });
+    },
+    []
+  );
 
-      // On iOS the call is usually answered from the CallKit screen rather than
-      // our overlay, so accept() is never called from JS — the SDK reports it
-      // here instead. Without this the UI stays stuck on "incoming".
-      invite.on(CallInvite.Event.Accepted, (call) => {
-        inviteRef.current = null;
-        attachCallListeners(call);
-        setState((prev) => ({ ...prev, status: "connected" }));
-      });
-
-      invite.on(CallInvite.Event.Rejected, () => {
-        inviteRef.current = null;
-        setState(IDLE_STATE);
-      });
-
-      invite.on(CallInvite.Event.Cancelled, () => {
-        inviteRef.current = null;
-        setState((prev) =>
-          prev.status === "incoming" ? { ...IDLE_STATE, status: "disconnected" } : prev
-        );
-      });
-    });
-  }, [attachCallListeners]);
-
+  /**
+   * Answers by dialing into the queue the caller is holding in — there is no
+   * invite to accept. The server bridges the two legs.
+   */
   const acceptIncoming = useCallback(async () => {
-    const invite = inviteRef.current;
-    if (!invite) return;
+    const callId = state.pendingCallId;
+    if (!callId) return;
     setState((prev) => ({ ...prev, status: "connecting" }));
     try {
-      attachCallListeners(await invite.accept());
-      inviteRef.current = null;
+      attachCallListeners(
+        await answerQueuedCall(callId, state.displayName ?? undefined)
+      );
     } catch (error) {
       setState((prev) => ({
         ...prev,
@@ -141,18 +170,20 @@ export function useCallManager() {
         error: error instanceof Error ? error.message : "Unable to answer call",
       }));
     }
-  }, [attachCallListeners]);
+  }, [attachCallListeners, state.pendingCallId, state.displayName]);
 
   const rejectIncoming = useCallback(async () => {
-    const invite = inviteRef.current;
-    if (!invite) return;
-    inviteRef.current = null;
+    const callId = state.pendingCallId;
+    setState(IDLE_STATE);
+    if (!callId) return;
     try {
-      await invite.reject();
-    } finally {
-      setState(IDLE_STATE);
+      // Sends the caller to voicemail now instead of leaving them on hold for
+      // the remainder of the ring window.
+      await declineCall(callId);
+    } catch {
+      // They still time out to voicemail on their own — nothing to recover.
     }
-  }, []);
+  }, [state.pendingCallId]);
 
   // "Call ended"/"Call failed" are terminal — show them briefly, then clear the
   // overlay instead of leaving it pinned over the app.
@@ -174,11 +205,74 @@ export function useCallManager() {
     setState((prev) => ({ ...prev, isMuted: next }));
   }, [state.isMuted]);
 
+  /**
+   * Flips between earpiece and speaker. A paired bluetooth headset counts as
+   * "not speakerphone", so turning the speaker off from there hands audio back
+   * to the headset rather than forcing the earpiece.
+   */
+  const toggleSpeaker = useCallback(async () => {
+    const wantSpeaker = state.audioRoute !== AudioDevice.Type.Speaker;
+    if (wantSpeaker) {
+      if (await selectAudioDevice(AudioDevice.Type.Speaker)) {
+        setState((prev) => ({ ...prev, audioRoute: AudioDevice.Type.Speaker }));
+      }
+      return;
+    }
+    // Prefer bluetooth on the way back; fall back to the earpiece.
+    for (const type of [AudioDevice.Type.Bluetooth, AudioDevice.Type.Earpiece]) {
+      if (await selectAudioDevice(type)) {
+        setState((prev) => ({ ...prev, audioRoute: type }));
+        return;
+      }
+    }
+  }, [state.audioRoute]);
+
+  /** Sends a DTMF tone — for phone trees reached from an outbound call. */
+  const sendDigits = useCallback(async (digits: string) => {
+    await callRef.current?.sendDigits(digits);
+  }, []);
+
+  // Track the live route so the speaker button reflects reality: Twilio moves
+  // audio on its own when a headset connects or CallKit answers a call.
+  useEffect(() => {
+    let cancelled = false;
+
+    const sync = async () => {
+      try {
+        const { selected } = await listAudioDevices();
+        if (cancelled) return;
+        setState((prev) => ({ ...prev, audioRoute: selected?.type ?? null }));
+      } catch {
+        // Route readback is cosmetic — a failure just leaves the toggle as-is.
+      }
+    };
+
+    void sync();
+    const unsubscribe = onAudioDevicesUpdated((_devices, selected) => {
+      setState((prev) => ({ ...prev, audioRoute: selected?.type ?? prev.audioRoute }));
+    });
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+
   const reset = useCallback(() => {
     callRef.current = null;
-    inviteRef.current = null;
     setState(IDLE_STATE);
   }, []);
 
-  return { state, startCall, acceptIncoming, rejectIncoming, hangUp, toggleMute, reset };
+  return {
+    state,
+    startCall,
+    presentIncomingCall,
+    acceptIncoming,
+    rejectIncoming,
+    hangUp,
+    toggleMute,
+    toggleSpeaker,
+    sendDigits,
+    reset,
+  };
 }

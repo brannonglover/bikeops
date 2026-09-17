@@ -1,5 +1,5 @@
 import { Platform } from "react-native";
-import { Call, CallInvite, Voice } from "@twilio/voice-react-native-sdk";
+import { AudioDevice, Call, Voice } from "@twilio/voice-react-native-sdk";
 import { getVoiceAccessToken } from "@/lib/api";
 
 let voiceDevice: Voice | null = null;
@@ -33,54 +33,57 @@ export async function placeOutboundCall(
 }
 
 /**
- * Registers this device's push token with Twilio so the /incoming webhook's
- * <Client> leg can actually ring it. Without this, inbound calls ring nothing
- * and fall through to voicemail after the <Dial> timeout.
- *
- * Requires a push credential on the server side (TWILIO_IOS_PUSH_CREDENTIAL_SID
- * / TWILIO_ANDROID_PUSH_CREDENTIAL_SID) — the access token carries it, and
- * without one Twilio has no way to wake a backgrounded app.
+ * The audio routes Twilio reports for the active call. Earpiece and speaker
+ * always exist; bluetooth appears only while a headset is paired.
  */
+export async function listAudioDevices(): Promise<{
+  devices: AudioDevice[];
+  selected: AudioDevice | null;
+}> {
+  const { audioDevices, selectedDevice } = await getVoiceDevice().getAudioDevices();
+  return { devices: audioDevices, selected: selectedDevice ?? null };
+}
+
 /**
- * Stands up the SDK's own PushKit registry. Required on iOS because this app
- * has no native PushKit module of its own — without it no device token is
- * ever delivered and register() rejects with "Failed to initialize PushKit
- * device token" after its 3s wait. Safe to call repeatedly; no-op on Android.
+ * Routes call audio to the speaker or back to the earpiece. Resolves false
+ * when the requested route isn't available (no bluetooth headset, say), so
+ * callers can leave the toggle where it was instead of lying about the route.
  */
-export async function initializePushRegistry(): Promise<void> {
-  if (Platform.OS !== "ios") return;
-  await getVoiceDevice().initializePushRegistry();
+export async function selectAudioDevice(type: AudioDevice.Type): Promise<boolean> {
+  const { devices } = await listAudioDevices();
+  const match = devices.find((device) => device.type === type);
+  if (!match) return false;
+  await match.select();
+  return true;
 }
 
-export async function registerForIncomingCalls(): Promise<void> {
+/** Subscribes to route changes (headset plugged in, etc.). Returns unsubscribe. */
+export function onAudioDevicesUpdated(
+  listener: (devices: AudioDevice[], selected?: AudioDevice) => void
+): () => void {
   const voice = getVoiceDevice();
-  // Start the registry before minting the token: PushKit delivers the device
-  // token asynchronously, and the token request's round trip gives it a head
-  // start, so register() is less likely to hit its 3s timeout.
-  await initializePushRegistry();
-  const { token } = await getVoiceAccessToken(currentPlatform());
-  await voice.register(token);
-}
-
-export async function unregisterForIncomingCalls(): Promise<void> {
-  const { token } = await getVoiceAccessToken(currentPlatform());
-  await getVoiceDevice().unregister(token);
-}
-
-/** Subscribes to inbound call invites. Returns an unsubscribe function. */
-export function onCallInvite(listener: (invite: CallInvite) => void): () => void {
-  const voice = getVoiceDevice();
-  voice.on(Voice.Event.CallInvite, listener);
+  voice.on(Voice.Event.AudioDevicesUpdated, listener);
   return () => {
-    voice.removeListener(Voice.Event.CallInvite, listener);
+    voice.removeListener(Voice.Event.AudioDevicesUpdated, listener);
   };
 }
 
 /**
- * The caller's number as Twilio reports it on an invite. Client legs arrive
- * prefixed ("client:shop_x_staff_y"); PSTN callers arrive as E.164.
+ * Answers an inbound call announced by a push notification.
+ *
+ * Inbound calls are not Twilio invites here — they wait in the shop's queue
+ * while an ordinary notification rings the device (this app deliberately does
+ * not register for PushKit, because iOS would then force the call onto the
+ * native CallKit screen). Answering therefore means placing an outbound leg
+ * that dials into that queue, which /outgoing recognises by Mode=answer.
  */
-export function callInviteFrom(invite: CallInvite): string {
-  const from = invite.getFrom();
-  return from.startsWith("client:") ? from.slice("client:".length) : from;
+export async function answerQueuedCall(
+  callId: string,
+  displayName?: string
+): Promise<Call> {
+  const { token } = await getVoiceAccessToken(currentPlatform());
+  return getVoiceDevice().connect(token, {
+    params: { Mode: "answer", CallId: callId },
+    contactHandle: displayName,
+  });
 }

@@ -758,6 +758,14 @@ export async function getVoiceAccessToken(
   return data;
 }
 
+/**
+ * Declines a ringing inbound call, sending the caller to voicemail straight
+ * away rather than leaving them holding for the rest of the ring window.
+ */
+export async function declineCall(callId: string): Promise<void> {
+  await api.post(`/api/calls/${callId}/decline`, undefined, { role: "staff" });
+}
+
 export type AuthedMediaSource = { uri: string; headers: Record<string, string> };
 
 /**

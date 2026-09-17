@@ -9,6 +9,7 @@ import {
   Alert,
   Animated,
   Easing,
+  Linking,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
@@ -151,17 +152,33 @@ export default function CallsScreen() {
             </TouchableOpacity>
           );
         })}
+
+        {/* The keypad is the only way to start a call to a number that isn't
+            already in the log. */}
+        <TouchableOpacity
+          onPress={() => router.push("/(staff)/calls/dial")}
+          style={styles.keypadButton}
+          accessibilityRole="button"
+          accessibilityLabel="Open keypad"
+        >
+          <Ionicons name="keypad" size={20} color={colors.white} />
+        </TouchableOpacity>
       </View>
 
       {registration.status === "failed" ? (
-        // Inbound calls silently fail when this device isn't registered with
-        // Twilio, and nothing else in the UI would ever show it.
-        <View style={[styles.warningBanner, { backgroundColor: colors.amber[600] }]}>
+        // Calls ring through ordinary notifications, so notifications being off
+        // means the phone simply never rings — and nothing else would show it.
+        <TouchableOpacity
+          onPress={() => Linking.openSettings()}
+          style={[styles.warningBanner, { backgroundColor: colors.amber[600] }]}
+          accessibilityRole="button"
+          accessibilityLabel="Open settings to enable call notifications"
+        >
           <Ionicons name="warning-outline" size={16} color={colors.white} />
           <Text style={[styles.warningText, { color: colors.white }]} numberOfLines={2}>
-            Not receiving calls on this device{registration.error ? ` — ${registration.error}` : ""}
+            {registration.error ?? "Calls can't ring this device"} — tap to fix
           </Text>
-        </View>
+        </TouchableOpacity>
       ) : null}
 
       {showInitialLoad ? (
@@ -404,6 +421,7 @@ const styles = StyleSheet.create({
   },
   toolbar: {
     flexDirection: "row",
+    alignItems: "center",
     gap: spacing[2],
     padding: spacing[3],
     borderBottomWidth: 1,
@@ -462,6 +480,16 @@ const styles = StyleSheet.create({
     marginLeft: spacing[1],
   },
   callBackButton: { padding: spacing[2] },
+  keypadButton: {
+    // Pushed to the trailing edge, away from the filter chips.
+    marginLeft: "auto",
+    width: 40,
+    height: 40,
+    borderRadius: borderRadius.lg,
+    backgroundColor: colors.amber[500],
+    justifyContent: "center",
+    alignItems: "center",
+  },
   warningBanner: {
     flexDirection: "row",
     alignItems: "center",

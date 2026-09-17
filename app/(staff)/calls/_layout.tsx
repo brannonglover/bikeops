@@ -17,6 +17,10 @@ export default function CallsLayout() {
       }}
     >
       <Stack.Screen name="index" options={{ title: "Calls" }} />
+      <Stack.Screen
+        name="dial"
+        options={{ title: "Keypad", presentation: "modal" }}
+      />
     </Stack>
   );
 }

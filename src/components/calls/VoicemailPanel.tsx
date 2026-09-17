@@ -9,7 +9,7 @@ import {
   type LayoutChangeEvent,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { useEvent } from "expo";
+import { useEvent, useEventListener } from "expo";
 import { useVideoPlayer } from "expo-video";
 import { getCallRecordingSource } from "@/lib/api";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
@@ -46,17 +46,25 @@ export function VoicemailPanel({
   const [sourceFailed, setSourceFailed] = useState(false);
   const [position, setPosition] = useState(0);
   const [scrubPosition, setScrubPosition] = useState<number | null>(null);
+  const [loadedDuration, setLoadedDuration] = useState(0);
+  const [ended, setEnded] = useState(false);
 
   const player = useVideoPlayer(null, (p) => {
     p.loop = false;
     p.timeUpdateEventInterval = 0.25;
   });
 
-  // Twilio's recording duration is known before the audio loads, so the
-  // readout shows a real total immediately instead of flashing 0:00.
+  /**
+   * Twilio reports RecordingDuration in whole seconds, so a 2.6s message
+   * arrives as 3. Good enough to fill the readout before the audio loads, but
+   * the scrubber has to switch to the real media duration once it's known —
+   * against the rounded value the bar stops short of the end and every
+   * position-vs-duration comparison is off by up to a second.
+   */
   const fallbackDuration = call.durationSeconds ?? 0;
-  const playerDuration = player.duration;
-  const duration = playerDuration > 0 ? playerDuration : fallbackDuration;
+  const duration = loadedDuration > 0 ? loadedDuration : fallbackDuration;
+  const durationRef = useRef(duration);
+  durationRef.current = duration;
 
   const { isPlaying } = useEvent(player, "playingChange", {
     isPlaying: player.playing,
@@ -70,8 +78,24 @@ export function VoicemailPanel({
   const isLoading = !failed && status !== "readyToPlay";
 
   useEffect(() => {
-    if (timeUpdate) setPosition(timeUpdate.currentTime);
-  }, [timeUpdate]);
+    // Ignored once ended: the bar is pinned to the end there, and a late tick
+    // carrying a slightly smaller time would pull it backwards.
+    if (timeUpdate && !ended) setPosition(timeUpdate.currentTime);
+  }, [timeUpdate, ended]);
+
+  useEffect(() => {
+    if (status === "readyToPlay" && player.duration > 0) {
+      setLoadedDuration(player.duration);
+    }
+  }, [status, player]);
+
+  // The authoritative end signal. timeUpdate only fires every 250ms, so the
+  // last one it emits can sit well short of the true end — that gap is what
+  // leaves the bar looking unfinished.
+  useEventListener(player, "playToEnd", () => {
+    setEnded(true);
+    setPosition(durationRef.current);
+  });
 
   // The recording streams from our own API behind the staff session, so the
   // source needs auth headers and can't be handed to the player synchronously.
@@ -97,8 +121,6 @@ export function VoicemailPanel({
   const trackRef = useRef<View>(null);
   const trackLeft = useRef(0);
   const trackWidth = useRef(0);
-  const durationRef = useRef(duration);
-  durationRef.current = duration;
   const wasPlayingRef = useRef(false);
 
   const seekTo = useCallback(
@@ -107,6 +129,7 @@ export function VoicemailPanel({
       if (total <= 0) return;
       player.currentTime = Math.min(Math.max(seconds, 0), total);
       setPosition(player.currentTime);
+      setEnded(false);
     },
     [player]
   );
@@ -167,10 +190,14 @@ export function VoicemailPanel({
       player.pause();
       return;
     }
-    // Restart rather than no-op when the message already ran to the end.
-    if (duration > 0 && position >= duration - 0.25) {
-      player.currentTime = 0;
+    if (ended) {
+      // replay() rewinds and starts in one native call. Setting currentTime
+      // and then calling play() races against the seek, and a player sitting
+      // at the end ignores a bare play() outright.
+      setEnded(false);
       setPosition(0);
+      player.replay();
+      return;
     }
     player.play();
   };
