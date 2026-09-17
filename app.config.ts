@@ -113,6 +113,13 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     "expo-iap",
     "expo-video",
     [
+      "expo-audio",
+      {
+        microphonePermission:
+          "BikeOps uses the microphone so you can record the greeting callers hear when they reach your shop's voicemail.",
+      },
+    ],
+    [
       "expo-image-picker",
       {
         cameraPermission:
