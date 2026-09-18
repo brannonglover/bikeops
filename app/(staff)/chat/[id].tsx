@@ -48,7 +48,7 @@ import {
   getChatDraft,
   setChatDraft,
 } from "@/lib/chat-drafts";
-import { type Bike, type ChatMessage, type Conversation, type Job } from "@/lib/types";
+import { type Bike, type ChatMessage, type Conversation, type Customer, type Job } from "@/lib/types";
 
 function chatDraftQueryKey(conversationId: string) {
   return ["chat-draft", conversationId] as const;
@@ -59,6 +59,7 @@ import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { LinkifiedText } from "@/components/chat/LinkifiedText";
 import { LinkPreview } from "@/components/chat/LinkPreview";
 import { GrowingTextInput } from "@/components/chat/GrowingTextInput";
+import { CreateContactSheet } from "@/components/chat/CreateContactSheet";
 
 const URL_REGEX = /(https?:\/\/[^\s]+)/g;
 function extractUrls(text: string): string[] {
@@ -187,6 +188,7 @@ export default function ConversationScreen() {
   }, [navigation, router]);
 
   const queryClient = useQueryClient();
+  const [showCreateContact, setShowCreateContact] = useState(false);
   const flatListRef = useRef<FlatList<ChatMessage>>(null);
   const isAtBottomRef = useRef(true);
   const didInitialAutoScrollRef = useRef(false);
@@ -749,6 +751,24 @@ export default function ConversationScreen() {
     enabled: !!jobId && !conversation?.job,
     staleTime: 30_000,
   });
+
+  const handleContactSaved = useCallback(
+    (customer: Customer) => {
+      queryClient.setQueryData<Conversation>(["conversation", id], (old) =>
+        old ? { ...old, customer: { ...old.customer, ...customer } } : old
+      );
+      queryClient.setQueryData<Conversation[]>(conversationsQueryKey, (old) =>
+        old?.map((conv) =>
+          conv.customerId === customer.id
+            ? { ...conv, customer: { ...conv.customer, ...customer } }
+            : conv
+        )
+      );
+      void queryClient.invalidateQueries({ queryKey: conversationsQueryKey });
+      setShowCreateContact(false);
+    },
+    [id, queryClient]
+  );
 
   const resolvedConversation = useMemo(() => {
     if (!conversation) return undefined;
@@ -1713,8 +1733,26 @@ export default function ConversationScreen() {
             const canInvite = !!conversation?.customer?.email;
             const customerPhone = resolvedConversation?.customer?.phone?.trim();
 
+            const isProvisional =
+              resolvedConversation?.customer?.provisional === true;
+
             return (
               <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+                {isProvisional ? (
+                  <TouchableOpacity
+                    onPress={() => setShowCreateContact(true)}
+                    style={{ padding: spacing[2] }}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Create contact from this conversation"
+                  >
+                    <Ionicons
+                      name="person-add-outline"
+                      size={20}
+                      color={colors.emerald[500]}
+                    />
+                  </TouchableOpacity>
+                ) : null}
                 {customerPhone ? (
                   <TouchableOpacity
                     onPress={() =>
@@ -2143,6 +2181,16 @@ export default function ConversationScreen() {
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
+
+      {/* Fill in a contact auto-created for an inbound text from an unknown number */}
+      {showCreateContact && id ? (
+        <CreateContactSheet
+          visible={showCreateContact}
+          conversationId={id}
+          onClose={() => setShowCreateContact(false)}
+          onSaved={handleContactSaved}
+        />
+      ) : null}
 
       <ImageViewer uri={viewingImageUrl} onClose={() => setViewingImageUrl(null)} />
       <VideoViewer uri={viewingVideoUrl} onClose={() => setViewingVideoUrl(null)} />

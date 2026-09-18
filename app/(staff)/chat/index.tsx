@@ -16,6 +16,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/lib/api";
 import { type Conversation, type Customer } from "@/lib/types";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
+import { Badge } from "@/components/ui/Badge";
 import { useTheme } from "@/lib/ThemeContext";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { BikeLoader } from "@/components/ui/BikeLoader";
@@ -297,6 +298,17 @@ export default function ChatListScreen() {
                         ? ` · ${item.job.bikeMake} ${item.job.bikeModel}`
                         : ""}
                     </Text>
+                    {/* Name is the phone number until staff fill the contact in. */}
+                    {item.customer?.provisional ? (
+                      <Badge
+                        label="New"
+                        color={colors.amber[theme.dark ? 400 : 700]}
+                        backgroundColor={
+                          theme.dark ? colors.amber[800] + "55" : colors.amber[50]
+                        }
+                        style={styles.rowBadge}
+                      />
+                    ) : null}
                     {lastMsg ? (
                       <Text style={[styles.rowTime, { color: theme.textMuted }]}>
                         {formatDateTime(lastMsg.createdAt)}
@@ -473,6 +485,9 @@ const styles = StyleSheet.create({
   rowName: {
     ...fontSize.sm,
     flex: 1,
+  },
+  rowBadge: {
+    marginRight: spacing[2],
   },
   rowNameTabletPortrait: {
     ...fontSize.base,
