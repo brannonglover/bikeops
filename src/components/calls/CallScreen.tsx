@@ -17,7 +17,7 @@ import { useCallerLookup } from "@/hooks/useCallerLookup";
 import { customerName, formatPhoneNumber } from "@/lib/format";
 import { formatPlaybackTime } from "@/lib/calls";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
-import type { CallState } from "@/hooks/useCallManager";
+import { callProgressLabel, type CallState } from "@/hooks/useCallManager";
 
 export interface CallScreenProps {
   state: CallState;
@@ -30,17 +30,6 @@ export interface CallScreenProps {
   /** Drops back to the compact banner so the app stays usable mid-call. */
   onMinimize: () => void;
 }
-
-const STATUS_LABEL: Record<CallState["status"], string> = {
-  idle: "",
-  connecting: "Calling…",
-  ringing: "Ringing…",
-  incoming: "Incoming call",
-  connected: "",
-  reconnecting: "Reconnecting…",
-  disconnected: "Call ended",
-  failed: "Call failed",
-};
 
 /** Seconds since the call connected, ticking once a second. */
 function useCallDuration(connectedAt: number | null): number | null {
@@ -109,11 +98,11 @@ export function CallScreen({
 
   const statusLine = isConnected
     ? state.status === "reconnecting"
-      ? STATUS_LABEL.reconnecting
+      ? callProgressLabel(state)
       : duration !== null
         ? formatPlaybackTime(duration)
         : "On call"
-    : STATUS_LABEL[state.status];
+    : callProgressLabel(state);
 
   const handleKeypadPress = (digit: string) => {
     setDtmf((prev) => prev + digit);

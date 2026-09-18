@@ -10,7 +10,9 @@ import {
 import { AppState, Pressable, Text, View } from "react-native";
 import * as Notifications from "expo-notifications";
 import { Ionicons } from "@expo/vector-icons";
-import { useCallManager, type CallState } from "@/hooks/useCallManager";
+import { useQueryClient } from "@tanstack/react-query";
+import { callProgressLabel, useCallManager, type CallState } from "@/hooks/useCallManager";
+import { callsQueryKey } from "@/lib/staff-queries";
 import { useAuth } from "@/lib/auth";
 import { normalizeNotificationData } from "@/lib/notification-routing";
 import { initializePushRegistry } from "@/lib/voice";
@@ -55,17 +57,6 @@ export function useCall(): CallContextValue {
   if (!ctx) throw new Error("useCall must be used within a CallProvider");
   return ctx;
 }
-
-const STATUS_LABEL: Record<CallState["status"], string> = {
-  idle: "",
-  connecting: "Calling…",
-  ringing: "Ringing…",
-  incoming: "Incoming call",
-  connected: "On call",
-  reconnecting: "Reconnecting…",
-  disconnected: "Call ended",
-  failed: "Call failed",
-};
 
 /**
  * The call reduced to a status strip, for when staff minimize the call screen
@@ -114,7 +105,7 @@ function CallBanner({
     >
       <View style={{ flex: 1 }}>
         <Text style={{ color: colors.white, fontWeight: "600", ...fontSize.sm }}>
-          {STATUS_LABEL[state.status]}
+          {state.status === "connected" ? "On call" : callProgressLabel(state)}
         </Text>
         <Text style={{ color: colors.emerald[50], ...fontSize.xs }}>{title}</Text>
         {state.error ? (
@@ -227,6 +218,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     sendDigits,
   } = useCallManager();
   const { staffUser } = useAuth();
+  const queryClient = useQueryClient();
   const [registration, setRegistration] = useState<RegistrationState>({
     status: "idle",
     error: null,
@@ -241,6 +233,37 @@ export function CallProvider({ children }: { children: ReactNode }) {
       setMinimized(false);
     }
   }, [state.status]);
+
+  /**
+   * Refresh the call log the moment a call finishes, so the row that was "In
+   * progress" a second ago reads "Answered" instead of waiting out the list's
+   * 15s poll.
+   *
+   * Twice, because the outcome isn't ours to decide: answeredAt and the final
+   * status arrive from Twilio's status callback, which can land just after we
+   * hang up. The first refetch usually wins; the delayed one covers the race.
+   */
+  const wasActiveRef = useRef(false);
+  useEffect(() => {
+    const active =
+      state.status === "connected" ||
+      state.status === "reconnecting" ||
+      state.status === "connecting" ||
+      state.status === "ringing";
+
+    if (active) {
+      wasActiveRef.current = true;
+      return;
+    }
+    if (!wasActiveRef.current || state.status !== "idle") return;
+    wasActiveRef.current = false;
+
+    void queryClient.invalidateQueries({ queryKey: callsQueryKey });
+    const timer = setTimeout(() => {
+      void queryClient.invalidateQueries({ queryKey: callsQueryKey });
+    }, 2_500);
+    return () => clearTimeout(timer);
+  }, [state.status, queryClient]);
 
   const minimize = useCallback(() => setMinimized(true), []);
   const expand = useCallback(() => setMinimized(false), []);

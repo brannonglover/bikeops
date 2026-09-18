@@ -40,6 +40,30 @@ export type CallState = {
 const DISMISS_DELAY_MS = 3_000;
 
 /**
+ * What to call the pre-connect phase. Direction is the whole story: dialing
+ * out is "Calling", picking up is "Answering". Reporting the SDK's internal
+ * progression instead made a single answer read as "Calling" then "Ringing"
+ * before any audio, which looked like two things happening rather than one.
+ */
+export function callProgressLabel(state: CallState): string {
+  switch (state.status) {
+    case "connecting":
+    case "ringing":
+      return state.direction === "inbound" ? "Answering…" : "Calling…";
+    case "incoming":
+      return "Incoming call";
+    case "reconnecting":
+      return "Reconnecting…";
+    case "disconnected":
+      return "Call ended";
+    case "failed":
+      return "Call failed";
+    default:
+      return "";
+  }
+}
+
+/**
  * How long to wait for the SDK to hand back a Call before giving up. The
  * native connect() can hang forever when CallKit refuses the call, so this is
  * the only thing standing between a refused call and a permanently stuck UI.
@@ -70,6 +94,13 @@ const IDLE_STATE: CallState = {
 export function useCallManager() {
   const [state, setState] = useState<CallState>(IDLE_STATE);
   const callRef = useRef<Call | null>(null);
+  /**
+   * Set when the user ends the call themselves. hangUp() clears the screen
+   * immediately, but disconnect() still fires Disconnected a moment later —
+   * without this the overlay would slide away and then bounce straight back
+   * showing "Call ended".
+   */
+  const endedByUserRef = useRef(false);
 
   /** Wires the shared lifecycle events every connected call needs. */
   const attachCallListeners = useCallback((call: Call) => {
@@ -89,10 +120,22 @@ export function useCallManager() {
     });
     call.on(Call.Event.Disconnected, (error) => {
       callRef.current = null;
+      if (endedByUserRef.current) {
+        // Already back at idle by the user's own action; nothing to announce.
+        endedByUserRef.current = false;
+        return;
+      }
+      // A call ending normally needs no announcement — the screen going away
+      // is the message. Only a call that broke earns a moment on screen, and
+      // that one auto-clears too.
+      if (!error) {
+        setState(IDLE_STATE);
+        return;
+      }
       setState((prev) => ({
         ...prev,
         status: "disconnected",
-        error: error?.message ?? null,
+        error: error.message ?? null,
       }));
     });
     call.on(Call.Event.Reconnecting, () => {
@@ -109,6 +152,7 @@ export function useCallManager() {
 
   const startCall = useCallback(
     async (toNumber: string, displayName?: string) => {
+      endedByUserRef.current = false;
       setState({
         ...IDLE_STATE,
         status: "connecting",
@@ -173,6 +217,7 @@ export function useCallManager() {
   const acceptIncoming = useCallback(async () => {
     const callId = state.pendingCallId;
     if (!callId) return;
+    endedByUserRef.current = false;
     setState((prev) => ({ ...prev, status: "connecting" }));
     try {
       await releaseStrayCalls();
@@ -206,8 +251,8 @@ export function useCallManager() {
     }
   }, [state.pendingCallId]);
 
-  // "Call ended"/"Call failed" are terminal — show them briefly, then clear the
-  // overlay instead of leaving it pinned over the app.
+  // Only failures reach these states now, and they clear themselves rather
+  // than leaving the overlay pinned over the app waiting to be dismissed.
   useEffect(() => {
     if (state.status !== "disconnected" && state.status !== "failed") return;
     const timer = setTimeout(() => setState(IDLE_STATE), DISMISS_DELAY_MS);
@@ -222,6 +267,7 @@ export function useCallManager() {
   const hangUp = useCallback(async () => {
     const call = callRef.current;
     callRef.current = null;
+    endedByUserRef.current = true;
     setState(IDLE_STATE);
     try {
       if (call) await call.disconnect();
