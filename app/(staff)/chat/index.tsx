@@ -298,8 +298,11 @@ export default function ChatListScreen() {
                         ? ` · ${item.job.bikeMake} ${item.job.bikeModel}`
                         : ""}
                     </Text>
-                    {/* Name is the phone number until staff fill the contact in. */}
-                    {item.customer?.provisional ? (
+                    {/* Name is the phone number until staff fill the contact in.
+                        Clears once the thread has been opened, not only once
+                        the contact is named. */}
+                    {item.customer?.provisional &&
+                    !item.customer.provisionalSeenAt ? (
                       <Badge
                         label="New"
                         color={colors.amber[theme.dark ? 400 : 700]}

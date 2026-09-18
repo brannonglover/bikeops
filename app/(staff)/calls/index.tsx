@@ -94,9 +94,32 @@ export default function CallsScreen() {
     setExpandedId(null);
   }, [filter]);
 
-  const toggleExpanded = useCallback((call: Call) => {
-    setExpandedId((current) => (current === call.id ? null : call.id));
-  }, []);
+  /**
+   * Opening a call in the log drops its "New" badge. Optimistic so the badge
+   * goes immediately; the flag is set once server-side and never unset, so a
+   * failed request just means it clears on the next open.
+   */
+  const markCallSeen = useCallback(
+    (call: Call) => {
+      if (call.staffSeenAt) return;
+      const seenAt = new Date().toISOString();
+      queryClient.setQueryData<Call[]>(callsQueryKey, (old) =>
+        old?.map((c) => (c.id === call.id ? { ...c, staffSeenAt: seenAt } : c))
+      );
+      void api
+        .post(`/api/calls/${call.id}/seen`)
+        .catch(() => queryClient.invalidateQueries({ queryKey: callsQueryKey }));
+    },
+    [queryClient]
+  );
+
+  const toggleExpanded = useCallback(
+    (call: Call) => {
+      markCallSeen(call);
+      setExpandedId((current) => (current === call.id ? null : call.id));
+    },
+    [markCallSeen]
+  );
 
   const outcomeColor = (outcome: CallOutcome): string => {
     if (outcome === "missed") return colors.red[600];
@@ -136,6 +159,7 @@ export default function CallsScreen() {
   );
 
   const openCustomer = (call: Call) => {
+    markCallSeen(call);
     if (call.customer) {
       router.push(`/(staff)/customers/${call.customer.id}`);
       return;
@@ -405,7 +429,7 @@ function CallRow({
               {outcomeLabel}
               {duration ? ` · ${duration}` : ""}
             </Text>
-            {unknown ? (
+            {unknown && !call.staffSeenAt ? (
               <Text style={[styles.newBadge, { color: colors.amber[600] }]}>New</Text>
             ) : null}
           </View>

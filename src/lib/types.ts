@@ -25,6 +25,8 @@ export interface Customer {
   smsConsentUpdatedAt?: string | null;
   /** Auto-created to hold a text from an unknown number; name is a placeholder. */
   provisional?: boolean;
+  /** When staff first opened the thread; clears the inbox "New" badge. */
+  provisionalSeenAt?: string | null;
   address: string | null;
   notes: string | null;
   imageUrl: string | null;
@@ -340,6 +342,8 @@ export interface Call {
   transcriptionText: string | null;
   /** "in-progress" while awaiting the callback, then "completed" | "failed". */
   transcriptionStatus: string | null;
+  /** When staff opened this call in the log; clears its "New" badge. */
+  staffSeenAt?: string | null;
   createdAt: string;
   customer: Pick<Customer, "id" | "firstName" | "lastName" | "phone"> | null;
 }
