@@ -12,7 +12,7 @@ import {
   Linking,
 } from "react-native";
 import { useRouter } from "expo-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { type Call } from "@/lib/types";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
@@ -22,7 +22,12 @@ import { BikeLoader } from "@/components/ui/BikeLoader";
 import { SlideDown } from "@/components/ui/SlideDown";
 import { VoicemailPanel } from "@/components/calls/VoicemailPanel";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
-import { callsQueryKey, fetchStaffCalls } from "@/lib/staff-queries";
+import {
+  callsQueryKey,
+  conversationsQueryKey,
+  fetchStaffCalls,
+} from "@/lib/staff-queries";
+import { api } from "@/lib/api";
 import { formatDateTime, formatPhoneNumber } from "@/lib/format";
 import { useCall } from "@/lib/CallContext";
 import {
@@ -55,6 +60,8 @@ export default function CallsScreen() {
   // One open panel at a time — two voicemails playing over each other is never
   // what anyone wants, and collapsing tears the other player down.
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [openingThreadId, setOpeningThreadId] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
   const {
     data: calls = [],
@@ -97,6 +104,37 @@ export default function CallsScreen() {
     return colors.emerald[600];
   };
 
+  /**
+   * Text a caller back. A stranger has no contact and no thread, so the server
+   * creates both on demand and links them to the call; a known customer just
+   * resolves to their existing thread. Either way we land in the conversation
+   * with the composer ready.
+   */
+  const messageCaller = useCallback(
+    async (call: Call) => {
+      if (openingThreadId) return;
+      setOpeningThreadId(call.id);
+      try {
+        const { data } = await api.post<{ conversationId: string }>(
+          `/api/calls/${call.id}/conversation`
+        );
+        if (!data?.conversationId) throw new Error("No conversation returned");
+        // The call log row now has a contact, and the inbox has a new thread.
+        void queryClient.invalidateQueries({ queryKey: callsQueryKey });
+        void queryClient.invalidateQueries({ queryKey: conversationsQueryKey });
+        router.push(`/(staff)/chat/${data.conversationId}` as never);
+      } catch {
+        Alert.alert(
+          "Couldn't open a text thread",
+          "Something went wrong reaching the shop. Check your connection and try again."
+        );
+      } finally {
+        setOpeningThreadId(null);
+      }
+    },
+    [openingThreadId, queryClient, router]
+  );
+
   const openCustomer = (call: Call) => {
     if (call.customer) {
       router.push(`/(staff)/customers/${call.customer.id}`);
@@ -107,6 +145,7 @@ export default function CallsScreen() {
     Alert.alert(formatPhoneNumber(number), "This caller isn't a customer yet.", [
       { text: "Cancel", style: "cancel" },
       { text: "Call back", onPress: () => startCall(number) },
+      { text: "Send a text", onPress: () => void messageCaller(call) },
       {
         text: "Add as customer",
         onPress: () =>
@@ -239,11 +278,7 @@ export default function CallsScreen() {
               onToggle={() => toggleExpanded(item)}
               onOpenCustomer={() => openCustomer(item)}
               onCallBack={() => startCall(counterpartyNumber(item), callDisplayName(item))}
-              onMessage={() => {
-                if (item.customer) {
-                  router.push(`/(staff)/chat?customer=${item.customer.id}` as never);
-                }
-              }}
+              onMessage={() => void messageCaller(item)}
               onAddCustomer={() =>
                 router.push(
                   `/(staff)/customers?newPhone=${encodeURIComponent(counterpartyNumber(item))}`

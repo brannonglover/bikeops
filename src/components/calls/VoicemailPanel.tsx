@@ -292,6 +292,14 @@ export function VoicemailPanel({
 
       <View style={styles.actionRow}>
         <PanelAction icon="call" label="Call back" onPress={onCallBack} tint={colors.emerald[600]} />
+        {/* Message works for strangers too — the thread is created on demand —
+            so it is no longer traded away for the add-customer action. */}
+        <PanelAction
+          icon="chatbubble-ellipses"
+          label="Message"
+          onPress={onMessage}
+          tint={colors.slate[500]}
+        />
         {onAddCustomer ? (
           <PanelAction
             icon="person-add"
@@ -299,14 +307,7 @@ export function VoicemailPanel({
             onPress={onAddCustomer}
             tint={colors.amber[600]}
           />
-        ) : (
-          <PanelAction
-            icon="chatbubble-ellipses"
-            label="Message"
-            onPress={onMessage}
-            tint={colors.slate[500]}
-          />
-        )}
+        ) : null}
       </View>
     </View>
   );
