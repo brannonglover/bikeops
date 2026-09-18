@@ -9,6 +9,10 @@ import type { Call, Conversation, Job } from "@/lib/types";
 
 export const jobsQueryKey = ["jobs"] as const;
 export const conversationsQueryKey = ["conversations"] as const;
+export const archivedConversationsQueryKey = [
+  "conversations",
+  "archived",
+] as const;
 export const callsQueryKey = ["calls"] as const;
 
 export async function fetchStaffJobs(): Promise<Job[]> {
@@ -19,6 +23,14 @@ export async function fetchStaffJobs(): Promise<Job[]> {
 
 export async function fetchStaffConversations(): Promise<Conversation[]> {
   const { data } = await api.get<Conversation[]>("/api/conversations");
+  return data;
+}
+
+/** Threads staff archived — kept out of the inbox until restored. */
+export async function fetchArchivedConversations(): Promise<Conversation[]> {
+  const { data } = await api.get<Conversation[]>(
+    "/api/conversations?archived=true"
+  );
   return data;
 }
 

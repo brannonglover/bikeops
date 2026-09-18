@@ -42,7 +42,10 @@ import {
   staffMessagesPath,
 } from "@/lib/chat-messages";
 import { mergeMessagesCache } from "@/lib/chat-notification-prefetch";
-import { conversationsQueryKey } from "@/lib/staff-queries";
+import {
+  archivedConversationsQueryKey,
+  conversationsQueryKey,
+} from "@/lib/staff-queries";
 import {
   clearChatDraft,
   getChatDraft,
@@ -751,6 +754,29 @@ export default function ConversationScreen() {
     enabled: !!jobId && !conversation?.job,
     staleTime: 30_000,
   });
+
+  const archiveThread = useCallback(() => {
+    Alert.alert("Archive", "Archive this conversation?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Archive",
+        onPress: () => {
+          void (async () => {
+            try {
+              await api.patch(`/api/conversations/${id}`, { archived: true });
+              queryClient.invalidateQueries({ queryKey: conversationsQueryKey });
+              queryClient.invalidateQueries({
+                queryKey: archivedConversationsQueryKey,
+              });
+              goToChatThreads();
+            } catch {
+              Alert.alert("Error", "Failed to archive");
+            }
+          })();
+        },
+      },
+    ]);
+  }, [goToChatThreads, id, queryClient]);
 
   const handleContactSaved = useCallback(
     (customer: Customer) => {
@@ -1753,6 +1779,15 @@ export default function ConversationScreen() {
                     />
                   </TouchableOpacity>
                 ) : null}
+                <TouchableOpacity
+                  onPress={archiveThread}
+                  style={{ padding: spacing[2] }}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  accessibilityRole="button"
+                  accessibilityLabel="Archive this conversation"
+                >
+                  <Ionicons name="archive-outline" size={20} color={theme.icon} />
+                </TouchableOpacity>
                 {customerPhone ? (
                   <TouchableOpacity
                     onPress={() =>

@@ -22,7 +22,9 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { BikeLoader } from "@/components/ui/BikeLoader";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import {
+  archivedConversationsQueryKey,
   conversationsQueryKey,
+  fetchArchivedConversations,
   fetchStaffConversations,
   prefetchConversationMessages,
 } from "@/lib/staff-queries";
@@ -71,8 +73,10 @@ export default function ChatListScreen() {
   const [isManualRefresh, setIsManualRefresh] = useState(false);
   const hasNavigatedRef = useRef(false);
 
+  const [showArchived, setShowArchived] = useState(false);
+
   const {
-    data: conversations = [],
+    data: activeConversations = [],
     isLoading,
     refetch,
   } = useQuery({
@@ -82,6 +86,18 @@ export default function ChatListScreen() {
     staleTime: 10_000,
     placeholderData: keepPreviousData,
   });
+
+  const { data: archivedConversations = [], isLoading: archivedLoading } =
+    useQuery({
+      queryKey: archivedConversationsQueryKey,
+      queryFn: fetchArchivedConversations,
+      enabled: showArchived,
+      staleTime: 10_000,
+    });
+
+  const conversations = showArchived
+    ? archivedConversations
+    : activeConversations;
 
   useEffect(() => {
     if (!customerId || hasNavigatedRef.current) return;
@@ -175,9 +191,20 @@ export default function ChatListScreen() {
   const archiveConversation = async (id: string) => {
     try {
       await api.patch(`/api/conversations/${id}`, { archived: true });
-      queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      queryClient.invalidateQueries({ queryKey: conversationsQueryKey });
+      queryClient.invalidateQueries({ queryKey: archivedConversationsQueryKey });
     } catch {
       Alert.alert("Error", "Failed to archive");
+    }
+  };
+
+  const unarchiveConversation = async (id: string) => {
+    try {
+      await api.patch(`/api/conversations/${id}`, { archived: false });
+      queryClient.invalidateQueries({ queryKey: conversationsQueryKey });
+      queryClient.invalidateQueries({ queryKey: archivedConversationsQueryKey });
+    } catch {
+      Alert.alert("Error", "Failed to restore");
     }
   };
 
@@ -220,17 +247,55 @@ export default function ChatListScreen() {
           <Ionicons name="add" size={18} color={colors.white} />
           <Text style={styles.newButtonText}>New conversation</Text>
         </TouchableOpacity>
+
+        <View style={styles.filterRow}>
+          {([false, true] as const).map((archived) => {
+            const active = showArchived === archived;
+            return (
+              <TouchableOpacity
+                key={String(archived)}
+                onPress={() => setShowArchived(archived)}
+                style={[
+                  styles.filterChip,
+                  {
+                    backgroundColor: active ? colors.slate[700] : "transparent",
+                    borderColor: active ? colors.slate[700] : theme.surfaceBorder,
+                  },
+                ]}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+              >
+                <Text
+                  style={[
+                    styles.filterText,
+                    { color: active ? colors.white : theme.textSecondary },
+                  ]}
+                >
+                  {archived ? "Archived" : "Active"}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
       </View>
 
-      {showInitialLoad ? (
+      {showArchived && archivedLoading && conversations.length === 0 ? (
+        <View style={styles.initialLoad}>
+          <BikeLoader label="Loading archived…" />
+        </View>
+      ) : showInitialLoad ? (
         <View style={styles.initialLoad}>
           <BikeLoader label="Loading conversations…" />
         </View>
       ) : conversations.length === 0 ? (
         <EmptyState
-          icon="chatbubbles-outline"
-          title="No conversations"
-          message="Start a conversation with a customer."
+          icon={showArchived ? "archive-outline" : "chatbubbles-outline"}
+          title={showArchived ? "Nothing archived" : "No conversations"}
+          message={
+            showArchived
+              ? "Threads you archive show up here. Long-press one to restore it."
+              : "Start a conversation with a customer."
+          }
         />
       ) : (
         <FlatList
@@ -249,6 +314,16 @@ export default function ChatListScreen() {
                 }}
                 onPress={() => router.push(`/(staff)/chat/${item.id}`)}
                 onLongPress={() => {
+                  if (showArchived) {
+                    Alert.alert("Restore", "Move back to active conversations?", [
+                      { text: "Cancel", style: "cancel" },
+                      {
+                        text: "Restore",
+                        onPress: () => unarchiveConversation(item.id),
+                      },
+                    ]);
+                    return;
+                  }
                   Alert.alert("Archive", "Archive this conversation?", [
                     { text: "Cancel", style: "cancel" },
                     {
@@ -527,6 +602,21 @@ const styles = StyleSheet.create({
   modalTitle: {
     ...fontSize.lg,
     fontWeight: "600",
+  },
+  filterRow: {
+    flexDirection: "row",
+    gap: spacing[2],
+    marginTop: spacing[2],
+  },
+  filterChip: {
+    paddingVertical: spacing[1.5],
+    paddingHorizontal: spacing[3],
+    borderRadius: borderRadius.full,
+    borderWidth: 1,
+  },
+  filterText: {
+    ...fontSize.sm,
+    fontWeight: "500",
   },
   searchInput: {
     margin: spacing[4],
