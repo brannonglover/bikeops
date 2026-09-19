@@ -1,6 +1,13 @@
 import { Platform } from "react-native";
-import { AudioDevice, Call, Voice } from "@twilio/voice-react-native-sdk";
+import {
+  AudioDevice,
+  Call,
+  CallInvite,
+  CallKit,
+  Voice,
+} from "@twilio/voice-react-native-sdk";
 import { getVoiceAccessToken } from "@/lib/api";
+import { INCOMING_CALL_SOUND } from "@/lib/notifications";
 
 let voiceDevice: Voice | null = null;
 
@@ -18,15 +25,89 @@ function currentPlatform(): "ios" | "android" {
 /**
  * Stands up the SDK's PushKit registry at launch.
  *
- * Nothing registers with Twilio for push any more, so no VoIP push will ever
- * arrive and CallKit will never show an incoming call. This is kept purely
- * because the Twilio iOS SDK needs it during startup: without it the SDK's
- * CallKit path could not start calls at all, and every connect() — answering
- * and plain outbound dialing alike — hung with no call ever reaching Twilio.
+ * This is what receives the VoIP push Twilio sends when the server dials this
+ * device as a <Client>, and it has to be in place before any call — inbound or
+ * out. Without it the SDK's CallKit path cannot start calls at all: every
+ * connect() hung with nothing ever reaching Twilio.
  */
 export async function initializePushRegistry(): Promise<void> {
   if (Platform.OS !== "ios") return;
   await getVoiceDevice().initializePushRegistry();
+}
+
+/**
+ * Dresses the system call screen as this app's.
+ *
+ * The screen itself belongs to iOS and cannot be replaced — any VoIP push has
+ * to be handed straight to CallKit — but the ringtone and the icon on it are
+ * ours, which is what makes an incoming call read as the shop's rather than as
+ * a generic call. The ringtone is the same file the app bundles for
+ * notifications; the expo-notifications config plugin copies it into the iOS
+ * bundle, which is where CallKit looks for it by name.
+ */
+export async function configureCallKit(): Promise<void> {
+  if (Platform.OS !== "ios") return;
+  // Every one of these is optional on the native side — it only reads the keys
+  // that are present — even though the SDK's type marks them all required, so
+  // this sets the two that matter and leaves the rest at the SDK's defaults
+  // (which are already one call group of one call). An icon on the call screen
+  // would need an 80x80 PNG added to the iOS bundle; nothing ships one yet.
+  const configuration = {
+    callKitRingtoneSound: INCOMING_CALL_SOUND,
+    callKitIncludesCallsInRecents: true,
+  } as CallKit.ConfigurationOptions;
+
+  await getVoiceDevice().setCallKitConfiguration(configuration);
+}
+
+/**
+ * Tells Twilio this device should be rung for calls to the shop.
+ *
+ * Registration is per access token and expires with it, so this runs at sign
+ * in and again whenever the app comes back to the foreground — an expired
+ * registration fails silently, and a device that has quietly stopped being
+ * rung is exactly the failure staff cannot see.
+ */
+export async function registerForVoicePush(): Promise<void> {
+  const { token } = await getVoiceAccessToken(currentPlatform());
+  await getVoiceDevice().register(token);
+}
+
+/** Stops this device being rung — on sign out, so a shared phone goes quiet. */
+export async function unregisterVoicePush(): Promise<void> {
+  try {
+    const { token } = await getVoiceAccessToken(currentPlatform());
+    await getVoiceDevice().unregister(token);
+  } catch {
+    // Signing out with no network still has to sign the user out; Twilio drops
+    // the registration with the token when it expires anyway.
+  }
+}
+
+/**
+ * Subscribes to inbound call invites. Returns an unsubscribe function.
+ *
+ * On iOS the SDK has already reported the invite to CallKit by the time this
+ * fires — iOS requires that within milliseconds of the VoIP push — so the
+ * phone is ringing before the listener runs. The listener's job is to mirror
+ * that call into the app's own UI, not to start the ring.
+ */
+export function onCallInvite(listener: (invite: CallInvite) => void): () => void {
+  const voice = getVoiceDevice();
+  voice.on(Voice.Event.CallInvite, listener);
+  return () => {
+    voice.removeListener(Voice.Event.CallInvite, listener);
+  };
+}
+
+/** Invites the SDK is already holding — for a cold start into a ringing call. */
+export async function getPendingCallInvites(): Promise<CallInvite[]> {
+  try {
+    const invites = await getVoiceDevice().getCallInvites();
+    return Array.from(invites.values());
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -85,11 +166,10 @@ export function onAudioDevicesUpdated(
 /**
  * Answers an inbound call announced by a push notification.
  *
- * Inbound calls are not Twilio invites here — they wait in the shop's queue
- * while an ordinary notification rings the device (this app deliberately does
- * not register for PushKit, because iOS would then force the call onto the
- * native CallKit screen). Answering therefore means placing an outbound leg
- * that dials into that queue, which /outgoing recognises by Mode=answer.
+ * Superseded by CallInvite.accept(): inbound calls are real Twilio invites
+ * again, so answering no longer means dialing back into a queue. Kept, with
+ * its server half (/outgoing's Mode=answer and the queue TwiML), because it is
+ * the whole fallback if CallKit has to be backed out a second time.
  */
 export async function answerQueuedCall(
   callId: string,

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AudioDevice, Call } from "@twilio/voice-react-native-sdk";
+import { AudioDevice, Call, CallInvite } from "@twilio/voice-react-native-sdk";
 import {
-  answerQueuedCall,
   listAudioDevices,
   onAudioDevicesUpdated,
   placeOutboundCall,
@@ -9,7 +8,6 @@ import {
   selectAudioDevice,
   withConnectTimeout,
 } from "@/lib/voice";
-import { declineCall } from "@/lib/api";
 
 export type CallStatus =
   | "idle"
@@ -33,7 +31,7 @@ export type CallState = {
   audioRoute: AudioDevice.Type | null;
   /** When the media legs joined, for the in-call duration timer. */
   connectedAt: number | null;
-  /** Server-side Call id of a ringing inbound call, from its notification. */
+  /** Server-side Call id of a ringing inbound call, when one is known. */
   pendingCallId: string | null;
 };
 
@@ -86,14 +84,20 @@ const IDLE_STATE: CallState = {
  * Owns the single active call for the app — outbound dials and inbound calls
  * alike.
  *
- * Inbound calls arrive as ordinary push notifications, not Twilio invites:
- * the caller holds in a server-side queue and presentIncomingCall() puts the
- * ringing UI up. Answering dials into that queue. See lib/voice.ts for why
- * this app avoids PushKit entirely.
+ * Inbound calls arrive as Twilio call invites over a VoIP push. On iOS the SDK
+ * has already handed the invite to CallKit before presentIncomingCall() runs,
+ * so the phone is ringing by then and this only mirrors the call into the
+ * app's own UI — accepting and declining go through the invite itself.
  */
 export function useCallManager() {
   const [state, setState] = useState<CallState>(IDLE_STATE);
   const callRef = useRef<Call | null>(null);
+  /**
+   * The invite currently ringing. Held in a ref rather than in state because
+   * it is a native object with identity that matters — accept() and reject()
+   * have to reach the same instance the SDK is holding.
+   */
+  const inviteRef = useRef<CallInvite | null>(null);
   /**
    * Set when the user ends the call themselves. hangUp() clears the screen
    * immediately, but disconnect() still fires Disconnected a moment later —
@@ -181,29 +185,38 @@ export function useCallManager() {
   );
 
   /**
-   * Puts the ringing UI up for an inbound call announced by a notification.
-   * Safe to call more than once for the same call: the notification fires on
-   * arrival when the app is foregrounded, and again when it is tapped.
+   * Mirrors a ringing invite into the app's UI. CallKit is already ringing the
+   * phone by the time this runs, so this is only about what staff see if they
+   * open the app mid-ring.
+   *
+   * Safe to call more than once for the same invite: the listener fires on
+   * arrival, and a cold start replays whatever the SDK is still holding.
    */
   const presentIncomingCall = useCallback(
-    (incoming: { callId: string; number: string; displayName?: string | null }) => {
+    (incoming: {
+      invite: CallInvite;
+      number: string;
+      displayName?: string | null;
+      callId?: string | null;
+    }) => {
       setState((prev) => {
-        // A second caller must not hijack the screen mid-call, and a repeat
-        // notification for the call already showing must not reset it. The
-        // terminal states are fair game: they linger for a few seconds after
-        // a call ends, and a new call arriving in that window should ring.
+        // A second caller must not hijack the screen mid-call, and a repeat of
+        // the invite already showing must not reset it. The terminal states are
+        // fair game: they linger for a few seconds after a call ends, and a new
+        // call arriving in that window should ring.
         const free =
           prev.status === "idle" ||
           prev.status === "disconnected" ||
           prev.status === "failed";
         if (!free) return prev;
+        inviteRef.current = incoming.invite;
         return {
           ...IDLE_STATE,
           status: "incoming",
           number: incoming.number,
           displayName: incoming.displayName ?? null,
           direction: "inbound",
-          pendingCallId: incoming.callId,
+          pendingCallId: incoming.callId ?? null,
         };
       });
     },
@@ -211,24 +224,20 @@ export function useCallManager() {
   );
 
   /**
-   * Answers by dialing into the queue the caller is holding in — there is no
-   * invite to accept. The server bridges the two legs.
+   * Accepts the invite. Answering from the CallKit screen does this natively
+   * without going through here, so this path only serves the in-app buttons.
    */
   const acceptIncoming = useCallback(async () => {
-    const callId = state.pendingCallId;
-    if (!callId) return;
+    const invite = inviteRef.current;
+    if (!invite) return;
+    inviteRef.current = null;
     endedByUserRef.current = false;
     setState((prev) => ({ ...prev, status: "connecting" }));
     try {
-      await releaseStrayCalls();
-      attachCallListeners(
-        await withConnectTimeout(
-          answerQueuedCall(callId, state.displayName ?? undefined),
-          CONNECT_TIMEOUT_MS
-        )
-      );
+      attachCallListeners(await withConnectTimeout(invite.accept(), CONNECT_TIMEOUT_MS));
     } catch (error) {
-      // Leaving the refused call in place would block the next answer too.
+      // A refused accept leaves CallKit holding the slot, which would block
+      // the next call too.
       await releaseStrayCalls();
       setState((prev) => ({
         ...prev,
@@ -236,20 +245,24 @@ export function useCallManager() {
         error: error instanceof Error ? error.message : "Unable to answer call",
       }));
     }
-  }, [attachCallListeners, state.pendingCallId, state.displayName]);
+  }, [attachCallListeners]);
 
+  /**
+   * Declines the invite. Twilio ends the <Dial> as soon as every rung device
+   * has refused, so the caller reaches voicemail immediately rather than
+   * listening out the rest of the ring window.
+   */
   const rejectIncoming = useCallback(async () => {
-    const callId = state.pendingCallId;
+    const invite = inviteRef.current;
+    inviteRef.current = null;
     setState(IDLE_STATE);
-    if (!callId) return;
+    if (!invite) return;
     try {
-      // Sends the caller to voicemail now instead of leaving them on hold for
-      // the remainder of the ring window.
-      await declineCall(callId);
+      await invite.reject();
     } catch {
       // They still time out to voicemail on their own — nothing to recover.
     }
-  }, [state.pendingCallId]);
+  }, []);
 
   // Only failures reach these states now, and they clear themselves rather
   // than leaving the overlay pinned over the app waiting to be dismissed.

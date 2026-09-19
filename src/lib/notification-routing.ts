@@ -102,11 +102,11 @@ export function routeForNotification(
               data.messageId
             )}`
           : `/(staff)/chat/${data.conversationId}`;
-      case "incoming_call":
-        // Deliberately routeless: CallProvider answers this one by raising the
-        // call screen over whatever is already on screen, so navigating would
-        // only throw away the user's place in the app.
-        return null;
+      case "missed_call":
+        // The ring is long over by the time this arrives, so the useful place
+        // to land is the call log, where the missed call and any voicemail it
+        // left are both waiting.
+        return "/(staff)/calls";
     }
   }
 
