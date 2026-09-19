@@ -150,10 +150,17 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     // The ringtone has to be bundled into the binary — the notification's
     // `sound` field and the Android channel below both reference it by
     // filename, so it ships with a native build, never with an OTA update.
+    //
+    // ringtone.wav is not a notification sound and is listed here only for
+    // the copying: this plugin puts each file in `res/raw` on Android and in
+    // the app bundle on iOS, which are precisely the two places the Twilio
+    // Voice SDK looks for the outbound ringback it plays while a call rings
+    // (`R.raw.ringtone`, `pathForResource:@"ringtone"`). Doing it here beats
+    // a second config plugin that would copy the same file to the same spots.
     [
       "expo-notifications",
       {
-        sounds: ["./assets/sounds/incoming_call.wav"],
+        sounds: ["./assets/sounds/incoming_call.wav", "./assets/sounds/ringtone.wav"],
         mode: IS_DEV ? "development" : "production",
       },
     ],
