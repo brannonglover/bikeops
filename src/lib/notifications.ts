@@ -11,23 +11,40 @@ import { api, type AuthRole } from "./api";
  * matter of taste and changes by regenerating the file in place — see
  * assets/sounds/incoming_call.py.
  *
- * Despite living here, this is now CallKit's ringtone rather than a
- * notification sound: inbound calls ring as real calls, not notifications.
- * The config plugin is simply what puts the file in the iOS bundle, which is
- * where CallKit looks it up by name — see configureCallKit in lib/voice.
+ * iOS takes it by filename on the notification itself; Android takes it on the
+ * channel below. Both resolve it by base name, so renaming the asset means
+ * renaming it in all three places.
  */
 export const INCOMING_CALL_SOUND = "incoming_call.wav";
 
+/**
+ * Android puts sound and importance on the channel, not the notification, and
+ * a channel's settings are frozen the moment it is first created — later
+ * createNotificationChannel calls with the same id are ignored, and deleting
+ * one only makes Android remember its old settings for the next time. So
+ * changing the ring means bumping this suffix, not editing the channel.
+ *
+ * The server names this channel on the call push. A notification sent to a
+ * channel the device has not created yet is dropped silently, so the app build
+ * that creates it has to reach staff devices before the server starts asking
+ * for it.
+ */
+export const INCOMING_CALL_CHANNEL_ID = "incoming_call_v1";
+
 Notifications.setNotificationHandler({
   handleNotification: async (notification) => {
-    // A ringing call is CallKit's now, not a notification, so nothing here
-    // needs suppressing — a "Missed call" is an ordinary notification and
-    // should behave like one.
+    // An incoming call already raises the full call screen when the app is
+    // open, so its banner would just cover the answer button.
+    const isCall =
+      (notification.request.content.data as { type?: unknown } | null)?.type ===
+      "incoming_call";
     return {
-      shouldShowBanner: true,
-      shouldShowList: true,
-      shouldPlaySound: true,
-      shouldSetBadge: true,
+      shouldShowBanner: !isCall,
+      shouldShowList: !isCall,
+      // A call in the foreground rings on a loop from useIncomingRing instead;
+      // letting the notification play its one-shot too just doubles the tone.
+      shouldPlaySound: !isCall,
+      shouldSetBadge: !isCall,
     };
   },
 });
@@ -38,21 +55,21 @@ export type NotificationType =
   | "new_message"
   | "booking_request"
   | "staff_booking_digest"
-  // Raised by the server once a call has finished ringing unanswered. The ring
-  // itself is CallKit's — see lib/voice.ts — so this is a record of a call
-  // that was missed, never an attempt to announce one in progress.
-  | "missed_call";
+  // The ring for an inbound call. This app does not use PushKit, so an
+  // ordinary notification is what wakes the device for a call — see
+  // lib/voice.ts and the CallScreen.
+  | "incoming_call";
 
 export interface NotificationData {
   type: NotificationType;
   jobId?: string;
   conversationId?: string;
   messageId?: string;
-  /** missed_call: server-side Call id of the call that went unanswered. */
+  /** incoming_call: server-side Call id, used to answer or decline. */
   callId?: string;
-  /** missed_call: caller's number in E.164. */
+  /** incoming_call: caller's number in E.164. */
   from?: string;
-  /** missed_call: customer name when the number is a known customer. */
+  /** incoming_call: customer name when the number is a known customer. */
   customerName?: string | null;
   todayJobIds?: string[] | string;
   tomorrowJobIds?: string[] | string;
@@ -113,6 +130,34 @@ export async function registerForPushNotifications(
       vibrationPattern: [0, 250, 250, 250],
       lightColor: "#f59e0b",
     });
+
+    // Calls get their own channel so they can ring rather than chime, and so
+    // staff can turn shop notifications down in Android settings without also
+    // silencing the phone. NOTIFICATION_RINGTONE routes the tone through the
+    // ring stream, so it follows ring volume the way a call should rather than
+    // notification volume. The vibration is one pulse over the strike and then
+    // a long gap, matching the tone's 4s cadence without assuming how many
+    // notes the current voicing has.
+    //
+    // Only staff take shop calls, so a customer's phone never gets this
+    // channel cluttering its notification settings.
+    if (role === "staff") {
+      await Notifications.setNotificationChannelAsync(INCOMING_CALL_CHANNEL_ID, {
+        name: "Incoming calls",
+        description: "Rings when a customer calls the shop.",
+        importance: Notifications.AndroidImportance.MAX,
+        sound: INCOMING_CALL_SOUND,
+        audioAttributes: {
+          usage: Notifications.AndroidAudioUsage.NOTIFICATION_RINGTONE,
+          contentType: Notifications.AndroidAudioContentType.SONIFICATION,
+        },
+        enableVibrate: true,
+        vibrationPattern: [0, 500, 3500],
+        lightColor: "#f59e0b",
+        showBadge: false,
+        lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+      });
+    }
   }
 
   const token = await getExpoPushToken();

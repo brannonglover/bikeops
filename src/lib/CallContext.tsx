@@ -8,19 +8,15 @@ import {
   type ReactNode,
 } from "react";
 import { AppState, Pressable, Text, View } from "react-native";
+import * as Notifications from "expo-notifications";
 import { Ionicons } from "@expo/vector-icons";
 import { useQueryClient } from "@tanstack/react-query";
-import type { CallInvite } from "@twilio/voice-react-native-sdk";
 import { callProgressLabel, useCallManager, type CallState } from "@/hooks/useCallManager";
+import { useIncomingRing } from "@/hooks/useIncomingRing";
 import { callsQueryKey } from "@/lib/staff-queries";
 import { useAuth } from "@/lib/auth";
-import {
-  configureCallKit,
-  getPendingCallInvites,
-  initializePushRegistry,
-  onCallInvite,
-  registerForVoicePush,
-} from "@/lib/voice";
+import { normalizeNotificationData } from "@/lib/notification-routing";
+import { initializePushRegistry } from "@/lib/voice";
 import { useTheme } from "@/lib/ThemeContext";
 import { formatPhoneNumber } from "@/lib/format";
 import { CallScreen } from "@/components/calls/CallScreen";
@@ -31,13 +27,19 @@ export type RegistrationState = {
   error: string | null;
 };
 
+/**
+ * A notification older than this is from a call that has already timed out to
+ * voicemail, so tapping it should not raise a ringing screen for a caller who
+ * is no longer there. Comfortably longer than the server's ring window.
+ */
+const CALL_NOTIFICATION_TTL_MS = 45_000;
+
 type CallContextValue = {
   state: CallState;
   /**
-   * Whether this device can actually receive inbound calls — that is, whether
-   * Twilio has a live registration for it and will send a VoIP push. Nothing
-   * to do with notification permission any more: CallKit rings regardless of
-   * it, and a device that is merely unregistered rings not at all.
+   * Whether this device can actually receive inbound calls. Inbound calls ring
+   * via ordinary push notifications, so notification permission is the whole
+   * requirement — no Twilio-side registration is involved.
    */
   registration: RegistrationState;
   startCall: (toNumber: string, displayName?: string) => Promise<void>;
@@ -169,6 +171,41 @@ function CallBanner({
   );
 }
 
+/**
+ * Pulls the call details out of a notification, or null if it isn't one.
+ */
+function incomingCallFromNotification(
+  notification: Notifications.Notification
+): { callId: string; number: string; displayName: string | null } | null {
+  const data = normalizeNotificationData(notification.request.content.data);
+  if (!data || data.type !== "incoming_call") return null;
+  if (typeof data.callId !== "string" || typeof data.from !== "string") return null;
+
+  return {
+    callId: data.callId,
+    number: data.from,
+    displayName: typeof data.customerName === "string" ? data.customerName : null,
+  };
+}
+
+/**
+ * Age of a notification in milliseconds, or null when it can't be determined.
+ *
+ * `date` is not one unit across platforms: iOS serializes
+ * timeIntervalSince1970 (SECONDS), Android getTime() (milliseconds). Comparing
+ * the iOS value against Date.now() directly makes every notification look
+ * decades old — which silently swallowed every inbound call until this was
+ * normalized. Anything below the year-2001-in-milliseconds mark has to be
+ * seconds, since as milliseconds it would predate the product by decades.
+ */
+function notificationAgeMs(notification: Notifications.Notification): number | null {
+  const raw: unknown = notification.date;
+  const value = raw instanceof Date ? raw.getTime() : typeof raw === "number" ? raw : null;
+  if (value === null || !Number.isFinite(value) || value <= 0) return null;
+  const millis = value < 1e12 ? value * 1000 : value;
+  return Date.now() - millis;
+}
+
 export function CallProvider({ children }: { children: ReactNode }) {
   const {
     state,
@@ -190,6 +227,10 @@ export function CallProvider({ children }: { children: ReactNode }) {
 
   // The full call screen is the default; minimizing trades it for the banner.
   const [minimized, setMinimized] = useState(false);
+
+  // Ring for as long as the call is waiting to be picked up. Answering,
+  // declining and the call timing out all leave "incoming", which stops it.
+  useIncomingRing(state.status === "incoming");
 
   // Every new call opens full-screen, however the last one was left.
   useEffect(() => {
@@ -232,26 +273,19 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const minimize = useCallback(() => setMinimized(true), []);
   const expand = useCallback(() => setMinimized(false), []);
 
-  // Both have to be in place before any call, inbound or out, and neither is
-  // tied to the staff session — the VoIP push can arrive before the app has
-  // finished restoring one. Configuring CallKit late would mean the first call
-  // of a launch ringing with the system tone instead of the shop's.
+  // Required for the Twilio SDK to place calls at all on iOS — see
+  // initializePushRegistry. Not tied to the staff session: it has to run at
+  // launch, before anyone tries to dial or answer.
   useEffect(() => {
     void initializePushRegistry().catch((error) => {
       console.warn("[voice] PushKit registry init failed:", error);
     });
-    void configureCallKit().catch((error) => {
-      console.warn("[voice] CallKit configuration failed:", error);
-    });
   }, []);
 
   /**
-   * Registers this device with Twilio so inbound calls ring it.
-   *
-   * Repeated on every foreground rather than once at sign in: a registration
-   * is tied to the access token that made it and lapses with it, and a device
-   * that has quietly stopped being rung looks exactly like one nobody has
-   * called. Re-registering with a fresh token is cheap and idempotent.
+   * Notification permission is what decides whether calls ring on this device
+   * now that inbound calls no longer use a Twilio push registration. Rechecked
+   * on foreground because permission can be revoked from Settings at any time.
    */
   useEffect(() => {
     if (!staffUser) {
@@ -264,17 +298,21 @@ export function CallProvider({ children }: { children: ReactNode }) {
     const check = async () => {
       setRegistration((prev) => ({ status: "registering", error: prev.error }));
       try {
-        await registerForVoicePush();
+        const { granted } = await Notifications.getPermissionsAsync();
         if (cancelled) return;
-        setRegistration({ status: "registered", error: null });
+        setRegistration(
+          granted
+            ? { status: "registered", error: null }
+            : {
+                status: "failed",
+                error: "Notifications are off, so calls can't ring this device",
+              }
+        );
       } catch (error) {
         if (cancelled) return;
         setRegistration({
           status: "failed",
-          error:
-            error instanceof Error
-              ? error.message
-              : "This device isn't registered, so calls can't ring it",
+          error: error instanceof Error ? error.message : "Could not check notifications",
         });
       }
     };
@@ -290,49 +328,62 @@ export function CallProvider({ children }: { children: ReactNode }) {
     };
   }, [staffUser]);
 
-  // Mirror a ringing invite into the app's own UI. CallKit is already ringing
-  // the phone by the time this fires — iOS requires the SDK to report the VoIP
-  // push within milliseconds — so none of this starts or stops the ring. It
-  // only decides what staff see if they open the app while it rings.
+  // Inbound calls arrive as notifications rather than Twilio invites, so the
+  // ring is wired up here rather than in useNotifications — CallProvider sits
+  // inside NotificationProvider and so can't reach back up to it.
   useEffect(() => {
-    const present = (invite: CallInvite) => {
-      const from = invite.getFrom();
-      // The server passes the customer's name and our Call id as custom
-      // parameters on the invite, so the screen can name the caller without a
-      // round trip while the phone is still ringing.
-      const custom = invite.getCustomParameters() ?? {};
-      const displayName = custom.customerName || null;
+    if (!staffUser) return;
 
-      // The CallKit screen defaults to the raw SIP identity, which reads as
-      // gibberish. This is the only chance to correct it — once the screen is
-      // up it is the system's, and a customer's name is the whole reason to
-      // glance at a ringing phone.
-      if (displayName) {
-        void invite.updateCallerHandle(displayName).catch(() => {
-          // Cosmetic: the call still rings, just labelled less helpfully.
-        });
-      }
-
-      presentIncomingCall({
-        invite,
-        number: from,
-        displayName,
-        callId: custom.callId || null,
-      });
+    const present = (notification: Notifications.Notification) => {
+      const incoming = incomingCallFromNotification(notification);
+      if (incoming) presentIncomingCall(incoming);
     };
 
-    const unsubscribe = onCallInvite(present);
+    // Live events need no freshness check — they are happening right now.
+    // Arrived while the app is open: ring immediately rather than show a
+    // banner the user then has to tap.
+    const received = Notifications.addNotificationReceivedListener(present);
+    // Tapped from the background or lock screen.
+    const responded = Notifications.addNotificationResponseReceivedListener((response) =>
+      present(response.notification)
+    );
 
-    // Launching into a call that is already ringing: the SDK hands over any
-    // invite it is still holding, which a listener registered after the push
-    // would otherwise miss entirely.
-    void getPendingCallInvites().then((invites) => {
-      const [pending] = invites;
-      if (pending) present(pending);
+    // Cold start replays the tap that launched the app — and keeps replaying it
+    // on every later launch until something clears it, so this is the one path
+    // that must not ring for a call that is long over. An unreadable age fails
+    // open: a spurious ring is cheaper than a missed customer.
+    void Notifications.getLastNotificationResponseAsync().then((response) => {
+      if (!response) return;
+      const age = notificationAgeMs(response.notification);
+      if (age !== null && age > CALL_NOTIFICATION_TTL_MS) return;
+      present(response.notification);
     });
 
-    return unsubscribe;
-  }, [presentIncomingCall]);
+    return () => {
+      received.remove();
+      responded.remove();
+    };
+  }, [staffUser, presentIncomingCall]);
+
+  // Clear the "Incoming call" notification once the call is no longer ringing,
+  // so a handled call doesn't sit in the notification shade.
+  useEffect(() => {
+    if (state.status === "incoming" || state.status === "idle") return;
+    void Notifications.getPresentedNotificationsAsync()
+      .then((presented) =>
+        Promise.all(
+          presented
+            .filter(
+              (n) =>
+                normalizeNotificationData(n.request.content.data)?.type === "incoming_call"
+            )
+            .map((n) => Notifications.dismissNotificationAsync(n.request.identifier))
+        )
+      )
+      .catch(() => {
+        // Tray cleanup is cosmetic; not worth surfacing a failure.
+      });
+  }, [state.status]);
 
   const value: CallContextValue = {
     state,
