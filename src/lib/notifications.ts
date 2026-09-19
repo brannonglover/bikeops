@@ -38,11 +38,14 @@ Notifications.setNotificationHandler({
     const isCall =
       (notification.request.content.data as { type?: unknown } | null)?.type ===
       "incoming_call";
+    // Silent and invisible for a call, because by the time the app is in the
+    // foreground the call screen is already up and answering is one tap away.
+    // The server keeps re-sending this every few seconds for as long as the
+    // caller holds — that repeat is the ring — so letting each one through
+    // would keep alerting someone who is already looking at the call.
     return {
       shouldShowBanner: !isCall,
       shouldShowList: !isCall,
-      // A call in the foreground rings on a loop from useIncomingRing instead;
-      // letting the notification play its one-shot too just doubles the tone.
       shouldPlaySound: !isCall,
       shouldSetBadge: !isCall,
     };
