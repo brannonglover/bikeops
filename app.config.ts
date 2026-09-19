@@ -147,7 +147,16 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
         },
       },
     ],
-    ["expo-notifications", { sounds: [], mode: IS_DEV ? "development" : "production" }],
+    // The ringtone has to be bundled into the binary — the notification's
+    // `sound` field and the Android channel below both reference it by
+    // filename, so it ships with a native build, never with an OTA update.
+    [
+      "expo-notifications",
+      {
+        sounds: ["./assets/sounds/incoming_call.wav"],
+        mode: IS_DEV ? "development" : "production",
+      },
+    ],
     "./plugins/withDynamicVersioning",
     ["@stripe/stripe-terminal-react-native", {
       bluetoothBackgroundMode: false,

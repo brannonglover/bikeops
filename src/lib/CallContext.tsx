@@ -12,6 +12,7 @@ import * as Notifications from "expo-notifications";
 import { Ionicons } from "@expo/vector-icons";
 import { useQueryClient } from "@tanstack/react-query";
 import { callProgressLabel, useCallManager, type CallState } from "@/hooks/useCallManager";
+import { useIncomingRing } from "@/hooks/useIncomingRing";
 import { callsQueryKey } from "@/lib/staff-queries";
 import { useAuth } from "@/lib/auth";
 import { normalizeNotificationData } from "@/lib/notification-routing";
@@ -226,6 +227,10 @@ export function CallProvider({ children }: { children: ReactNode }) {
 
   // The full call screen is the default; minimizing trades it for the banner.
   const [minimized, setMinimized] = useState(false);
+
+  // Ring for as long as the call is waiting to be picked up. Answering,
+  // declining and the call timing out all leave "incoming", which stops it.
+  useIncomingRing(state.status === "incoming");
 
   // Every new call opens full-screen, however the last one was left.
   useEffect(() => {
