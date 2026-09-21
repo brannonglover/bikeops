@@ -1,4 +1,5 @@
 import { Platform } from "react-native";
+import { setIsAudioActiveAsync } from "expo-audio";
 import { AudioDevice, Call, Voice } from "@twilio/voice-react-native-sdk";
 import { getVoiceAccessToken } from "@/lib/api";
 
@@ -30,6 +31,26 @@ export async function initializePushRegistry(): Promise<void> {
 }
 
 /**
+ * Hands the app's audio session back before a call is placed.
+ *
+ * Everything else in the app that makes a sound — voicemail playback, the
+ * greeting recorder and its preview — activates the process-wide
+ * AVAudioSession and leaves it active. That is the session the SDK has to
+ * hand to CallKit to start a call, and a refused CXStartCallAction leaves
+ * connect() neither resolving nor rejecting: the screen sits on "Answering…"
+ * and no call ever reaches Twilio. It is the same failure the in-app ring
+ * caused before it was removed, which is why this now guards the connect
+ * itself rather than any one thing that plays audio.
+ */
+async function releaseAudioSession(): Promise<void> {
+  try {
+    await setIsAudioActiveAsync(false);
+  } catch {
+    // Busy, or never activated in the first place. Worth dialing regardless.
+  }
+}
+
+/**
  * Places an outbound call to a phone number via the shop's Twilio number.
  * The custom `To` param is read by the /outgoing TwiML webhook to dial the
  * PSTN leg — see bikeopsco's src/lib/voice.ts for the server-side half.
@@ -39,6 +60,7 @@ export async function placeOutboundCall(
   displayName?: string
 ): Promise<Call> {
   const { token } = await getVoiceAccessToken(currentPlatform());
+  await releaseAudioSession();
   const voice = getVoiceDevice();
   return voice.connect(token, {
     params: { To: toNumber },
@@ -96,6 +118,7 @@ export async function answerQueuedCall(
   displayName?: string
 ): Promise<Call> {
   const { token } = await getVoiceAccessToken(currentPlatform());
+  await releaseAudioSession();
   return getVoiceDevice().connect(token, {
     params: { Mode: "answer", CallId: callId },
     contactHandle: displayName,

@@ -70,6 +70,18 @@ export function callProgressLabel(state: CallState): string {
  */
 const CONNECT_TIMEOUT_MS = 12_000;
 
+/**
+ * How long a call may sit in "connecting" without a word from the SDK.
+ *
+ * connect() resolving is not the same as a call existing: when the native
+ * layer can't start one — CallKit refusing it, most often — a Call object
+ * comes back and then never fires a single event, so CONNECT_TIMEOUT_MS above
+ * never sees a failure to report. This is the backstop for that, and the
+ * reason answering can no longer leave the screen reading "Answering…" until
+ * the app is force-quit.
+ */
+const CONNECT_SILENCE_TIMEOUT_MS = 20_000;
+
 const IDLE_STATE: CallState = {
   status: "idle",
   number: null,
@@ -250,6 +262,37 @@ export function useCallManager() {
       // They still time out to voicemail on their own — nothing to recover.
     }
   }, [state.pendingCallId]);
+
+  // A connect that never came to anything: no Ringing, no Connected, no
+  // Disconnected. Tear down whatever the SDK handed back and say so, rather
+  // than leaving an inert screen over the app.
+  useEffect(() => {
+    if (state.status !== "connecting") return;
+    const timer = setTimeout(() => {
+      const call = callRef.current;
+      callRef.current = null;
+      // The Disconnected this disconnect() provokes must not overwrite the
+      // failure below with the quieter "call ended".
+      endedByUserRef.current = true;
+      void (async () => {
+        try {
+          await call?.disconnect();
+        } finally {
+          await releaseStrayCalls();
+        }
+      })();
+      setState((prev) =>
+        prev.status === "connecting"
+          ? {
+              ...prev,
+              status: "failed",
+              error: "The call couldn't be connected. Please try again.",
+            }
+          : prev
+      );
+    }, CONNECT_SILENCE_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [state.status]);
 
   // Only failures reach these states now, and they clear themselves rather
   // than leaving the overlay pinned over the app waiting to be dismissed.
