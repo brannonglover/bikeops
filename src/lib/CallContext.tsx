@@ -188,6 +188,33 @@ function incomingCallFromNotification(
 }
 
 /**
+ * Drops "Incoming call" notifications from the shade.
+ *
+ * The ring is not one notification: the server sends a fresh push every few
+ * seconds for as long as the caller holds, so every call leaves a short stack
+ * of identical alerts behind. `keep` spares the ones that still mean
+ * something — the newest alert for the call being handled, or an alert for a
+ * second caller who is still waiting in the queue.
+ */
+async function dismissIncomingCallNotifications(
+  keep: (notification: Notifications.Notification) => boolean = () => false
+): Promise<void> {
+  try {
+    const presented = await Notifications.getPresentedNotificationsAsync();
+    await Promise.all(
+      presented
+        .filter(
+          (n) => normalizeNotificationData(n.request.content.data)?.type === "incoming_call"
+        )
+        .filter((n) => !keep(n))
+        .map((n) => Notifications.dismissNotificationAsync(n.request.identifier))
+    );
+  } catch {
+    // Tray cleanup is cosmetic; not worth surfacing a failure.
+  }
+}
+
+/**
  * Age of a notification in milliseconds, or null when it can't be determined.
  *
  * `date` is not one unit across platforms: iOS serializes
@@ -331,7 +358,18 @@ export function CallProvider({ children }: { children: ReactNode }) {
 
     const present = (notification: Notifications.Notification) => {
       const incoming = incomingCallFromNotification(notification);
-      if (incoming) presentIncomingCall(incoming);
+      if (!incoming) return;
+      // Each repeat of the ring is its own notification, so clear the earlier
+      // ones for this call as the next arrives and the shade holds a single
+      // "Incoming call" instead of one alert per few seconds of ringing.
+      // Scoped to this callId: a second caller holding in the queue is
+      // ringing too, and their alert has to survive.
+      void dismissIncomingCallNotifications(
+        (n) =>
+          n.request.identifier === notification.request.identifier ||
+          incomingCallFromNotification(n)?.callId !== incoming.callId
+      );
+      presentIncomingCall(incoming);
     };
 
     // Live events need no freshness check — they are happening right now.
@@ -360,25 +398,47 @@ export function CallProvider({ children }: { children: ReactNode }) {
     };
   }, [staffUser, presentIncomingCall]);
 
-  // Clear the "Incoming call" notification once the call is no longer ringing,
-  // so a handled call doesn't sit in the notification shade.
+  // Clear a call's notifications once it is no longer ringing, so neither a
+  // handled call nor a missed one leaves the ring's stack of alerts in the
+  // notification shade.
+  //
+  // Keyed off *leaving* "incoming" rather than off the status that follows
+  // it: a call that is declined or rings out returns to "idle", which is also
+  // the status at launch, and sweeping on "idle" itself would clear a call
+  // that is ringing right now but has not been presented yet.
+  const ringingCallIdRef = useRef<string | null>(null);
   useEffect(() => {
-    if (state.status === "incoming" || state.status === "idle") return;
-    void Notifications.getPresentedNotificationsAsync()
-      .then((presented) =>
-        Promise.all(
-          presented
-            .filter(
-              (n) =>
-                normalizeNotificationData(n.request.content.data)?.type === "incoming_call"
-            )
-            .map((n) => Notifications.dismissNotificationAsync(n.request.identifier))
-        )
-      )
-      .catch(() => {
-        // Tray cleanup is cosmetic; not worth surfacing a failure.
+    if (state.status === "incoming") {
+      ringingCallIdRef.current = state.pendingCallId;
+      return;
+    }
+    const callId = ringingCallIdRef.current;
+    if (!callId) return;
+    ringingCallIdRef.current = null;
+    void dismissIncomingCallNotifications(
+      (n) => incomingCallFromNotification(n)?.callId !== callId
+    );
+  }, [state.status, state.pendingCallId]);
+
+  // A call that rang while the app was asleep never reached "incoming" here —
+  // the received listener only fires while the app is awake — so nothing
+  // above would ever clear its alerts. Sweep anything older than the ring
+  // window on the way back in: at that age the caller has already been sent
+  // to voicemail. An unreadable age is left alone rather than risk clearing a
+  // call that is ringing at this moment.
+  useEffect(() => {
+    const sweepStale = () =>
+      void dismissIncomingCallNotifications((n) => {
+        const age = notificationAgeMs(n);
+        return age === null || age <= CALL_NOTIFICATION_TTL_MS;
       });
-  }, [state.status]);
+
+    sweepStale();
+    const sub = AppState.addEventListener("change", (next) => {
+      if (next === "active") sweepStale();
+    });
+    return () => sub.remove();
+  }, []);
 
   const value: CallContextValue = {
     state,
