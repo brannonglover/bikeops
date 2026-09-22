@@ -305,6 +305,7 @@ export default function ConversationScreen() {
   const [inviteDaysLeft, setInviteDaysLeft] = useState<number | null>(null);
   const [sendingInvite, setSendingInvite] = useState(false);
   const [showInviteModal, setShowInviteModal] = useState(false);
+  const [togglingAi, setTogglingAi] = useState(false);
 
   const styles = useMemo(
     () =>
@@ -787,6 +788,33 @@ export default function ConversationScreen() {
       },
     ]);
   }, [goToChatThreads, id, queryClient]);
+
+  // Mirrors the web app's per-thread assistant switch. The API field name is
+  // the one the web client PATCHes; confirm before trusting it in the wild.
+  const toggleAiAssistant = useCallback(() => {
+    if (!id) return;
+    const current =
+      queryClient.getQueryData<Conversation>(["conversation", id])?.aiEnabled ===
+      true;
+    const next = !current;
+    setTogglingAi(true);
+    void (async () => {
+      try {
+        await api.patch(`/api/conversations/${id}`, { aiEnabled: next });
+        queryClient.setQueryData<Conversation>(["conversation", id], (old) =>
+          old ? { ...old, aiEnabled: next } : old
+        );
+        queryClient.invalidateQueries({ queryKey: conversationsQueryKey });
+      } catch {
+        Alert.alert(
+          "Error",
+          `Failed to turn the AI assistant ${next ? "on" : "off"}`
+        );
+      } finally {
+        setTogglingAi(false);
+      }
+    })();
+  }, [id, queryClient]);
 
   const handleContactSaved = useCallback(
     (customer: Customer) => {
@@ -1687,9 +1715,7 @@ export default function ConversationScreen() {
   const headerCustomerId = headerCustomer?.id;
   const headerCustomerPhone = headerCustomer?.phone?.trim();
   const headerIsProvisional = headerCustomer?.provisional === true;
-  const headerHasSmsConsent =
-    !!headerCustomerPhone && headerCustomer?.smsConsent === true;
-  const headerCanInvite = !!conversation?.customer?.email;
+  const headerAiEnabled = resolvedConversation?.aiEnabled === true;
 
   const headerMenuItems: {
     key: string;
@@ -1701,43 +1727,25 @@ export default function ConversationScreen() {
     onPress: () => void;
   }[] = [];
 
-  if (headerCustomerId) {
-    headerMenuItems.push({
-      key: "profile",
-      label: "Customer profile",
-      icon: "person-circle-outline",
-      onPress: () => router.push(`/(staff)/customers/${headerCustomerId}`),
-    });
-  }
   headerMenuItems.push({
-    key: "job",
-    label: "Open job card",
-    icon: "construct-outline",
-    onPress: () => void handleOpenJobCard(),
+    key: "ai",
+    label: "AI assistant",
+    detail: headerAiEnabled ? "On" : "Off",
+    icon: headerAiEnabled ? "sparkles" : "sparkles-outline",
+    color: headerAiEnabled ? colors.emerald[500] : theme.icon,
+    disabled: togglingAi,
+    onPress: toggleAiAssistant,
   });
   if (headerIsProvisional) {
     headerMenuItems.push({
       key: "contact",
-      label: "Create contact",
+      label: "Create customer",
       detail: "Not in your customer list yet",
       icon: "person-add-outline",
       color: colors.emerald[500],
       onPress: () => setShowCreateContact(true),
     });
   }
-  headerMenuItems.push({
-    key: "invite",
-    label: "Invite to app",
-    detail: !headerCanInvite
-      ? "No email on file"
-      : headerHasSmsConsent
-        ? "SMS consent given"
-        : "No SMS consent yet",
-    icon: "chatbubble-ellipses-outline",
-    color: headerHasSmsConsent ? colors.emerald[500] : theme.iconMuted,
-    disabled: !headerCanInvite || sendingInvite,
-    onPress: handleInvitePress,
-  });
   headerMenuItems.push({
     key: "archive",
     label: "Archive conversation",
@@ -1754,15 +1762,32 @@ export default function ConversationScreen() {
           // instead of fighting the centered title's fixed gutters.
           headerTitleAlign: "left",
           headerLeft: () => (
-            <TouchableOpacity
-              onPress={goToChatThreads}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              style={{ paddingRight: spacing[1] }}
-              accessibilityRole="button"
-              accessibilityLabel="Back to chat threads"
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: spacing[1],
+              }}
             >
-              <Ionicons name="chevron-back" size={26} color={theme.text} />
-            </TouchableOpacity>
+              <TouchableOpacity
+                onPress={goToChatThreads}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                style={{ paddingRight: spacing[1] }}
+                accessibilityRole="button"
+                accessibilityLabel="Back to chat threads"
+              >
+                <Ionicons name="chevron-back" size={26} color={theme.text} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={handleOpenJobCard}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                style={{ padding: spacing[1] }}
+                accessibilityRole="button"
+                accessibilityLabel="Open job card"
+              >
+                <Ionicons name="construct-outline" size={20} color={theme.icon} />
+              </TouchableOpacity>
+            </View>
           ),
           headerTitle: () => {
             const name = resolvedConversation

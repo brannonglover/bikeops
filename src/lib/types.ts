@@ -207,6 +207,8 @@ export interface Conversation {
   job: Job | null;
   messages: ChatMessage[];
   archived: boolean;
+  /** Web app's AI assistant toggle for this thread. */
+  aiEnabled?: boolean;
   customerTypingAt: string | null;
   staffLastReadAt: string | null;
   customerLastReadAt: string | null;
