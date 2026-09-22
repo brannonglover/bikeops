@@ -87,7 +87,7 @@ export function AppHeader({
   }
 
   const leftSlot = (
-    <View style={[styles.side, isLeftAligned && styles.sideAuto]}>
+    <View style={[styles.side, isLeftAligned ? styles.sideAuto : styles.sideFlex]}>
       <View style={styles.sideInner} onLayout={measure(setLeftWidth)}>
         {left ??
           (defaultLeft === "logo" ? (
@@ -101,7 +101,11 @@ export function AppHeader({
 
   const rightSlot = (
     <View
-      style={[styles.side, styles.sideRight, isLeftAligned && styles.sideAuto]}
+      style={[
+        styles.side,
+        styles.sideRight,
+        isLeftAligned ? styles.sideAuto : styles.sideFlex,
+      ]}
     >
       <View style={styles.sideInner} onLayout={measure(setRightWidth)}>
         {right}
@@ -161,7 +165,7 @@ export function renderAppHeader({
       headerLeft={options.headerLeft}
       headerRight={options.headerRight}
       headerTitle={options.headerTitle}
-      titleAlign={options.headerTitleAlign}
+      titleAlign={options.headerTitleAlign ?? "center"}
       defaultLeft="logo"
       useShopBranding={true}
       titleStyle={
@@ -171,6 +175,26 @@ export function renderAppHeader({
           ? (options.headerTitleStyle as TextStyle)
           : undefined
       }
+    />
+  );
+}
+
+/**
+ * Same renderer, but pinned left-aligned. Screens with a custom title element
+ * (chat threads) need the plain flex row: the centered variant floats the
+ * title over the side slots, which overlaps them if a slot measures short.
+ */
+export function renderAppHeaderLeftTitle(props: NativeStackHeaderProps) {
+  const { options, route } = props;
+  return (
+    <AppHeader
+      title={getHeaderTitle(options, route.name)}
+      headerLeft={options.headerLeft}
+      headerRight={options.headerRight}
+      headerTitle={options.headerTitle}
+      titleAlign="left"
+      defaultLeft="logo"
+      useShopBranding={true}
     />
   );
 }
@@ -193,20 +217,26 @@ const styles = StyleSheet.create({
     overflow: "visible",
   },
   side: {
-    flex: 1,
     flexDirection: "row",
     alignItems: "center",
     zIndex: 1,
   },
-  /** A left-aligned title gets the leftover width, so the slots don't claim it. */
+  /** Centered mode: the slots split the row and the title floats over them. */
+  sideFlex: {
+    flex: 1,
+  },
+  /**
+   * Left-aligned mode: slots size to their controls so the title takes the
+   * leftover width. Must not combine with `flex: 1` — that sets flexBasis to
+   * 0, and with no grow the slot collapses and its controls overflow.
+   */
   sideAuto: {
-    flexGrow: 0,
     flexShrink: 0,
-    flexBasis: "auto",
   },
   sideInner: {
     flexDirection: "row",
     alignItems: "center",
+    flexShrink: 0,
   },
   sideRight: {
     justifyContent: "flex-end",

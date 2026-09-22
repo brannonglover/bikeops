@@ -3,7 +3,7 @@ import { TouchableOpacity } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@/lib/ThemeContext";
 import { HamburgerMenu } from "@/components/ui/HamburgerMenu";
-import { renderAppHeader } from "@/components/ui/AppHeader";
+import { renderAppHeader, renderAppHeaderLeftTitle } from "@/components/ui/AppHeader";
 
 export default function ChatLayout() {
   const { theme } = useTheme();
@@ -24,6 +24,7 @@ export default function ChatLayout() {
         name="[id]"
         options={{
           title: "Conversation",
+          header: renderAppHeaderLeftTitle,
           headerBackVisible: false,
           headerLeft: () => (
             <TouchableOpacity
