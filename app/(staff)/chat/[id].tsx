@@ -20,6 +20,7 @@ import {
   type NativeScrollEvent,
 } from "react-native";
 import { useLocalSearchParams, Stack, useRouter, useFocusEffect, useNavigation } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
@@ -149,6 +150,7 @@ export default function ConversationScreen() {
   const router = useRouter();
   const navigation = useNavigation();
   const { startCall } = useCall();
+  const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{
     id?: string | string[];
     fromJobId?: string | string[];
@@ -192,6 +194,14 @@ export default function ConversationScreen() {
 
   const queryClient = useQueryClient();
   const [showCreateContact, setShowCreateContact] = useState(false);
+  const [showHeaderMenu, setShowHeaderMenu] = useState(false);
+  const closeHeaderMenu = useCallback(() => setShowHeaderMenu(false), []);
+  // Let the sheet finish dismissing before an action fires — iOS drops an
+  // Alert that is presented while a modal is still on screen.
+  const runHeaderAction = useCallback((action: () => void) => {
+    setShowHeaderMenu(false);
+    setTimeout(action, Platform.OS === "ios" ? 220 : 0);
+  }, []);
   const flatListRef = useRef<FlatList<ChatMessage>>(null);
   const isAtBottomRef = useRef(true);
   const didInitialAutoScrollRef = useRef(false);
@@ -1673,71 +1683,142 @@ export default function ConversationScreen() {
     );
   }
 
+  const headerCustomer = resolvedConversation?.customer;
+  const headerCustomerId = headerCustomer?.id;
+  const headerCustomerPhone = headerCustomer?.phone?.trim();
+  const headerIsProvisional = headerCustomer?.provisional === true;
+  const headerHasSmsConsent =
+    !!headerCustomerPhone && headerCustomer?.smsConsent === true;
+  const headerCanInvite = !!conversation?.customer?.email;
+
+  const headerMenuItems: {
+    key: string;
+    label: string;
+    detail?: string;
+    icon: React.ComponentProps<typeof Ionicons>["name"];
+    color?: string;
+    disabled?: boolean;
+    onPress: () => void;
+  }[] = [];
+
+  if (headerCustomerId) {
+    headerMenuItems.push({
+      key: "profile",
+      label: "Customer profile",
+      icon: "person-circle-outline",
+      onPress: () => router.push(`/(staff)/customers/${headerCustomerId}`),
+    });
+  }
+  headerMenuItems.push({
+    key: "job",
+    label: "Open job card",
+    icon: "construct-outline",
+    onPress: () => void handleOpenJobCard(),
+  });
+  if (headerIsProvisional) {
+    headerMenuItems.push({
+      key: "contact",
+      label: "Create contact",
+      detail: "Not in your customer list yet",
+      icon: "person-add-outline",
+      color: colors.emerald[500],
+      onPress: () => setShowCreateContact(true),
+    });
+  }
+  headerMenuItems.push({
+    key: "invite",
+    label: "Invite to app",
+    detail: !headerCanInvite
+      ? "No email on file"
+      : headerHasSmsConsent
+        ? "SMS consent given"
+        : "No SMS consent yet",
+    icon: "chatbubble-ellipses-outline",
+    color: headerHasSmsConsent ? colors.emerald[500] : theme.iconMuted,
+    disabled: !headerCanInvite || sendingInvite,
+    onPress: handleInvitePress,
+  });
+  headerMenuItems.push({
+    key: "archive",
+    label: "Archive conversation",
+    icon: "archive-outline",
+    onPress: archiveThread,
+  });
+
   return (
     <>
       <Stack.Screen
         options={{
           headerBackVisible: false,
+          // Left-aligned so a long name/number gets the full leftover width
+          // instead of fighting the centered title's fixed gutters.
+          headerTitleAlign: "left",
           headerLeft: () => (
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-              <TouchableOpacity
-                onPress={goToChatThreads}
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                style={{ padding: 4 }}
-                accessibilityRole="button"
-                accessibilityLabel="Back to chat threads"
-              >
-                <Ionicons name="chevron-back" size={24} color={theme.text} />
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={handleOpenJobCard}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                style={{ padding: spacing[2] }}
-                accessibilityRole="button"
-                accessibilityLabel="Open job card"
-              >
-                <Ionicons name="construct-outline" size={20} color={theme.icon} />
-              </TouchableOpacity>
-            </View>
+            <TouchableOpacity
+              onPress={goToChatThreads}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              style={{ paddingRight: spacing[1] }}
+              accessibilityRole="button"
+              accessibilityLabel="Back to chat threads"
+            >
+              <Ionicons name="chevron-back" size={26} color={theme.text} />
+            </TouchableOpacity>
           ),
           headerTitle: () => {
             const name = resolvedConversation
               ? customerName(resolvedConversation.customer)
               : "Conversation";
-            const canOpenCustomer = !!resolvedConversation?.customer?.id;
+            const canOpenCustomer = !!headerCustomerId;
 
             return (
               <Pressable
                 onPress={() => {
-                  if (!resolvedConversation?.customer?.id) return;
-                  router.push(`/(staff)/customers/${resolvedConversation.customer.id}`);
+                  if (!headerCustomerId) return;
+                  router.push(`/(staff)/customers/${headerCustomerId}`);
                 }}
                 disabled={!canOpenCustomer}
                 accessibilityRole={canOpenCustomer ? "button" : undefined}
                 accessibilityLabel={
                   canOpenCustomer ? `Open ${name} profile` : undefined
                 }
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
                 style={({ pressed }) => ({
-                  alignItems: Platform.OS === "android" ? "flex-start" : "center",
+                  alignItems: "flex-start",
                   opacity: canOpenCustomer && pressed ? 0.6 : 1,
                 })}
               >
-                <Text
+                <View
                   style={{
-                    ...fontSize.base,
-                    lineHeight: 20,
-                    fontWeight: "700",
-                    color: theme.text,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: spacing[1],
                   }}
-                  numberOfLines={1}
                 >
-                  {name}
-                </Text>
+                  <Text
+                    style={{
+                      ...fontSize.base,
+                      lineHeight: 20,
+                      fontWeight: "700",
+                      color: theme.text,
+                      flexShrink: 1,
+                    }}
+                    numberOfLines={1}
+                  >
+                    {name}
+                  </Text>
+                  {canOpenCustomer ? (
+                    <Ionicons
+                      name="chevron-forward"
+                      size={13}
+                      color={theme.iconMuted}
+                    />
+                  ) : null}
+                </View>
                 {bikeLabel ? (
                   <Text
                     style={{
                       ...fontSize.xs,
+                      lineHeight: 15,
                       fontWeight: "500",
                       color: theme.textSecondary,
                     }}
@@ -1749,80 +1830,51 @@ export default function ConversationScreen() {
               </Pressable>
             );
           },
-          headerRight: () => {
-            const hasSmsConsent =
-              !!resolvedConversation?.customer?.phone?.trim() &&
-              resolvedConversation.customer.smsConsent === true;
-            const smsIconColor = hasSmsConsent
-              ? colors.emerald[500]
-              : theme.iconMuted;
-            const canInvite = !!conversation?.customer?.email;
-            const customerPhone = resolvedConversation?.customer?.phone?.trim();
-
-            const isProvisional =
-              resolvedConversation?.customer?.provisional === true;
-
-            return (
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-                {isProvisional ? (
-                  <TouchableOpacity
-                    onPress={() => setShowCreateContact(true)}
-                    style={{ padding: spacing[2] }}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    accessibilityRole="button"
-                    accessibilityLabel="Create contact from this conversation"
-                  >
-                    <Ionicons
-                      name="person-add-outline"
-                      size={20}
-                      color={colors.emerald[500]}
-                    />
-                  </TouchableOpacity>
-                ) : null}
+          // Calling is the one action worth a permanent slot; everything else
+          // lives behind the overflow menu so the bar stays readable.
+          headerRight: () => (
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: spacing[1],
+              }}
+            >
+              {headerCustomerPhone ? (
                 <TouchableOpacity
-                  onPress={archiveThread}
+                  onPress={() =>
+                    startCall(
+                      headerCustomerPhone,
+                      customerName(resolvedConversation!.customer)
+                    )
+                  }
                   style={{ padding: spacing[2] }}
                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                   accessibilityRole="button"
-                  accessibilityLabel="Archive this conversation"
+                  accessibilityLabel="Call customer"
                 >
-                  <Ionicons name="archive-outline" size={20} color={theme.icon} />
+                  <Ionicons name="call-outline" size={20} color={theme.icon} />
                 </TouchableOpacity>
-                {customerPhone ? (
-                  <TouchableOpacity
-                    onPress={() =>
-                      startCall(customerPhone, customerName(resolvedConversation!.customer))
-                    }
-                    style={{ padding: spacing[2] }}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    accessibilityRole="button"
-                    accessibilityLabel="Call customer"
-                  >
-                    <Ionicons name="call-outline" size={20} color={theme.icon} />
-                  </TouchableOpacity>
-                ) : null}
-                <TouchableOpacity
-                  onPress={canInvite ? handleInvitePress : undefined}
-                  disabled={!canInvite || sendingInvite}
-                  style={{
-                    padding: spacing[2],
-                    opacity: sendingInvite ? 0.5 : 1,
-                  }}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  accessibilityRole="button"
-                  accessibilityLabel={
-                    hasSmsConsent ? "SMS consent given" : "SMS consent not given"
-                  }
-                >
-                  <Ionicons
-                    name="chatbubble-ellipses-outline"
-                    size={20}
-                    color={smsIconColor}
+              ) : null}
+              <TouchableOpacity
+                onPress={() => setShowHeaderMenu(true)}
+                style={{ padding: spacing[2] }}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                accessibilityRole="button"
+                accessibilityLabel="More conversation actions"
+              >
+                <Ionicons name="ellipsis-vertical" size={20} color={theme.text} />
+                {headerIsProvisional ? (
+                  <View
+                    style={[
+                      headerMenuStyles.badgeDot,
+                      { backgroundColor: colors.emerald[500], borderColor: theme.headerBg },
+                    ]}
                   />
-                </TouchableOpacity>
-              </View>
-            );
-          },
+                ) : null}
+              </TouchableOpacity>
+            </View>
+          ),
         }}
       />
       <KeyboardAvoidingView
@@ -2227,6 +2279,72 @@ export default function ConversationScreen() {
         />
       ) : null}
 
+      {/* Overflow actions — keeps the bar down to back, name and call */}
+      <Modal
+        visible={showHeaderMenu}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={closeHeaderMenu}
+      >
+        <Pressable style={headerMenuStyles.backdrop} onPress={closeHeaderMenu}>
+          <View
+            style={[
+              headerMenuStyles.dropdown,
+              {
+                // Clear of the 56pt header row plus its safe-area padding.
+                marginTop: insets.top + 56 + spacing[1],
+                backgroundColor: theme.surface,
+                shadowColor: "#000",
+                shadowOpacity: theme.dark ? 0.4 : 0.15,
+              },
+            ]}
+          >
+            {headerMenuItems.map((item, index) => (
+              <TouchableOpacity
+                key={item.key}
+                onPress={() => runHeaderAction(item.onPress)}
+                disabled={item.disabled}
+                activeOpacity={0.6}
+                style={[
+                  headerMenuStyles.menuItem,
+                  item.disabled && { opacity: 0.45 },
+                  index > 0 && {
+                    borderTopWidth: StyleSheet.hairlineWidth,
+                    borderTopColor: theme.surfaceBorder,
+                  },
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  item.detail ? `${item.label}. ${item.detail}` : item.label
+                }
+              >
+                <Ionicons
+                  name={item.icon}
+                  size={20}
+                  color={item.color ?? theme.icon}
+                />
+                <View style={headerMenuStyles.menuLabels}>
+                  <Text style={[headerMenuStyles.menuLabel, { color: theme.text }]}>
+                    {item.label}
+                  </Text>
+                  {item.detail ? (
+                    <Text
+                      style={[
+                        headerMenuStyles.menuDetail,
+                        { color: theme.textSecondary },
+                      ]}
+                    >
+                      {item.detail}
+                    </Text>
+                  ) : null}
+                </View>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </Pressable>
+      </Modal>
+
       <ImageViewer uri={viewingImageUrl} onClose={() => setViewingImageUrl(null)} />
       <VideoViewer uri={viewingVideoUrl} onClose={() => setViewingVideoUrl(null)} />
 
@@ -2416,3 +2534,47 @@ export default function ConversationScreen() {
     </>
   );
 }
+
+const headerMenuStyles = StyleSheet.create({
+  backdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.2)",
+    justifyContent: "flex-start",
+    alignItems: "flex-end",
+  },
+  dropdown: {
+    marginRight: spacing[3],
+    borderRadius: borderRadius.xl,
+    minWidth: 228,
+    shadowOffset: { width: 0, height: 4 },
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  menuItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing[3],
+    paddingVertical: spacing[3],
+    paddingHorizontal: spacing[4],
+  },
+  menuLabels: {
+    flexShrink: 1,
+  },
+  menuLabel: {
+    ...fontSize.base,
+    fontWeight: "500",
+  },
+  menuDetail: {
+    ...fontSize.xs,
+    marginTop: spacing[0.5],
+  },
+  badgeDot: {
+    position: "absolute",
+    top: spacing[1],
+    right: spacing[1],
+    width: 9,
+    height: 9,
+    borderRadius: 4.5,
+    borderWidth: 1.5,
+  },
+});

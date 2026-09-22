@@ -1,14 +1,13 @@
 import { useCallback, useMemo, useState } from "react";
 import {
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
 import { useRouter } from "expo-router";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { DialPad } from "@/components/calls/DialPad";
 import { useCall } from "@/lib/CallContext";
@@ -34,6 +33,14 @@ function toE164(entry: string): string | null {
   return null;
 }
 
+/**
+ * A match row is a fixed height, which is what lets the slot work out how many
+ * of them it can show whole. Vertical padding + a 20pt line + the hairline
+ * border.
+ */
+const MATCH_ROW_HEIGHT = 34;
+const MATCH_ROW_GAP = spacing[2];
+
 /** What to show in the big readout — formatted for NANP, raw otherwise. */
 function displayEntry(entry: string): string {
   if (entry.startsWith("+") || /[*#]/.test(entry)) return entry;
@@ -50,11 +57,14 @@ export default function DialScreen() {
   const digits = unformatPhoneNumber(entry);
 
   // Matching customers as the number is typed, so dialing a regular shows who
-  // it is before the call connects rather than after.
+  // it is before the call connects rather than after. Previous results are
+  // kept while the next digit's query is in flight — otherwise the list blinks
+  // out and back on every keypress.
   const { data: matches = [] } = useQuery({
     queryKey: ["dial-matches", digits],
     enabled: digits.length >= 3,
     staleTime: 60_000,
+    placeholderData: keepPreviousData,
     queryFn: async () => {
       const { data } = await api.get<Customer[]>(
         `/api/customers?q=${encodeURIComponent(digits)}`
@@ -66,6 +76,23 @@ export default function DialScreen() {
         .slice(0, 3);
     },
   });
+
+  // keepPreviousData holds the last result against the new query key, which
+  // includes the empty key we land on after dialling or clearing — so the
+  // entry length, not the cached list, decides whether matches are shown.
+  const visibleMatches = digits.length >= 3 ? matches : [];
+
+  // The slot is whatever is left between readout and keypad — about one row on
+  // a short screen or with the warning banner up, two or three otherwise. Only
+  // whole rows are drawn; a half-clipped customer under the keypad edge looks
+  // like a rendering bug, and the leftovers are announced rather than hidden.
+  const [slotHeight, setSlotHeight] = useState(0);
+  const capacity = Math.max(
+    1,
+    Math.floor((slotHeight + MATCH_ROW_GAP) / (MATCH_ROW_HEIGHT + MATCH_ROW_GAP))
+  );
+  const shownMatches = visibleMatches.slice(0, capacity);
+  const hiddenMatches = visibleMatches.length - shownMatches.length;
 
   const append = useCallback((digit: string) => {
     setEntry((prev) => (prev.length >= 18 ? prev : prev + digit));
@@ -96,11 +123,14 @@ export default function DialScreen() {
         </View>
       ) : null}
 
-      <ScrollView
-        contentContainerStyle={styles.body}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
-      >
+      {/*
+        The keypad is pinned to the bottom and the readout to the top, with the
+        matches filling the gap between them. Laying it out this way — rather
+        than letting the whole column centre itself — means a customer
+        appearing or disappearing mid-dial never moves a key out from under
+        the thumb that is about to press it.
+      */}
+      <View style={styles.top}>
         <View style={styles.readout}>
           <Text
             style={[styles.entry, { color: theme.text }]}
@@ -128,41 +158,58 @@ export default function DialScreen() {
           )}
         </View>
 
-        {matches.length > 0 ? (
-          <View style={styles.matches}>
-            {matches.map((customer) => (
-              <Pressable
-                key={customer.id}
-                onPress={() =>
-                  customer.phone
-                    ? dial(
-                        toE164(customer.phone) ?? customer.phone,
-                        customerName(customer)
-                      )
-                    : undefined
-                }
-                style={[
-                  styles.match,
-                  { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
-                ]}
-                accessibilityRole="button"
-                accessibilityLabel={`Call ${customerName(customer)}`}
-              >
-                <Ionicons name="person" size={16} color={theme.textMuted} />
-                <View style={styles.matchText}>
+        {/*
+          Fixed slot: it holds its height whether or not there are matches, and
+          scrolls internally when three of them outgrow a short screen.
+        */}
+        <View
+          style={styles.matchSlot}
+          onLayout={(e) => setSlotHeight(e.nativeEvent.layout.height)}
+        >
+          {shownMatches.length > 0 ? (
+            <View style={styles.matches}>
+              {shownMatches.map((customer, index) => (
+                <Pressable
+                  key={customer.id}
+                  onPress={() =>
+                    customer.phone
+                      ? dial(
+                          toE164(customer.phone) ?? customer.phone,
+                          customerName(customer)
+                        )
+                      : undefined
+                  }
+                  style={[
+                    styles.match,
+                    { backgroundColor: theme.surface, borderColor: theme.surfaceBorder },
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Call ${customerName(customer)}`}
+                >
+                  <Ionicons name="person" size={16} color={theme.textMuted} />
                   <Text style={[styles.matchName, { color: theme.text }]} numberOfLines={1}>
                     {customerName(customer)}
                   </Text>
-                  <Text style={[styles.matchNumber, { color: theme.textSecondary }]}>
+                  <Text
+                    style={[styles.matchNumber, { color: theme.textSecondary }]}
+                    numberOfLines={1}
+                  >
                     {formatPhoneNumber(customer.phone ?? "")}
                   </Text>
-                </View>
-                <Ionicons name="call" size={16} color={colors.emerald[600]} />
-              </Pressable>
-            ))}
-          </View>
-        ) : null}
+                  {hiddenMatches > 0 && index === shownMatches.length - 1 ? (
+                    <Text style={[styles.matchMore, { color: theme.textMuted }]}>
+                      +{hiddenMatches} more
+                    </Text>
+                  ) : null}
+                  <Ionicons name="call" size={16} color={colors.emerald[600]} />
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
+        </View>
+      </View>
 
+      <View style={styles.pad}>
         <DialPad onPress={append} onLongPressZero={() => append("+")} />
 
         <View style={styles.callRow}>
@@ -196,21 +243,23 @@ export default function DialScreen() {
             Back to call log
           </Text>
         </TouchableOpacity>
-      </ScrollView>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  body: {
-    flexGrow: 1,
+  top: {
+    flex: 1,
+    // Without this a tall match list would stretch the slot past the screen
+    // and start pushing the keypad again.
+    minHeight: 0,
     paddingHorizontal: spacing[5],
-    paddingBottom: spacing[8],
-    gap: spacing[5],
-    justifyContent: "center",
+    paddingTop: spacing[5],
+    gap: spacing[4],
   },
-  readout: { alignItems: "center", gap: spacing[2], minHeight: 84 },
+  readout: { alignItems: "center", gap: spacing[2], minHeight: 84, flexShrink: 0 },
   entry: {
     fontSize: 34,
     lineHeight: 42,
@@ -220,18 +269,31 @@ const styles = StyleSheet.create({
   },
   hint: { ...fontSize.sm },
   backspace: { padding: spacing[1] },
-  matches: { gap: spacing[2], maxWidth: 360, width: "100%", alignSelf: "center" },
+  matchSlot: { flex: 1, minHeight: 0 },
+  matches: {
+    gap: MATCH_ROW_GAP,
+    maxWidth: 360,
+    width: "100%",
+    alignSelf: "center",
+  },
   match: {
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing[3],
-    padding: spacing[3],
-    borderRadius: borderRadius.xl,
+    gap: spacing[2],
+    height: MATCH_ROW_HEIGHT,
+    paddingHorizontal: spacing[3],
+    borderRadius: borderRadius.full,
     borderWidth: 1,
   },
-  matchText: { flex: 1 },
-  matchName: { ...fontSize.sm, fontWeight: "600" },
-  matchNumber: { ...fontSize.xs },
+  matchName: { ...fontSize.sm, fontWeight: "600", flexShrink: 1 },
+  matchNumber: { ...fontSize.xs, flex: 1 },
+  matchMore: { ...fontSize.xs, fontWeight: "600" },
+  pad: {
+    paddingHorizontal: spacing[5],
+    paddingBottom: spacing[6],
+    gap: spacing[4],
+    flexShrink: 0,
+  },
   callRow: { alignItems: "center" },
   callButton: {
     width: 68,

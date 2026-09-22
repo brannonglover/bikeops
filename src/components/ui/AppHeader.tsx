@@ -1,4 +1,12 @@
-import { StyleSheet, Text, View, type StyleProp, type TextStyle } from "react-native";
+import { useState } from "react";
+import {
+  StyleSheet,
+  Text,
+  View,
+  type LayoutChangeEvent,
+  type StyleProp,
+  type TextStyle,
+} from "react-native";
 import {
   getHeaderTitle,
   type HeaderOptions,
@@ -9,6 +17,9 @@ import { spacing, fontSize } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { ShopLogo } from "@/components/ui/ShopLogo";
 
+/** Gutter assumed for a centered title until the side slots have measured. */
+const DEFAULT_SIDE_WIDTH = 96;
+
 /**
  * Pure RN header — avoids iOS 26 UINavigationBar liquid-glass pills that
  * darken left+right together on press / push transitions.
@@ -18,6 +29,7 @@ export function AppHeader({
   headerLeft,
   headerRight,
   headerTitle,
+  titleAlign = "center",
   defaultLeft = "logo",
   useShopBranding = true,
   titleStyle,
@@ -28,6 +40,11 @@ export function AppHeader({
   headerRight?: HeaderOptions["headerRight"];
   /** Custom title element (function). When set, replaces the plain title text. */
   headerTitle?: HeaderOptions["headerTitle"];
+  /**
+   * `center` keeps the title optically centered in the bar; `left` hands it
+   * every point the side slots don't need (chat threads, long customer names).
+   */
+  titleAlign?: "left" | "center";
   /** What to show on the left when headerLeft is omitted. */
   defaultLeft?: "logo" | "none";
   useShopBranding?: boolean;
@@ -37,10 +54,23 @@ export function AppHeader({
 }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
+  const [leftWidth, setLeftWidth] = useState(DEFAULT_SIDE_WIDTH);
+  const [rightWidth, setRightWidth] = useState(DEFAULT_SIDE_WIDTH);
+  const isLeftAligned = titleAlign === "left";
 
   const slotProps = { tintColor: theme.text } as never;
   const left = typeof headerLeft === "function" ? headerLeft(slotProps) : null;
   const right = typeof headerRight === "function" ? headerRight(slotProps) : null;
+
+  const measure = (set: (w: number) => void) => (e: LayoutChangeEvent) =>
+    set(Math.round(e.nativeEvent.layout.width));
+
+  const plainTitleStyle = [
+    styles.title,
+    isLeftAligned && styles.titleLeft,
+    { color: theme.text },
+    titleStyle,
+  ];
 
   let titleNode: React.ReactNode;
   if (typeof headerTitle === "function") {
@@ -48,19 +78,43 @@ export function AppHeader({
       children: title,
       tintColor: theme.text,
     });
-  } else if (typeof headerTitle === "string") {
-    titleNode = (
-      <Text style={[styles.title, { color: theme.text }, titleStyle]} numberOfLines={1}>
-        {headerTitle}
-      </Text>
-    );
   } else {
     titleNode = (
-      <Text style={[styles.title, { color: theme.text }, titleStyle]} numberOfLines={1}>
-        {title}
+      <Text style={plainTitleStyle} numberOfLines={1}>
+        {typeof headerTitle === "string" ? headerTitle : title}
       </Text>
     );
   }
+
+  const leftSlot = (
+    <View style={[styles.side, isLeftAligned && styles.sideAuto]}>
+      <View style={styles.sideInner} onLayout={measure(setLeftWidth)}>
+        {left ??
+          (defaultLeft === "logo" ? (
+            <View pointerEvents="none">
+              <ShopLogo useShopBranding={useShopBranding} />
+            </View>
+          ) : null)}
+      </View>
+    </View>
+  );
+
+  const rightSlot = (
+    <View
+      style={[styles.side, styles.sideRight, isLeftAligned && styles.sideAuto]}
+    >
+      <View style={styles.sideInner} onLayout={measure(setRightWidth)}>
+        {right}
+      </View>
+    </View>
+  );
+
+  // A centered title is absolutely positioned, so it has to reserve the wider
+  // of the two side slots on both edges or it slides under their controls.
+  const centeredGutter =
+    largeTitleLogo || (defaultLeft === "none" && !left)
+      ? spacing[4]
+      : spacing[4] + Math.max(leftWidth, rightWidth) + spacing[2];
 
   return (
     <View
@@ -73,28 +127,24 @@ export function AppHeader({
         },
       ]}
     >
-      <View
-        style={[styles.headerRow, largeTitleLogo && styles.headerRowLarge]}
-      >
-        <View style={styles.side}>
-          {left ??
-            (defaultLeft === "logo" ? (
-              <View pointerEvents="none">
-                <ShopLogo useShopBranding={useShopBranding} />
-              </View>
-            ) : null)}
-        </View>
-        <View
-          style={[
-            styles.titleCenter,
-            (largeTitleLogo || (defaultLeft === "none" && !left)) &&
-              styles.titleCenterWide,
-          ]}
-          pointerEvents="box-none"
-        >
-          {titleNode}
-        </View>
-        <View style={[styles.side, styles.sideRight]}>{right}</View>
+      <View style={[styles.headerRow, largeTitleLogo && styles.headerRowLarge]}>
+        {leftSlot}
+        {isLeftAligned ? (
+          <View style={styles.titleLeftSlot} pointerEvents="box-none">
+            {titleNode}
+          </View>
+        ) : (
+          <View
+            style={[
+              styles.titleCenter,
+              { left: centeredGutter, right: centeredGutter },
+            ]}
+            pointerEvents="box-none"
+          >
+            {titleNode}
+          </View>
+        )}
+        {rightSlot}
       </View>
     </View>
   );
@@ -111,6 +161,7 @@ export function renderAppHeader({
       headerLeft={options.headerLeft}
       headerRight={options.headerRight}
       headerTitle={options.headerTitle}
+      titleAlign={options.headerTitleAlign}
       defaultLeft="logo"
       useShopBranding={true}
       titleStyle={
@@ -147,25 +198,38 @@ const styles = StyleSheet.create({
     alignItems: "center",
     zIndex: 1,
   },
+  /** A left-aligned title gets the leftover width, so the slots don't claim it. */
+  sideAuto: {
+    flexGrow: 0,
+    flexShrink: 0,
+    flexBasis: "auto",
+  },
+  sideInner: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
   sideRight: {
     justifyContent: "flex-end",
   },
   titleCenter: {
     position: "absolute",
-    left: spacing[4] + 96,
-    right: spacing[4] + 96,
     top: 0,
     bottom: 0,
     alignItems: "center",
     justifyContent: "center",
   },
-  titleCenterWide: {
-    left: spacing[4],
-    right: spacing[4],
+  titleLeftSlot: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: "center",
+    paddingHorizontal: spacing[2],
   },
   title: {
     ...fontSize.base,
     fontWeight: "700",
     textAlign: "center",
+  },
+  titleLeft: {
+    textAlign: "left",
   },
 });
