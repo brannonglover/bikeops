@@ -110,6 +110,18 @@ function StaffTabs() {
             <Ionicons name="people" size={size} color={color} />
           ),
         }}
+        listeners={({ navigation }) => ({
+          tabPress: (e) => {
+            // Opening a profile from a chat thread pushes onto this tab's
+            // stack, so the tab can sit parked on a customer detail screen.
+            // Re-tapping should come back to the list, same as Chat does.
+            const state = navigation.getState();
+            const activeName = state?.routes?.[state.index ?? 0]?.name;
+            if (activeName !== "customers") return;
+            e.preventDefault();
+            router.replace("/(staff)/customers");
+          },
+        })}
       />
       <Tabs.Screen
         name="services"
