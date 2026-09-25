@@ -23,7 +23,7 @@ import { useLocalSearchParams, useRouter, Stack, useFocusEffect } from "expo-rou
 import { useQuery, useMutation, useQueryClient, replaceEqualDeep } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/lib/api";
-import { type Job, type JobBike, type Stage, type DeliveryType, type Conversation, STAGE_LABELS, STAGE_COLORS } from "@/lib/types";
+import { type Job, type JobBike, type Bike, type BikeType, type Stage, type DeliveryType, type Conversation, STAGE_LABELS, STAGE_COLORS } from "@/lib/types";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { Card } from "@/components/ui/Card";
@@ -154,6 +154,15 @@ type JobPatchBody = Partial<Job> & {
   clearBikePartsHolds?: boolean;
   /** Take one bike off the job. Its invoice lines survive as unassigned. */
   removeJobBikeId?: string;
+  /** Put another of the customer's saved bikes on the job. */
+  addBike?: {
+    make: string;
+    model: string | null;
+    nickname?: string | null;
+    imageUrl?: string | null;
+    bikeId?: string | null;
+    bikeType?: BikeType | null;
+  };
 };
 
 function applyJobPatchOptimistically(job: Job, patch: JobPatchBody): Job {
@@ -166,6 +175,7 @@ function applyJobPatchOptimistically(job: Job, patch: JobPatchBody): Job {
     unwaitForPartsJobBikeId: _unwaitForPartsJobBikeId,
     clearBikePartsHolds: _clearBikePartsHolds,
     removeJobBikeId: _removeJobBikeId,
+    addBike: _addBike,
     ...jobFields
   } = patch;
   const next: Job = { ...job, ...jobFields, updatedAt: nowIso };
@@ -300,6 +310,8 @@ export default function JobDetailScreen() {
   const [openStageMenu, setOpenStageMenu] = useState(false);
   const [openBikeStatusMenuId, setOpenBikeStatusMenuId] = useState<string | null>(null);
   const [removingBikeId, setRemovingBikeId] = useState<string | null>(null);
+  const [showAddBikeMenu, setShowAddBikeMenu] = useState(false);
+  const [addingBikeId, setAddingBikeId] = useState<string | null>(null);
   const [savingBikeStatusId, setSavingBikeStatusId] = useState<string | null>(null);
   const [viewingImageUrl, setViewingImageUrl] = useState<string | null>(null);
   const [editAddress, setEditAddress] = useState<string | null>(null);
@@ -477,16 +489,49 @@ export default function JobDetailScreen() {
           padding: spacing[1],
           gap: spacing[0.5],
         },
+        addBikeSection: {
+          marginTop: spacing[2],
+          gap: spacing[2],
+        },
+        addBikeButton: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: spacing[1],
+          paddingVertical: spacing[2],
+          paddingHorizontal: spacing[3],
+          borderRadius: borderRadius.lg,
+          borderWidth: 1,
+          borderStyle: "dashed",
+          borderColor: theme.surfaceBorder,
+          alignSelf: "flex-start",
+        },
+        addBikeButtonText: {
+          ...fontSize.sm,
+          color: theme.text,
+          fontWeight: "600",
+        },
+        addBikeMenu: {
+          backgroundColor: theme.background,
+          borderRadius: borderRadius.lg,
+          padding: spacing[1],
+          gap: spacing[0.5],
+        },
+        addBikeEmptyText: {
+          ...fontSize.sm,
+          color: theme.textMuted,
+          padding: spacing[2],
+          lineHeight: 18,
+        },
         heroBikeBrandRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: spacing[2],
-  },
-  removeBikeButton: {
-    padding: spacing[1],
-    borderRadius: 6,
-  },
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: spacing[2],
+        },
+        removeBikeButton: {
+          padding: spacing[1],
+          borderRadius: borderRadius.md,
+        },
   heroBikeModelRow: {
           flexDirection: "row",
           alignItems: "center",
@@ -1268,6 +1313,29 @@ export default function JobDetailScreen() {
     [job, removingBikeId, patchJob]
   );
 
+  const handleAddSavedBike = useCallback(
+    (bike: Bike) => {
+      if (!job || addingBikeId) return;
+      setAddingBikeId(bike.id);
+      // No optimistic row: the new JobBike id only exists once the server creates it.
+      patchJob.mutate(
+        {
+          addBike: {
+            make: bike.make,
+            model: bike.model,
+            nickname: bike.nickname ?? null,
+            imageUrl: bike.imageUrl ?? null,
+            bikeId: bike.id,
+            bikeType: bike.bikeType ?? null,
+          },
+        },
+        { onSettled: () => setAddingBikeId(null) }
+      );
+      setShowAddBikeMenu(false);
+    },
+    [job, addingBikeId, patchJob]
+  );
+
   const openDatePicker = useCallback(
     (field: "dropOff" | "pickup") => {
       if (!job) return;
@@ -1548,6 +1616,13 @@ export default function JobDetailScreen() {
   const checkedInDate = job.dropOffDate ?? (job.stage === "RECEIVED" || job.stage === "WORKING_ON" ? job.createdAt : null);
   const canEditStage = job.stage !== "CANCELLED" && job.stage !== "COMPLETED";
   const canEditBikeStatus = job.stage !== "CANCELLED" && job.stage !== "COMPLETED";
+  /** Customer bikes not already on this job — mirrors the web modal's availableToAdd. */
+  const linkedBikeIds = new Set(
+    (job.jobBikes ?? []).map((jb) => jb.bikeId).filter(Boolean)
+  );
+  const availableBikesToAdd = (job.customer?.bikes ?? []).filter(
+    (b) => !linkedBikeIds.has(b.id)
+  );
   const stageOptions = stageOptionsForJob(job);
 
   const renderHeroBikeImage = (
@@ -1744,6 +1819,53 @@ export default function JobDetailScreen() {
     );
   };
 
+  const renderAddBikeSection = () => {
+    if (!canEditBikeStatus) return null;
+
+    return (
+      <View style={styles.addBikeSection}>
+        <TouchableOpacity
+          onPress={() => setShowAddBikeMenu((open) => !open)}
+          disabled={!!addingBikeId}
+          style={[styles.addBikeButton, !!addingBikeId && styles.buttonDisabled]}
+          accessibilityRole="button"
+          accessibilityLabel="Add a bike to this repair"
+        >
+          <Ionicons name="add" size={16} color={theme.text} />
+          <Text style={styles.addBikeButtonText}>
+            {addingBikeId ? "Adding\u2026" : "Add bike"}
+          </Text>
+        </TouchableOpacity>
+        {showAddBikeMenu ? (
+          <View style={styles.addBikeMenu}>
+            {availableBikesToAdd.length === 0 ? (
+              <Text style={styles.addBikeEmptyText}>
+                Every saved bike is already on this repair. Add a new one to the
+                customer&apos;s profile first.
+              </Text>
+            ) : (
+              availableBikesToAdd.map((b) => (
+                <TouchableOpacity
+                  key={b.id}
+                  onPress={() => handleAddSavedBike(b)}
+                  disabled={!!addingBikeId}
+                  style={[styles.stageOption, !!addingBikeId && styles.buttonDisabled]}
+                >
+                  <Ionicons name="bicycle" size={14} color={theme.textMuted} />
+                  <Text style={styles.stageOptionText} numberOfLines={1}>
+                    {b.nickname?.trim()
+                      ? `${b.nickname} (${[b.make, b.model].filter(Boolean).join(" ")})`
+                      : [b.make, b.model].filter(Boolean).join(" ")}
+                  </Text>
+                </TouchableOpacity>
+              ))
+            )}
+          </View>
+        ) : null}
+      </View>
+    );
+  };
+
   return (
     <>
       <Stack.Screen
@@ -1844,6 +1966,7 @@ export default function JobDetailScreen() {
                   );
                 })}
               </View>
+              {renderAddBikeSection()}
               <View style={styles.heroMetaRow}>
                 <View style={{ flex: 1 }} />
                 <Text style={styles.heroRepairId}>Repair #{getJobRepairNumber(job.id)}</Text>
@@ -1887,6 +2010,7 @@ export default function JobDetailScreen() {
                 </View>
               </View>
               {renderStageMenu()}
+              {renderAddBikeSection()}
               <View style={styles.heroMetaRow}>
                 {heroMetaParts.length > 0 ? (
                   <Text style={styles.heroMeta} numberOfLines={1}>
