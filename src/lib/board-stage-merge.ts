@@ -19,6 +19,13 @@ const IN_PROGRESS_STAGES = new Set<Stage>([
   "WAITING_ON_PARTS",
 ]);
 
+/**
+ * Stages that end bike-level work, so a live parts hold must not be re-applied over an
+ * incoming payload. Holds are bike-level: any other column can carry one while another
+ * bike is worked on, so the hold survives the job moving columns.
+ */
+const ENDS_BIKE_WORK = new Set<Stage>(["BIKE_READY", "COMPLETED", "CANCELLED"]);
+
 /** Stages that never keep an active working-on bike pointer. */
 const CLEARS_WORKING_ON = new Set<Stage>([
   "WAITING_ON_CUSTOMER",
@@ -133,7 +140,7 @@ function mergeJobBikeState(
 ): Job {
   const stage = overrides.stage ?? incoming.stage;
   const jobBikes = mergeForwardJobBikes(live.jobBikes, incoming.jobBikes, {
-    preserveLiveWaiting: stage === "WAITING_ON_PARTS",
+    preserveLiveWaiting: !ENDS_BIKE_WORK.has(stage),
   });
   const workingOnJobBikeId = mergeWorkingOnJobBikeId(
     live,
@@ -152,7 +159,7 @@ function mergeJobBikeState(
 
 function mergeSameStageJob(live: Job, incoming: Job): Job {
   const jobBikes = mergeForwardJobBikes(live.jobBikes, incoming.jobBikes, {
-    preserveLiveWaiting: live.stage === "WAITING_ON_PARTS",
+    preserveLiveWaiting: !ENDS_BIKE_WORK.has(live.stage),
   });
   const workingOnJobBikeId = mergeWorkingOnJobBikeId(
     live,

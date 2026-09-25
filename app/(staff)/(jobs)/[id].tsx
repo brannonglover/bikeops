@@ -102,6 +102,16 @@ function getEffectiveWorkingOnJobBikeId(job: Job): string | null {
   return sanitizeWorkingOnJobBikeId(job.workingOnJobBikeId, job.jobBikes);
 }
 
+/** True when some other bike on the job is still workable — not done and not on a parts hold. */
+function hasWorkableBikeBesides(
+  bikes: JobBike[] | undefined,
+  bikeId: string
+): boolean {
+  return (bikes ?? []).some(
+    (b) => b.id !== bikeId && !b.completedAt && !b.waitingOnPartsAt
+  );
+}
+
 function getJobBikeStatus(jb: JobBike, job: Job): JobBikeStatus {
   if (jb.completedAt) return "done";
   if (job.stage === "BIKE_READY" || job.stage === "COMPLETED") {
@@ -140,6 +150,10 @@ type JobPatchBody = Partial<Job> & {
   uncompleteJobBikeId?: string;
   waitForPartsJobBikeId?: string;
   unwaitForPartsJobBikeId?: string;
+  /** Job-level stage move: drop every bike's parts hold along with the card. */
+  clearBikePartsHolds?: boolean;
+  /** Take one bike off the job. Its invoice lines survive as unassigned. */
+  removeJobBikeId?: string;
 };
 
 function applyJobPatchOptimistically(job: Job, patch: JobPatchBody): Job {
@@ -150,6 +164,8 @@ function applyJobPatchOptimistically(job: Job, patch: JobPatchBody): Job {
     uncompleteJobBikeId: _uncompleteJobBikeId,
     waitForPartsJobBikeId: _waitForPartsJobBikeId,
     unwaitForPartsJobBikeId: _unwaitForPartsJobBikeId,
+    clearBikePartsHolds: _clearBikePartsHolds,
+    removeJobBikeId: _removeJobBikeId,
     ...jobFields
   } = patch;
   const next: Job = { ...job, ...jobFields, updatedAt: nowIso };
@@ -178,6 +194,31 @@ function applyJobPatchOptimistically(job: Job, patch: JobPatchBody): Job {
       jb.id === patch.unwaitForPartsJobBikeId
         ? { ...jb, waitingOnPartsAt: null }
         : jb
+    );
+  }
+
+  if (patch.removeJobBikeId) {
+    const remaining = (next.jobBikes ?? []).filter(
+      (jb) => jb.id !== patch.removeJobBikeId
+    );
+    next.jobBikes = remaining;
+    // Mirror the API's bikeMake / bikeModel summary so the board card matches.
+    if (remaining.length === 0) {
+      next.bikeMake = "—";
+      next.bikeModel = "";
+    } else if (remaining.length === 1) {
+      next.bikeMake = remaining[0].make;
+      next.bikeModel = remaining[0].model ?? "";
+    } else {
+      next.bikeMake = "Multiple";
+      next.bikeModel = `${remaining.length} bikes`;
+    }
+  }
+
+  // Mirror the API: only a job-level move sweeps holds off the bikes it left behind.
+  if (patch.clearBikePartsHolds && next.stage !== "WAITING_ON_PARTS") {
+    next.jobBikes = (next.jobBikes ?? []).map((jb) =>
+      jb.completedAt ? jb : { ...jb, waitingOnPartsAt: null }
     );
   }
 
@@ -258,6 +299,7 @@ export default function JobDetailScreen() {
   const queryClient = useQueryClient();
   const [openStageMenu, setOpenStageMenu] = useState(false);
   const [openBikeStatusMenuId, setOpenBikeStatusMenuId] = useState<string | null>(null);
+  const [removingBikeId, setRemovingBikeId] = useState<string | null>(null);
   const [savingBikeStatusId, setSavingBikeStatusId] = useState<string | null>(null);
   const [viewingImageUrl, setViewingImageUrl] = useState<string | null>(null);
   const [editAddress, setEditAddress] = useState<string | null>(null);
@@ -435,7 +477,17 @@ export default function JobDetailScreen() {
           padding: spacing[1],
           gap: spacing[0.5],
         },
-        heroBikeModelRow: {
+        heroBikeBrandRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing[2],
+  },
+  removeBikeButton: {
+    padding: spacing[1],
+    borderRadius: 6,
+  },
+  heroBikeModelRow: {
           flexDirection: "row",
           alignItems: "center",
           flexWrap: "wrap",
@@ -939,7 +991,8 @@ export default function JobDetailScreen() {
   const handleStageChange = useCallback(
     (stage: Stage) => {
       if (!job) return;
-      const patch: Record<string, unknown> = { stage };
+      // Job-level move: the whole card changes column, so drop every bike's parts hold.
+      const patch: Record<string, unknown> = { stage, clearBikePartsHolds: true };
 
       if (stage === "WORKING_ON") {
         // When the stage is manually set to WORKING_ON, also clear the per-bike
@@ -1139,11 +1192,12 @@ export default function JobDetailScreen() {
           }
           patch.waitForPartsJobBikeId = bikeId;
           if (effectiveWorkingOn === bikeId) patch.workingOnJobBikeId = null;
-          // Mirror web handleWaitForParts: move the job column so web/board sync.
+          // The column follows the active work: only move once nothing else is workable.
           if (
             job.stage !== "WAITING_ON_PARTS" &&
             job.stage !== "CANCELLED" &&
-            job.stage !== "COMPLETED"
+            job.stage !== "COMPLETED" &&
+            !hasWorkableBikeBesides(job.jobBikes, bikeId)
           ) {
             patch.stage = "WAITING_ON_PARTS";
           }
@@ -1183,6 +1237,35 @@ export default function JobDetailScreen() {
       setOpenBikeStatusMenuId(null);
     },
     [job, savingBikeStatusId, patchJob]
+  );
+
+  const handleRemoveBike = useCallback(
+    (bikeId: string) => {
+      if (!job || removingBikeId) return;
+      const jb = (job.jobBikes ?? []).find((b) => b.id === bikeId);
+      if (!jb) return;
+
+      const name = [jb.make, jb.model].filter(Boolean).join(" ") || "this bike";
+      Alert.alert(
+        "Remove bike",
+        `Remove ${name} from this repair? Any services or parts assigned to it stay on the invoice as unassigned.`,
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Remove",
+            style: "destructive",
+            onPress: () => {
+              setRemovingBikeId(bikeId);
+              patchJob.mutate(
+                { removeJobBikeId: bikeId },
+                { onSettled: () => setRemovingBikeId(null) }
+              );
+            },
+          },
+        ]
+      );
+    },
+    [job, removingBikeId, patchJob]
   );
 
   const openDatePicker = useCallback(
@@ -1726,7 +1809,24 @@ export default function JobDetailScreen() {
                     <View key={jb.id} style={styles.heroBikeRow}>
                       {renderHeroBikeImage(jb, "thumb", jb.imageUrl)}
                       <View style={{ flex: 1, gap: spacing[1] }}>
-                        <Text style={styles.heroBrand}>{(jb.make ?? "Bike").toUpperCase()}</Text>
+                        <View style={styles.heroBikeBrandRow}>
+                          <Text style={styles.heroBrand}>{(jb.make ?? "Bike").toUpperCase()}</Text>
+                          {canEditBikeStatus ? (
+                            <TouchableOpacity
+                              onPress={() => handleRemoveBike(jb.id)}
+                              disabled={removingBikeId === jb.id}
+                              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                              style={[
+                                styles.removeBikeButton,
+                                removingBikeId === jb.id && styles.buttonDisabled,
+                              ]}
+                              accessibilityRole="button"
+                              accessibilityLabel={`Remove ${jb.model || jb.make} from this repair`}
+                            >
+                              <Ionicons name="trash-outline" size={14} color={theme.textMuted} />
+                            </TouchableOpacity>
+                          ) : null}
+                        </View>
                         <View style={styles.heroBikeModelRow}>
                           <Text style={styles.heroModel} numberOfLines={2}>
                             {jb.model || jb.make}

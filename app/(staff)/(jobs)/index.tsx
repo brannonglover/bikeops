@@ -137,6 +137,8 @@ export default function JobBoardScreen() {
     }) => {
       const { data } = await api.patch<Job>(`/api/jobs/${jobId}`, {
         stage,
+        // Job-level move: the whole card changes column, so drop every bike's parts hold.
+        clearBikePartsHolds: true,
         ...(typeof notifyCustomer === "boolean" ? { notifyCustomer } : {}),
         ...(typeof completedAt !== "undefined" ? { completedAt } : {}),
       });
