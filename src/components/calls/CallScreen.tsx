@@ -74,7 +74,12 @@ export function CallScreen({
 
   const isIncoming = state.status === "incoming";
   const isConnected = state.status === "connected" || state.status === "reconnecting";
-  const isOver = state.status === "disconnected" || state.status === "failed";
+  // Rang out while nobody picked up. There is no call here to answer or end —
+  // the caller is on the shop's voicemail — so this earns its own explanation
+  // rather than leaving the answer buttons up over a queue nobody is in.
+  const isVoicemail = state.status === "voicemail";
+  const isOver =
+    state.status === "disconnected" || state.status === "failed" || isVoicemail;
 
   // A new call should never inherit the last one's open keypad.
   useEffect(() => {
@@ -160,6 +165,13 @@ export function CallScreen({
           {customer === null && state.number && !isOver ? (
             <Text style={styles.newCaller}>Not a customer yet</Text>
           ) : null}
+          {isVoicemail ? (
+            <Text style={styles.explainer}>
+              They are no longer holding — the shop&rsquo;s voicemail has them.
+              Any message they leave shows up in Calls, and a call back
+              won&rsquo;t reach them until they hang up.
+            </Text>
+          ) : null}
           {state.error ? <Text style={styles.error}>{state.error}</Text> : null}
 
           {showKeypad && isConnected ? (
@@ -210,6 +222,15 @@ export function CallScreen({
                 color={colors.emerald[600]}
                 label="Answer"
                 onPress={() => void acceptIncoming()}
+              />
+            </View>
+          ) : isVoicemail ? (
+            <View style={styles.answerRow}>
+              <BigButton
+                icon="close"
+                color={colors.slate[600]}
+                label="Close"
+                onPress={() => void hangUp()}
               />
             </View>
           ) : isOver ? null : (
@@ -389,6 +410,13 @@ const styles = StyleSheet.create({
     color: colors.red[300],
     textAlign: "center",
     marginTop: spacing[2],
+  },
+  explainer: {
+    ...fontSize.sm,
+    color: colors.slate[300],
+    textAlign: "center",
+    marginTop: spacing[3],
+    lineHeight: 20,
   },
   keypadSection: {
     marginTop: spacing[6],

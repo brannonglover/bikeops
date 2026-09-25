@@ -11,7 +11,12 @@ import { AppState, Pressable, Text, View } from "react-native";
 import * as Notifications from "expo-notifications";
 import { Ionicons } from "@expo/vector-icons";
 import { useQueryClient } from "@tanstack/react-query";
-import { callProgressLabel, useCallManager, type CallState } from "@/hooks/useCallManager";
+import {
+  callProgressLabel,
+  useCallManager,
+  RING_WINDOW_MS,
+  type CallState,
+} from "@/hooks/useCallManager";
 import { callsQueryKey } from "@/lib/staff-queries";
 import { useAuth } from "@/lib/auth";
 import { normalizeNotificationData } from "@/lib/notification-routing";
@@ -80,6 +85,9 @@ function CallBanner({
   if (state.status === "idle") return null;
 
   const isIncoming = state.status === "incoming";
+  // The caller has gone to voicemail: nothing to answer and nothing to hang
+  // up, so the strip is a notice with a way to clear it.
+  const isVoicemail = state.status === "voicemail";
   const title =
     state.displayName ?? (state.number ? formatPhoneNumber(state.number) : "Unknown caller");
 
@@ -94,7 +102,8 @@ function CallBanner({
         paddingTop: spacing[10],
         paddingBottom: spacing[3],
         paddingHorizontal: spacing[4],
-        backgroundColor: isIncoming ? colors.slate[700] : colors.emerald[600],
+        backgroundColor:
+          isIncoming || isVoicemail ? colors.slate[700] : colors.emerald[600],
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
@@ -147,6 +156,19 @@ function CallBanner({
             <Ionicons name="call" size={20} color={colors.white} />
           </Pressable>
         </View>
+      ) : isVoicemail ? (
+        <Pressable
+          onPress={() => void hangUp()}
+          style={{
+            padding: spacing[2],
+            borderRadius: borderRadius.full,
+            backgroundColor: colors.slate[600],
+          }}
+          accessibilityRole="button"
+          accessibilityLabel="Dismiss"
+        >
+          <Ionicons name="close" size={20} color={colors.white} />
+        </Pressable>
       ) : (
         <Pressable
           onPress={() => void hangUp()}
@@ -172,18 +194,40 @@ function CallBanner({
 
 /**
  * Pulls the call details out of a notification, or null if it isn't one.
+ *
+ * `ringEndsAt` is when the caller stops holding and is sent to voicemail. The
+ * server sends it with every ring, which is what makes it trustworthy: the
+ * ring repeats every few seconds, so a device woken by a later one is already
+ * part-way through the window and must not start counting from now. Only when
+ * the server didn't send it — an alert from an older build — is it estimated
+ * from the notification's own timestamp, which is at least closer than the
+ * moment of the tap.
  */
 function incomingCallFromNotification(
   notification: Notifications.Notification
-): { callId: string; number: string; displayName: string | null } | null {
+): {
+  callId: string;
+  number: string;
+  displayName: string | null;
+  ringEndsAt: number | null;
+} | null {
   const data = normalizeNotificationData(notification.request.content.data);
   if (!data || data.type !== "incoming_call") return null;
   if (typeof data.callId !== "string" || typeof data.from !== "string") return null;
+
+  const sent = typeof data.ringEndsAt === "string" ? Date.parse(data.ringEndsAt) : NaN;
+  const age = notificationAgeMs(notification);
+  const ringEndsAt = Number.isFinite(sent)
+    ? sent
+    : age === null
+      ? null
+      : Date.now() - age + RING_WINDOW_MS;
 
   return {
     callId: data.callId,
     number: data.from,
     displayName: typeof data.customerName === "string" ? data.customerName : null,
+    ringEndsAt,
   };
 }
 

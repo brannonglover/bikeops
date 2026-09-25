@@ -74,6 +74,12 @@ export interface NotificationData {
   from?: string;
   /** incoming_call: customer name when the number is a known customer. */
   customerName?: string | null;
+  /**
+   * incoming_call: ISO timestamp at which the caller stops holding and is sent
+   * to voicemail. Sent with every repeat of the ring, so it stays the caller's
+   * deadline rather than this device's.
+   */
+  ringEndsAt?: string | null;
   todayJobIds?: string[] | string;
   tomorrowJobIds?: string[] | string;
   [key: string]: unknown;

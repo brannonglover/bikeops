@@ -19,7 +19,9 @@ export type CallStatus =
   | "connected"
   | "reconnecting"
   | "disconnected"
-  | "failed";
+  | "failed"
+  /** Rang out: the caller has been handed to voicemail and is no longer ours. */
+  | "voicemail";
 
 export type CallState = {
   status: CallStatus;
@@ -35,9 +37,30 @@ export type CallState = {
   connectedAt: number | null;
   /** Server-side Call id of a ringing inbound call, from its notification. */
   pendingCallId: string | null;
+  /**
+   * When an inbound caller's hold runs out and the server sends them to
+   * voicemail, as epoch milliseconds. Past this moment there is nobody left in
+   * the queue to answer, which is what retires the Answer button.
+   */
+  ringEndsAt: number | null;
 };
 
 const DISMISS_DELAY_MS = 3_000;
+
+/**
+ * Longer than a plain failure, because this one has something to read: what
+ * happened to the caller and why ringing them straight back won't work.
+ */
+const VOICEMAIL_DISMISS_DELAY_MS = 12_000;
+
+/**
+ * Fallback ring window when a notification predates the server sending its own
+ * deadline, matching RING_SECONDS in the server's voice-twiml. Only ever a
+ * fallback: the server's value accounts for how long the caller has already
+ * been holding, which a device woken by the fourth repeat of the ring cannot
+ * work out for itself.
+ */
+export const RING_WINDOW_MS = 25_000;
 
 /**
  * What to call the pre-connect phase. Direction is the whole story: dialing
@@ -52,6 +75,8 @@ export function callProgressLabel(state: CallState): string {
       return state.direction === "inbound" ? "Answering…" : "Calling…";
     case "incoming":
       return "Incoming call";
+    case "voicemail":
+      return "Sent to voicemail";
     case "reconnecting":
       return "Reconnecting…";
     case "disconnected":
@@ -92,6 +117,7 @@ const IDLE_STATE: CallState = {
   audioRoute: null,
   connectedAt: null,
   pendingCallId: null,
+  ringEndsAt: null,
 };
 
 /**
@@ -137,18 +163,31 @@ export function useCallManager() {
         endedByUserRef.current = false;
         return;
       }
-      // A call ending normally needs no announcement — the screen going away
-      // is the message. Only a call that broke earns a moment on screen, and
-      // that one auto-clears too.
-      if (!error) {
-        setState(IDLE_STATE);
-        return;
-      }
-      setState((prev) => ({
-        ...prev,
-        status: "disconnected",
-        error: error.message ?? null,
-      }));
+      setState((prev) => {
+        if (error) {
+          return { ...prev, status: "disconnected", error: error.message ?? null };
+        }
+        // A leg that never connected did not "end" — it never got through.
+        // Twilio reports a busy or unanswered number by simply ending the
+        // call, so without this a dial to a customer who is mid-voicemail
+        // read as nothing happening at all: "Calling…" for a few seconds and
+        // then the screen quietly vanishing.
+        if (prev.direction === "outbound" && prev.connectedAt === null) {
+          return {
+            ...prev,
+            status: "disconnected",
+            error: "They didn't pick up — the line was busy or rang out.",
+          };
+        }
+        // The inbound equivalent: the answer leg found nobody in the queue,
+        // so the caller had already been handed on.
+        if (prev.direction === "inbound" && prev.connectedAt === null) {
+          return { ...prev, status: "voicemail", error: null };
+        }
+        // A call that ran its course needs no announcement — the screen going
+        // away is the message.
+        return IDLE_STATE;
+      });
     });
     call.on(Call.Event.Reconnecting, () => {
       setState((prev) => ({ ...prev, status: "reconnecting" }));
@@ -198,7 +237,13 @@ export function useCallManager() {
    * arrival when the app is foregrounded, and again when it is tapped.
    */
   const presentIncomingCall = useCallback(
-    (incoming: { callId: string; number: string; displayName?: string | null }) => {
+    (incoming: {
+      callId: string;
+      number: string;
+      displayName?: string | null;
+      ringEndsAt?: number | null;
+    }) => {
+      const ringEndsAt = incoming.ringEndsAt ?? Date.now() + RING_WINDOW_MS;
       setState((prev) => {
         // A second caller must not hijack the screen mid-call, and a repeat
         // notification for the call already showing must not reset it. The
@@ -207,15 +252,21 @@ export function useCallManager() {
         const free =
           prev.status === "idle" ||
           prev.status === "disconnected" ||
-          prev.status === "failed";
+          prev.status === "failed" ||
+          prev.status === "voicemail";
         if (!free) return prev;
         return {
           ...IDLE_STATE,
-          status: "incoming",
+          // A notification tapped after the window closed announces a caller
+          // who has already been handed to voicemail. Offering Answer there is
+          // what sent staff into a call that rang and then failed, so say what
+          // happened instead of ringing for someone who is no longer holding.
+          status: ringEndsAt <= Date.now() ? "voicemail" : "incoming",
           number: incoming.number,
           displayName: incoming.displayName ?? null,
           direction: "inbound",
           pendingCallId: incoming.callId,
+          ringEndsAt,
         };
       });
     },
@@ -229,6 +280,12 @@ export function useCallManager() {
   const acceptIncoming = useCallback(async () => {
     const callId = state.pendingCallId;
     if (!callId) return;
+    // Tapped in the instant the window closed. Dialing now would bridge into
+    // an empty queue and fail a few seconds later with nothing to explain it.
+    if (state.ringEndsAt !== null && Date.now() >= state.ringEndsAt) {
+      setState((prev) => ({ ...prev, status: "voicemail", error: null }));
+      return;
+    }
     endedByUserRef.current = false;
     setState((prev) => ({ ...prev, status: "connecting" }));
     try {
@@ -242,13 +299,20 @@ export function useCallManager() {
     } catch (error) {
       // Leaving the refused call in place would block the next answer too.
       await releaseStrayCalls();
-      setState((prev) => ({
-        ...prev,
-        status: "failed",
-        error: error instanceof Error ? error.message : "Unable to answer call",
-      }));
+      const rangOut = state.ringEndsAt !== null && Date.now() >= state.ringEndsAt;
+      setState((prev) =>
+        // The window ran out mid-answer, so this isn't a call that broke — it
+        // is a caller who left. Report the reason rather than a bare failure.
+        rangOut
+          ? { ...prev, status: "voicemail", error: null }
+          : {
+              ...prev,
+              status: "failed",
+              error: error instanceof Error ? error.message : "Unable to answer call",
+            }
+      );
     }
-  }, [attachCallListeners, state.pendingCallId, state.displayName]);
+  }, [attachCallListeners, state.pendingCallId, state.displayName, state.ringEndsAt]);
 
   const rejectIncoming = useCallback(async () => {
     const callId = state.pendingCallId;
@@ -297,10 +361,40 @@ export function useCallManager() {
   // Only failures reach these states now, and they clear themselves rather
   // than leaving the overlay pinned over the app waiting to be dismissed.
   useEffect(() => {
-    if (state.status !== "disconnected" && state.status !== "failed") return;
-    const timer = setTimeout(() => setState(IDLE_STATE), DISMISS_DELAY_MS);
+    if (
+      state.status !== "disconnected" &&
+      state.status !== "failed" &&
+      state.status !== "voicemail"
+    ) {
+      return;
+    }
+    const timer = setTimeout(
+      () => setState(IDLE_STATE),
+      state.status === "voicemail" ? VOICEMAIL_DISMISS_DELAY_MS : DISMISS_DELAY_MS
+    );
     return () => clearTimeout(timer);
   }, [state.status]);
+
+  /**
+   * Retires the answer buttons the moment the caller's hold runs out.
+   *
+   * Nothing tells the app that a caller gave up waiting: the ring is a string
+   * of notifications that simply stops arriving, so a screen left on
+   * "Incoming call" would sit there offering to answer a queue with nobody in
+   * it. The server sends the deadline with every ring; this is what acts on
+   * it.
+   */
+  useEffect(() => {
+    if (state.status !== "incoming" || state.ringEndsAt === null) return;
+    const timer = setTimeout(
+      () =>
+        setState((prev) =>
+          prev.status === "incoming" ? { ...prev, status: "voicemail" } : prev
+        ),
+      Math.max(state.ringEndsAt - Date.now(), 0)
+    );
+    return () => clearTimeout(timer);
+  }, [state.status, state.ringEndsAt]);
 
   /**
    * End always clears the screen, even when no Call object was ever handed
