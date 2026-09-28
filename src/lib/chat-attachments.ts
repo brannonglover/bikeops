@@ -152,6 +152,15 @@ type VideoTokenResponse = {
   pathname: string;
   access: "public" | "private";
   uploadUrl: string;
+  /**
+   * Headers the PUT must carry, built by the server.
+   *
+   * Blob's HTTP API needs more than the bearer token — notably a version header
+   * — and getting the set wrong fails the upload with an unrelated-sounding 400.
+   * Taking the set from the server means a change there reaches us on a deploy
+   * rather than an app release.
+   */
+  uploadHeaders?: Record<string, string>;
 };
 
 type BlobPutResponse = {
@@ -165,6 +174,31 @@ type AttachmentResponse = {
   filename: string;
   mimeType: string;
 };
+
+/**
+ * Blob reports failures as {"error":{"code","message"}}. Surfacing its message
+ * beats guessing at a cause: the last guess here blamed clip length for what
+ * was actually a malformed request, which sent debugging the wrong way.
+ */
+function blobUploadErrorMessage(status: number, body: string): string {
+  let detail = "";
+  try {
+    const parsed = JSON.parse(body) as { error?: { message?: string } };
+    detail = parsed.error?.message ?? "";
+  } catch {
+    detail = "";
+  }
+  // An over-limit upload comes back as a 403 about file length, against the cap
+  // baked into the upload token. The cap is ours, so say it in our own terms —
+  // iOS often reports no fileSize for a picked video, so the pre-flight check in
+  // buildPendingChatVideo can't catch this and it reaches the server.
+  if (/file length/i.test(detail)) {
+    return `Video too large. Max size is ${MAX_VIDEO_UPLOAD_MB} MB.`;
+  }
+  return detail
+    ? `Video upload failed (${status}): ${detail}`
+    : `Video upload failed (${status}).`;
+}
 
 export async function uploadPendingChatVideo(
   asset: ImagePickerAsset,
@@ -182,20 +216,20 @@ export async function uploadPendingChatVideo(
     { ...opts, timeoutMs: 30_000 }
   );
 
+  if (!tokenData.uploadHeaders) {
+    throw new Error(
+      "Video upload is unavailable. Update the app, or try again later."
+    );
+  }
+
   const uploadResult = await uploadAsync(tokenData.uploadUrl, asset.uri, {
     httpMethod: "PUT",
     uploadType: FileSystemUploadType.BINARY_CONTENT,
-    headers: {
-      authorization: `Bearer ${tokenData.clientToken}`,
-      "x-vercel-blob-access": tokenData.access,
-      "x-content-type": pending.mimeType,
-    },
+    headers: tokenData.uploadHeaders,
   });
 
   if (uploadResult.status < 200 || uploadResult.status >= 300) {
-    throw new Error(
-      `Video upload failed (${uploadResult.status}). Try a shorter clip.`
-    );
+    throw new Error(blobUploadErrorMessage(uploadResult.status, uploadResult.body));
   }
 
   let blob: BlobPutResponse;
