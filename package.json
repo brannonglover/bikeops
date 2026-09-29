@@ -1,6 +1,6 @@
 {
   "name": "bikeops",
-  "version": "1.45.0",
+  "version": "1.46.0",
   "main": "expo-router/entry",
   "scripts": {
     "postinstall": "patch-package",
