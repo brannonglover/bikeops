@@ -20,7 +20,13 @@ import {
 import { callsQueryKey } from "@/lib/staff-queries";
 import { useAuth } from "@/lib/auth";
 import { normalizeNotificationData } from "@/lib/notification-routing";
-import { initializePushRegistry } from "@/lib/voice";
+import {
+  getPendingCallInvites,
+  initializePushRegistry,
+  onIncomingCallInvite,
+  registerForIncomingCalls,
+  unregisterForIncomingCalls,
+} from "@/lib/voice";
 import { useTheme } from "@/lib/ThemeContext";
 import { formatPhoneNumber } from "@/lib/format";
 import { CallScreen } from "@/components/calls/CallScreen";
@@ -281,6 +287,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     state,
     startCall,
     presentIncomingCall,
+    presentInvite,
     acceptIncoming,
     rejectIncoming,
     hangUp,
@@ -349,9 +356,16 @@ export function CallProvider({ children }: { children: ReactNode }) {
   }, []);
 
   /**
-   * Notification permission is what decides whether calls ring on this device
-   * now that inbound calls no longer use a Twilio push registration. Rechecked
-   * on foreground because permission can be revoked from Settings at any time.
+   * Registers this device with Twilio so inbound calls arrive as Client
+   * invites — the thing that makes the phone ring continuously instead of
+   * being nudged by a notification every few seconds.
+   *
+   * Notification permission is still checked, but as a warning rather than the
+   * gate it used to be: a VoIP push rings the call on its own, while Android's
+   * incoming-call screen and every other alert the app sends do need it.
+   *
+   * Rechecked on foreground because permission can be revoked from Settings,
+   * and because the access token behind the registration expires.
    */
   useEffect(() => {
     if (!staffUser) {
@@ -361,38 +375,72 @@ export function CallProvider({ children }: { children: ReactNode }) {
 
     let cancelled = false;
 
-    const check = async () => {
+    const register = async () => {
       setRegistration((prev) => ({ status: "registering", error: prev.error }));
       try {
+        await registerForIncomingCalls();
+        if (cancelled) return;
+
         const { granted } = await Notifications.getPermissionsAsync();
         if (cancelled) return;
-        setRegistration(
-          granted
-            ? { status: "registered", error: null }
-            : {
-                status: "failed",
-                error: "Notifications are off, so calls can't ring this device",
-              }
-        );
+        setRegistration({
+          status: "registered",
+          error: granted
+            ? null
+            : "Notifications are off — calls will still ring, but nothing else will",
+        });
       } catch (error) {
         if (cancelled) return;
         setRegistration({
           status: "failed",
-          error: error instanceof Error ? error.message : "Could not check notifications",
+          error:
+            error instanceof Error
+              ? error.message
+              : "Could not register this device for calls",
         });
       }
     };
 
-    void check();
+    void register();
     const sub = AppState.addEventListener("change", (next) => {
-      if (next === "active") void check();
+      if (next === "active") void register();
     });
 
     return () => {
       cancelled = true;
       sub.remove();
+      // Signing out should stop this phone ringing for the shop.
+      void unregisterForIncomingCalls().catch(() => {
+        // Already unregistered, or the token could not be minted. Either way
+        // there is nothing further to undo here.
+      });
     };
   }, [staffUser]);
+
+  /**
+   * Inbound calls as Twilio invites.
+   *
+   * This coexists with the notification path below without a flag on either
+   * side, because the server only ever uses one: a shop ringing with invites
+   * sends no incoming_call pushes, and a shop still on pushes creates no
+   * invites. Whichever is switched on server-side is the only one that fires.
+   */
+  useEffect(() => {
+    if (!staffUser) return;
+
+    const unsubscribe = onIncomingCallInvite(presentInvite);
+
+    // A call that arrived while the app was terminated is reported to CallKit
+    // natively, long before this file runs — so the event above never fires for
+    // it and the invite has to be picked up on boot instead.
+    void getPendingCallInvites()
+      .then((invites) => invites.forEach(presentInvite))
+      .catch(() => {
+        // No invites pending, or the SDK is not up yet.
+      });
+
+    return unsubscribe;
+  }, [staffUser, presentInvite]);
 
   // Inbound calls arrive as notifications rather than Twilio invites, so the
   // ring is wired up here rather than in useNotifications — CallProvider sits

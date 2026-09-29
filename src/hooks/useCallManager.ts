@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AudioDevice, Call } from "@twilio/voice-react-native-sdk";
+import { AudioDevice, Call, CallInvite } from "@twilio/voice-react-native-sdk";
 import {
   answerQueuedCall,
+  type IncomingInvite,
   listAudioDevices,
   onAudioDevicesUpdated,
   placeOutboundCall,
@@ -139,6 +140,14 @@ export function useCallManager() {
    * showing "Call ended".
    */
   const endedByUserRef = useRef(false);
+  /**
+   * The Twilio invite behind a ringing inbound call, when staff are rung with
+   * real Client invites. Null on the legacy path, where a notification
+   * announces a caller holding in the queue and there is no invite to accept —
+   * which is exactly what the two branches in acceptIncoming/rejectIncoming
+   * below are choosing between.
+   */
+  const inviteRef = useRef<CallInvite | null>(null);
 
   /** Wires the shared lifecycle events every connected call needs. */
   const attachCallListeners = useCallback((call: Call) => {
@@ -274,10 +283,95 @@ export function useCallManager() {
   );
 
   /**
+   * Mirrors an inbound Twilio invite into app state.
+   *
+   * The phone is already ringing when this runs — the SDK reports the call to
+   * CallKit (or Android's incoming-call notification) natively, before JS is
+   * necessarily awake — so this does not start anything. It exists so the app's
+   * own screen agrees with the one the OS is showing, and so answering from
+   * either place ends up in the same state.
+   */
+  const presentInvite = useCallback(
+    (incoming: IncomingInvite) => {
+      const { invite } = incoming;
+
+      // Cancelled is the device-side half of the server's leg sweep: the caller
+      // hung up, their hold ran out, or a colleague picked up. Whichever it
+      // was, there is nothing left to answer.
+      invite.on(CallInvite.Event.Cancelled, () => {
+        if (inviteRef.current !== invite) return;
+        inviteRef.current = null;
+        setState((prev) => (prev.status === "incoming" ? IDLE_STATE : prev));
+      });
+
+      // Accepted and Rejected fire for the native UI too, so answering from the
+      // CallKit screen lands here rather than only in acceptIncoming.
+      invite.on(CallInvite.Event.Accepted, (call) => {
+        inviteRef.current = null;
+        endedByUserRef.current = false;
+        setState((prev) => ({ ...prev, status: "connecting", direction: "inbound" }));
+        attachCallListeners(call);
+      });
+
+      invite.on(CallInvite.Event.Rejected, () => {
+        if (inviteRef.current !== invite) return;
+        inviteRef.current = null;
+        setState((prev) => (prev.status === "incoming" ? IDLE_STATE : prev));
+      });
+
+      setState((prev) => {
+        // A second caller must not take the screen from a call in progress.
+        const free =
+          prev.status === "idle" ||
+          prev.status === "disconnected" ||
+          prev.status === "failed" ||
+          prev.status === "voicemail";
+        if (!free) return prev;
+        inviteRef.current = invite;
+        return {
+          ...IDLE_STATE,
+          status: "incoming",
+          number: incoming.from,
+          displayName: incoming.displayName,
+          direction: "inbound",
+          pendingCallId: incoming.callId,
+          // No deadline to track: the invite is cancelled when the caller goes,
+          // so nothing here has to retire the answer buttons on a clock.
+          ringEndsAt: null,
+        };
+      });
+    },
+    [attachCallListeners]
+  );
+
+  /**
    * Answers by dialing into the queue the caller is holding in — there is no
    * invite to accept. The server bridges the two legs.
    */
   const acceptIncoming = useCallback(async () => {
+    // A real invite is accepted, not dialed. This is also what keeps the old
+    // CallKit collision away: accepting runs a CXAnswerCallAction, never the
+    // CXStartCallAction that connect() needs and that used to be refused,
+    // leaving connect() hanging with no call ever reaching Twilio.
+    const invite = inviteRef.current;
+    if (invite) {
+      endedByUserRef.current = false;
+      setState((prev) => ({ ...prev, status: "connecting" }));
+      try {
+        const call = await invite.accept();
+        inviteRef.current = null;
+        attachCallListeners(call);
+      } catch (error) {
+        inviteRef.current = null;
+        setState((prev) => ({
+          ...prev,
+          status: "failed",
+          error: error instanceof Error ? error.message : "Unable to answer call",
+        }));
+      }
+      return;
+    }
+
     const callId = state.pendingCallId;
     if (!callId) return;
     // Tapped in the instant the window closed. Dialing now would bridge into
@@ -315,8 +409,25 @@ export function useCallManager() {
   }, [attachCallListeners, state.pendingCallId, state.displayName, state.ringEndsAt]);
 
   const rejectIncoming = useCallback(async () => {
+    const invite = inviteRef.current;
     const callId = state.pendingCallId;
+    inviteRef.current = null;
     setState(IDLE_STATE);
+
+    if (invite) {
+      try {
+        // Declining is per-device. It silences this phone and leaves every
+        // other one ringing; the server hears about it through the leg's own
+        // status callback and only sends the caller to voicemail once the last
+        // device has said no. Telling the server from here instead would lose
+        // the decline whenever someone rejects and pockets their phone.
+        await invite.reject();
+      } catch {
+        // The invite was already gone — cancelled, or taken elsewhere.
+      }
+      return;
+    }
+
     if (!callId) return;
     try {
       // Sends the caller to voicemail now instead of leaving them on hold for
@@ -404,6 +515,7 @@ export function useCallManager() {
   const hangUp = useCallback(async () => {
     const call = callRef.current;
     callRef.current = null;
+    inviteRef.current = null;
     endedByUserRef.current = true;
     setState(IDLE_STATE);
     try {
@@ -477,6 +589,7 @@ export function useCallManager() {
 
   const reset = useCallback(() => {
     callRef.current = null;
+    inviteRef.current = null;
     setState(IDLE_STATE);
   }, []);
 
@@ -484,6 +597,7 @@ export function useCallManager() {
     state,
     startCall,
     presentIncomingCall,
+    presentInvite,
     acceptIncoming,
     rejectIncoming,
     hangUp,

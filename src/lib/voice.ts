@@ -1,6 +1,6 @@
 import { Platform } from "react-native";
 import { setIsAudioActiveAsync } from "expo-audio";
-import { AudioDevice, Call, Voice } from "@twilio/voice-react-native-sdk";
+import { AudioDevice, Call, CallInvite, Voice } from "@twilio/voice-react-native-sdk";
 import { getVoiceAccessToken } from "@/lib/api";
 
 let voiceDevice: Voice | null = null;
@@ -19,11 +19,11 @@ function currentPlatform(): "ios" | "android" {
 /**
  * Stands up the SDK's PushKit registry at launch.
  *
- * Nothing registers with Twilio for push any more, so no VoIP push will ever
- * arrive and CallKit will never show an incoming call. This is kept purely
- * because the Twilio iOS SDK needs it during startup: without it the SDK's
- * CallKit path could not start calls at all, and every connect() — answering
- * and plain outbound dialing alike — hung with no call ever reaching Twilio.
+ * Required twice over. The SDK's iOS CallKit path cannot start any call without
+ * it — outbound dialing included, which is what it was kept for while inbound
+ * calls rang via ordinary notifications — and it is also what receives the VoIP
+ * push now that staff are rung with real Twilio Client invites. It has to run
+ * before registerForIncomingCalls, and before any dial.
  */
 export async function initializePushRegistry(): Promise<void> {
   if (Platform.OS !== "ios") return;
@@ -172,4 +172,95 @@ export function withConnectTimeout<T>(work: Promise<T>, ms: number): Promise<T> 
       }
     );
   });
+}
+
+
+/**
+ * Registers this device to receive inbound calls as Twilio Client invites.
+ *
+ * This is what makes the phone ring like a phone. Twilio delivers the invite as
+ * a VoIP push, the SDK hands it to CallKit on iOS and a full-screen incoming
+ * call on Android, and the OS rings continuously until someone answers,
+ * declines, or the caller gives up — no repeated pushes sustaining it.
+ *
+ * Requires a push credential configured on the Twilio side, which the access
+ * token carries. Without one the registration still succeeds and no push is
+ * ever sent, so a silent device is the expected symptom of a missing
+ * TWILIO_IOS_PUSH_CREDENTIAL_SID / TWILIO_ANDROID_PUSH_CREDENTIAL_SID.
+ */
+export async function registerForIncomingCalls(): Promise<void> {
+  const { token } = await getVoiceAccessToken(currentPlatform());
+  await getVoiceDevice().register(token);
+}
+
+/**
+ * Stops inbound calls reaching this device. Called on sign-out so a phone that
+ * has been handed on does not keep ringing for the shop.
+ */
+export async function unregisterForIncomingCalls(): Promise<void> {
+  const { token } = await getVoiceAccessToken(currentPlatform());
+  await getVoiceDevice().unregister(token);
+}
+
+/** Details the server attached to an invite via the `To` query string. */
+export type IncomingInvite = {
+  invite: CallInvite;
+  callId: string | null;
+  displayName: string | null;
+  from: string;
+};
+
+function describeInvite(invite: CallInvite): IncomingInvite {
+  // Set by fanOutStaffLegs on the server. `callId` is what ties the ringing
+  // invite back to the Call row, which is how the rest of the app finds the
+  // customer, the conversation and the history for this caller.
+  const params = invite.getCustomParameters();
+  const callId = typeof params.callId === "string" ? params.callId : null;
+  const name = typeof params.name === "string" ? params.name.trim() : "";
+  return {
+    invite,
+    callId,
+    displayName: name.length > 0 ? name : null,
+    from: invite.getFrom(),
+  };
+}
+
+/**
+ * Subscribes to inbound call invites. Returns an unsubscribe function.
+ *
+ * The OS is already ringing by the time this fires — the SDK reports the call
+ * natively before JS is necessarily awake — so this is about mirroring that
+ * into the app's own state, not about starting the ring.
+ */
+export function onIncomingCallInvite(
+  listener: (incoming: IncomingInvite) => void
+): () => void {
+  const voice = getVoiceDevice();
+  const handler = (invite: CallInvite) => listener(describeInvite(invite));
+  voice.on(Voice.Event.CallInvite, handler);
+  return () => {
+    voice.removeListener(Voice.Event.CallInvite, handler);
+  };
+}
+
+/**
+ * Invites already pending when JS starts.
+ *
+ * A call that arrives while the app is terminated is reported to CallKit by the
+ * native layer and may be answered there before a line of JS has run, so the
+ * event above is missed entirely. This is how that call is picked up on boot.
+ */
+export async function getPendingCallInvites(): Promise<IncomingInvite[]> {
+  const invites = await getVoiceDevice().getCallInvites();
+  return Array.from(invites.values()).map(describeInvite);
+}
+
+/** The Call the SDK is already running, if JS started after one was answered. */
+export async function getActiveCall(): Promise<Call | null> {
+  try {
+    const calls = await getVoiceDevice().getCalls();
+    return Array.from(calls.values())[0] ?? null;
+  } catch {
+    return null;
+  }
 }

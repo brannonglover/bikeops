@@ -54,13 +54,12 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     userInterfaceStyle: "automatic",
     associatedDomains: ["applinks:bikeops.co", "applinks:*.bikeops.co"],
     infoPlist: {
-      // "voip" is required even though inbound calls now ring via ordinary
-      // push notifications. Removing it broke the Twilio SDK's ability to
-      // start ANY call — outbound dialing included — because its iOS CallKit
-      // path depends on the VoIP background mode being declared. It does not
-      // by itself bring back the native incoming-call screen: that needs
-      // voice.register(), which this app no longer calls, so Twilio never
-      // sends a VoIP push and CallKit never receives an incoming call.
+      // "voip" carries two things now. It is what lets the Twilio SDK start any
+      // call at all — removing it once broke outbound dialing too, because the
+      // SDK's iOS CallKit path depends on the background mode being declared —
+      // and it is what lets PushKit deliver an incoming call to a backgrounded
+      // or terminated app, which is how inbound calls ring since staff moved
+      // from repeated notifications to real Twilio Client invites.
       UIBackgroundModes: ["remote-notification", "fetch", "processing", "audio", "voip"],
       ITSAppUsesNonExemptEncryption: false,
       LSApplicationCategoryType: "public.app-category.utilities",
@@ -165,6 +164,10 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       },
     ],
     "./plugins/withDynamicVersioning",
+    // Twilio Voice and expo-notifications both register a FirebaseMessagingService
+    // and Android picks one. Merges them, or whichever loses stops receiving
+    // anything — either calls never ring, or chat and bookings go silent.
+    "./plugins/withTwilioVoiceAndroid",
     ["@stripe/stripe-terminal-react-native", {
       bluetoothBackgroundMode: false,
       locationWhenInUsePermission: "Location access is required in order to accept payments.",

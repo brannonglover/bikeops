@@ -1,0 +1,76 @@
+diff --git a/node_modules/@twilio/voice-react-native-sdk/ios/TwilioVoiceReactNative+CallInvite.m b/node_modules/@twilio/voice-react-native-sdk/ios/TwilioVoiceReactNative+CallInvite.m
+index addde18..b5c82b6 100644
+--- a/node_modules/@twilio/voice-react-native-sdk/ios/TwilioVoiceReactNative+CallInvite.m
++++ b/node_modules/@twilio/voice-react-native-sdk/ios/TwilioVoiceReactNative+CallInvite.m
+@@ -5,6 +5,7 @@
+ //  Copyright © 2023 Twilio, Inc. All rights reserved.
+ //
+ 
++@import CallKit;
+ @import TwilioVoice;
+ 
+ #import "TwilioVoiceReactNative.h"
+@@ -36,7 +37,62 @@ - (void)cancelledCallInviteReceived:(TVOCancelledCallInvite *)cancelledCallInvit
+             break;
+         }
+     }
+-    NSAssert(uuid, @"No matching call invite");
++    // PATCH (bikeops) — upstream issue #722, unfixed through 1.8.0 and
++    // 2.0.0-preview.2.
++    //
++    // A cancel can arrive with no matching invite: the invite was removed when
++    // this device declined, and the server then cancelled the leg anyway. That
++    // is the normal shape of a multi-device ring — one mechanic declines while
++    // a colleague answers, and the answer cancels every sibling leg.
++    //
++    // Upstream asserts and then writes nil into cancelledCallInviteMap. The
++    // assert is compiled out in release, so the dictionary write raises
++    // NSInvalidArgumentException *inside the PushKit delegate*, before its
++    // completion handler runs. iOS reads that as a VoIP push that never
++    // reported a call and throttles further VoIP delivery to the app — calls
++    // stop arriving, with nothing on screen to say why.
++    //
++    // iOS still requires every VoIP push to report a call, so returning early
++    // is not enough: report a placeholder and end it immediately, which is
++    // Twilio's own documented handling for this case. JS is told either way,
++    // and drops it when no CallInvite matches the SID.
++    if (uuid == nil) {
++        NSLog(@"Cancel received with no matching call invite (SID %@); reporting a placeholder call to keep VoIP delivery alive.",
++              cancelledCallInvite.callSid);
++
++        NSUUID *placeholderUuid = [NSUUID UUID];
++        NSString *handleName = cancelledCallInvite.from ?: @"Unknown Caller";
++        CXCallUpdate *callUpdate = [[CXCallUpdate alloc] init];
++        callUpdate.remoteHandle = [[CXHandle alloc] initWithType:CXHandleTypeGeneric value:handleName];
++        callUpdate.localizedCallerName = handleName;
++        callUpdate.hasVideo = NO;
++
++        __weak typeof(self) weakSelf = self;
++        [self.callKitProvider reportNewIncomingCallWithUUID:placeholderUuid
++                                                     update:callUpdate
++                                                 completion:^(NSError *reportError) {
++            if (reportError) {
++                NSLog(@"Failed to report placeholder call: %@", reportError);
++                return;
++            }
++            // Ended straight away: there is nothing to answer, and leaving it
++            // up would put a phantom call on the CallKit screen.
++            [weakSelf.callKitProvider reportCallWithUUID:placeholderUuid
++                                             endedAtDate:nil
++                                                  reason:CXCallEndedReasonRemoteEnded];
++        }];
++
++        [self sendEventWithName:kTwilioVoiceReactNativeScopeCallInvite
++                           body:@{
++                             kTwilioVoiceReactNativeVoiceEventType: kTwilioVoiceReactNativeCallInviteEventTypeValueCancelled,
++                             kTwilioVoiceReactNativeCallInviteEventKeyCallSid: cancelledCallInvite.callSid,
++                             kTwilioVoiceReactNativeEventKeyCancelledCallInvite: [self cancelledCallInviteInfo:cancelledCallInvite],
++                             kTwilioVoiceReactNativeVoiceErrorKeyError: @{
++                               kTwilioVoiceReactNativeVoiceErrorKeyCode: @(error.code),
++                               kTwilioVoiceReactNativeVoiceErrorKeyMessage: [error localizedDescription] ?: @""}}];
++        return;
++    }
++
+     self.cancelledCallInviteMap[uuid] = cancelledCallInvite;
+ 
+     [self sendEventWithName:kTwilioVoiceReactNativeScopeCallInvite
