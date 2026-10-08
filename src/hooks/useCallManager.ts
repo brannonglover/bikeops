@@ -285,6 +285,11 @@ export function useCallManager() {
   /**
    * Mirrors an inbound Twilio invite into app state.
    *
+   * Currently unwired: no invite ever arrives, because the app no longer
+   * registers for them and the server no longer creates them. Kept with the
+   * rest of that path as the rollback — see registerForIncomingCalls in
+   * lib/voice.ts for the two things that have to move together to use it.
+   *
    * The phone is already ringing when this runs — the SDK reports the call to
    * CallKit (or Android's incoming-call notification) natively, before JS is
    * necessarily awake — so this does not start anything. It exists so the app's

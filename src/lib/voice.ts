@@ -1,6 +1,6 @@
 import { Platform } from "react-native";
 import { setIsAudioActiveAsync } from "expo-audio";
-import { AudioDevice, Call, CallInvite, Voice } from "@twilio/voice-react-native-sdk";
+import { AudioDevice, Call, CallInvite, CallKit, Voice } from "@twilio/voice-react-native-sdk";
 import { getVoiceAccessToken } from "@/lib/api";
 
 let voiceDevice: Voice | null = null;
@@ -19,11 +19,12 @@ function currentPlatform(): "ios" | "android" {
 /**
  * Stands up the SDK's PushKit registry at launch.
  *
- * Required twice over. The SDK's iOS CallKit path cannot start any call without
- * it — outbound dialing included, which is what it was kept for while inbound
- * calls rang via ordinary notifications — and it is also what receives the VoIP
- * push now that staff are rung with real Twilio Client invites. It has to run
- * before registerForIncomingCalls, and before any dial.
+ * Kept for the sake of dialing, not ringing. The SDK's iOS CallKit path cannot
+ * start any call without it, so dropping this breaks placing a call and
+ * answering a queued one alike. It brings no inbound call in by itself: Twilio
+ * sends a VoIP push only to a device that called voice.register(), which this
+ * app deliberately does not — see registerForIncomingCalls. Has to run before
+ * any dial.
  */
 export async function initializePushRegistry(): Promise<void> {
   if (Platform.OS !== "ios") return;
@@ -31,16 +32,55 @@ export async function initializePushRegistry(): Promise<void> {
 }
 
 /**
+ * Keeps the shop's calls out of the system phone app.
+ *
+ * CXProviderConfiguration.includesCallsInRecents defaults to YES, so every
+ * call the SDK touches was being written into Apple's Phone recents —
+ * answering an inbound caller included, because answering is an outbound leg
+ * dialed into the queue they are holding in. The shop's history belongs in
+ * this app's own Calls list, which is built from the server's Call rows and
+ * knows which customer a number belongs to; the system copy is a second,
+ * dumber log of the same calls on what is often a shared phone.
+ *
+ * Replaces the CXProvider outright rather than amending it, so this must run
+ * at launch — before initializePushRegistry readies the SDK to place a call,
+ * and well before one exists to be orphaned by swapping the provider under it.
+ */
+export async function configureCallKit(): Promise<void> {
+  if (Platform.OS !== "ios") return;
+  await getVoiceDevice().setCallKitConfiguration({
+    callKitIncludesCallsInRecents: false,
+    // Restated because this call replaces the whole configuration, defaults
+    // included: one group holding one call, which is the invariant
+    // releaseStrayCalls exists to keep from wedging every later dial.
+    callKitMaximumCallGroups: 1,
+    callKitMaximumCallsPerCallGroup: 1,
+    // A partial configuration: the native side reads each key independently
+    // and falls back to its own default for anything absent, but the SDK
+    // types the argument as the complete set. Naming the two image/sound
+    // fields just to satisfy that would hand CallKit an empty filename.
+  } as CallKit.ConfigurationOptions);
+}
+
+/**
  * Hands the app's audio session back before a call is placed.
  *
- * Everything else in the app that makes a sound — voicemail playback, the
- * greeting recorder and its preview — activates the process-wide
- * AVAudioSession and leaves it active. That is the session the SDK has to
- * hand to CallKit to start a call, and a refused CXStartCallAction leaves
- * connect() neither resolving nor rejecting: the screen sits on "Answering…"
- * and no call ever reaches Twilio. It is the same failure the in-app ring
- * caused before it was removed, which is why this now guards the connect
- * itself rather than any one thing that plays audio.
+ * Audio elsewhere in the app activates the process-wide AVAudioSession and
+ * leaves it active. That is the session the SDK has to hand to CallKit to
+ * start a call, and a refused CXStartCallAction leaves connect() neither
+ * resolving nor rejecting: the screen sits on "Answering…" and no call ever
+ * reaches Twilio. It is the same failure the in-app ring caused before it was
+ * removed, which is why this guards the connect itself rather than any one
+ * thing that plays audio.
+ *
+ * Reaches expo-audio and nothing else — in practice the greeting recorder and
+ * its preview. This is narrower than it looks, and the gap has already cost
+ * the shop a day of calling: voicemail playback moved to expo-video, which
+ * keeps a session of its own that setIsAudioActiveAsync cannot touch, so this
+ * guard ran, reported success, and released nothing. Playback is handled
+ * where it starts instead — see audioMixingMode in VoicemailPanel. Anything
+ * new that makes a sound belongs in one of those two places; this function is
+ * not the catch-all its position in the connect path suggests.
  */
 async function releaseAudioSession(): Promise<void> {
   try {
@@ -178,10 +218,19 @@ export function withConnectTimeout<T>(work: Promise<T>, ms: number): Promise<T> 
 /**
  * Registers this device to receive inbound calls as Twilio Client invites.
  *
- * This is what makes the phone ring like a phone. Twilio delivers the invite as
- * a VoIP push, the SDK hands it to CallKit on iOS and a full-screen incoming
- * call on Android, and the OS rings continuously until someone answers,
- * declines, or the caller gives up — no repeated pushes sustaining it.
+ * Deliberately not called. Registering is what hands inbound calls to the
+ * operating system: Twilio delivers the invite as a VoIP push, and iOS then
+ * *requires* every VoIP push to be reported to CallKit, so the call is
+ * answered on Apple's incoming-call screen and filed in Apple's phone app
+ * rather than in BikeOps. Not registering is the only way for the app's own
+ * call screen to be the one that rings — which is why inbound calls are
+ * announced by an ordinary notification instead (see answerQueuedCall).
+ *
+ * Kept, with its counterpart below, as the rollback: the server half is still
+ * there too, behind NATIVE_RING_SUPPORTED_BY_APP in bikeopsco's voice-legs.ts.
+ * Calling this again without flipping that constant rings nothing, and
+ * flipping that constant without calling this again sends callers to
+ * voicemail in silence. The two move together or not at all.
  *
  * Requires a push credential configured on the Twilio side, which the access
  * token carries. Without one the registration still succeeds and no push is

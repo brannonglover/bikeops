@@ -20,13 +20,7 @@ import {
 import { callsQueryKey } from "@/lib/staff-queries";
 import { useAuth } from "@/lib/auth";
 import { normalizeNotificationData } from "@/lib/notification-routing";
-import {
-  getPendingCallInvites,
-  initializePushRegistry,
-  onIncomingCallInvite,
-  registerForIncomingCalls,
-  unregisterForIncomingCalls,
-} from "@/lib/voice";
+import { configureCallKit, initializePushRegistry } from "@/lib/voice";
 import { useTheme } from "@/lib/ThemeContext";
 import { formatPhoneNumber } from "@/lib/format";
 import { CallScreen } from "@/components/calls/CallScreen";
@@ -240,11 +234,15 @@ function incomingCallFromNotification(
 /**
  * Drops "Incoming call" notifications from the shade.
  *
- * The ring is not one notification: the server sends a fresh push every few
- * seconds for as long as the caller holds, so every call leaves a short stack
- * of identical alerts behind. `keep` spares the ones that still mean
- * something — the newest alert for the call being handled, or an alert for a
- * second caller who is still waiting in the queue.
+ * A ringing call is one notification rather than a stack: the server sends a
+ * fresh push every few seconds for as long as the caller holds, but keys them
+ * all to the call id so each replaces the last. What is left to do here is
+ * clear the survivor once the call is no longer ringing — answered, declined
+ * or timed out — which nothing on the server can do, since the push it would
+ * need to send is the one it stops sending.
+ *
+ * `keep` spares the alerts that still mean something: the call being handled
+ * right now, or a second caller still waiting in the queue behind it.
  */
 async function dismissIncomingCallNotifications(
   keep: (notification: Notifications.Notification) => boolean = () => false
@@ -287,7 +285,6 @@ export function CallProvider({ children }: { children: ReactNode }) {
     state,
     startCall,
     presentIncomingCall,
-    presentInvite,
     acceptIncoming,
     rejectIncoming,
     hangUp,
@@ -349,23 +346,34 @@ export function CallProvider({ children }: { children: ReactNode }) {
   // Required for the Twilio SDK to place calls at all on iOS — see
   // initializePushRegistry. Not tied to the staff session: it has to run at
   // launch, before anyone tries to dial or answer.
+  //
+  // CallKit is configured first, and awaited: that call swaps out the very
+  // provider the registry is about to make ready, so the order is not
+  // cosmetic. A failure there is logged rather than thrown — it costs the
+  // recents opt-out, not the ability to make calls.
   useEffect(() => {
-    void initializePushRegistry().catch((error) => {
-      console.warn("[voice] PushKit registry init failed:", error);
-    });
+    void (async () => {
+      await configureCallKit().catch((error) => {
+        console.warn("[voice] CallKit configuration failed:", error);
+      });
+      await initializePushRegistry().catch((error) => {
+        console.warn("[voice] PushKit registry init failed:", error);
+      });
+    })();
   }, []);
 
   /**
-   * Registers this device with Twilio so inbound calls arrive as Client
-   * invites — the thing that makes the phone ring continuously instead of
-   * being nudged by a notification every few seconds.
+   * Whether this device can be rung at all.
    *
-   * Notification permission is still checked, but as a warning rather than the
-   * gate it used to be: a VoIP push rings the call on its own, while Android's
-   * incoming-call screen and every other alert the app sends do need it.
+   * Nothing is registered with Twilio — see registerForIncomingCalls for why
+   * that is deliberate — so an inbound call reaches this phone as an ordinary
+   * push notification and notification permission is the entire requirement.
+   * A device with it switched off is not a device that rings quietly; it is
+   * one that never hears about the call, which is worth saying out loud here
+   * rather than leaving to be discovered by a customer going unanswered.
    *
-   * Rechecked on foreground because permission can be revoked from Settings,
-   * and because the access token behind the registration expires.
+   * Rechecked on foreground because permission can be revoked from Settings
+   * while the app sits in the background.
    */
   useEffect(() => {
     if (!staffUser) {
@@ -375,19 +383,16 @@ export function CallProvider({ children }: { children: ReactNode }) {
 
     let cancelled = false;
 
-    const register = async () => {
+    const check = async () => {
       setRegistration((prev) => ({ status: "registering", error: prev.error }));
       try {
-        await registerForIncomingCalls();
-        if (cancelled) return;
-
         const { granted } = await Notifications.getPermissionsAsync();
         if (cancelled) return;
         setRegistration({
-          status: "registered",
+          status: granted ? "registered" : "failed",
           error: granted
             ? null
-            : "Notifications are off — calls will still ring, but nothing else will",
+            : "Notifications are off — this phone will not ring for incoming calls",
         });
       } catch (error) {
         if (cancelled) return;
@@ -396,51 +401,21 @@ export function CallProvider({ children }: { children: ReactNode }) {
           error:
             error instanceof Error
               ? error.message
-              : "Could not register this device for calls",
+              : "Could not check whether this device can receive calls",
         });
       }
     };
 
-    void register();
+    void check();
     const sub = AppState.addEventListener("change", (next) => {
-      if (next === "active") void register();
+      if (next === "active") void check();
     });
 
     return () => {
       cancelled = true;
       sub.remove();
-      // Signing out should stop this phone ringing for the shop.
-      void unregisterForIncomingCalls().catch(() => {
-        // Already unregistered, or the token could not be minted. Either way
-        // there is nothing further to undo here.
-      });
     };
   }, [staffUser]);
-
-  /**
-   * Inbound calls as Twilio invites.
-   *
-   * This coexists with the notification path below without a flag on either
-   * side, because the server only ever uses one: a shop ringing with invites
-   * sends no incoming_call pushes, and a shop still on pushes creates no
-   * invites. Whichever is switched on server-side is the only one that fires.
-   */
-  useEffect(() => {
-    if (!staffUser) return;
-
-    const unsubscribe = onIncomingCallInvite(presentInvite);
-
-    // A call that arrived while the app was terminated is reported to CallKit
-    // natively, long before this file runs — so the event above never fires for
-    // it and the invite has to be picked up on boot instead.
-    void getPendingCallInvites()
-      .then((invites) => invites.forEach(presentInvite))
-      .catch(() => {
-        // No invites pending, or the SDK is not up yet.
-      });
-
-    return unsubscribe;
-  }, [staffUser, presentInvite]);
 
   // Inbound calls arrive as notifications rather than Twilio invites, so the
   // ring is wired up here rather than in useNotifications — CallProvider sits
@@ -451,11 +426,11 @@ export function CallProvider({ children }: { children: ReactNode }) {
     const present = (notification: Notifications.Notification) => {
       const incoming = incomingCallFromNotification(notification);
       if (!incoming) return;
-      // Each repeat of the ring is its own notification, so clear the earlier
-      // ones for this call as the next arrives and the shade holds a single
-      // "Incoming call" instead of one alert per few seconds of ringing.
-      // Scoped to this callId: a second caller holding in the queue is
-      // ringing too, and their alert has to survive.
+      // Belt and braces behind the server's collapse key: a staff phone can
+      // be newer than the server it talks to, or older, and on the pairing
+      // where the pushes are not yet collapsed this is what keeps the shade
+      // from filling up. Scoped to this callId either way — a second caller
+      // holding in the queue is ringing too, and their alert has to survive.
       void dismissIncomingCallNotifications(
         (n) =>
           n.request.identifier === notification.request.identifier ||

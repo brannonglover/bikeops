@@ -12,6 +12,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useEvent, useEventListener } from "expo";
 import { useVideoPlayer } from "expo-video";
 import { getCallRecordingSource } from "@/lib/api";
+import { useCall } from "@/lib/CallContext";
 import { colors, spacing, fontSize, borderRadius } from "@/lib/theme";
 import { useTheme } from "@/lib/ThemeContext";
 import { formatPlaybackTime, voicemailTranscript } from "@/lib/calls";
@@ -22,6 +23,16 @@ import type { Call } from "@/lib/types";
  * native module is already in the build, so this ships as an OTA update
  * instead of waiting on a store release. An audio-only source plays fine
  * without a VideoView mounted.
+ *
+ * That choice has a sharp edge worth knowing about before touching anything
+ * here. expo-video sets the app's audio mode per app, not per player, and the
+ * guard that hands the audio session back before a call — releaseAudioSession
+ * in lib/voice — only speaks to expo-audio. The two modules do not share a
+ * session, so nothing over there can undo what this player takes: with the
+ * default `auto` mode, playing one voicemail left the session held, CallKit
+ * refused every later CXStartCallAction, and connect() hung without resolving
+ * or rejecting. Outbound calls and answered inbound ones both died, for the
+ * rest of the app's life, after a single tap of play. See audioMixingMode.
  */
 
 const SCRUB_HIT_HEIGHT = 28;
@@ -52,7 +63,24 @@ export function VoicemailPanel({
   const player = useVideoPlayer(null, (p) => {
     p.loop = false;
     p.timeUpdateEventInterval = 0.25;
+    // Never take the audio session exclusively. `auto`, the default, makes the
+    // player interrupt other audio app-wide and hold the session afterwards,
+    // which is what stopped the Twilio SDK handing a session to CallKit and
+    // killed calling outright. A few seconds of voicemail has no claim on
+    // exclusivity, so it mixes — and the session stays available to the one
+    // thing in this app that genuinely needs it.
+    p.audioMixingMode = "mixWithOthers";
   });
+
+  // Mixing is right for the session and wrong for the ear: a voicemail that
+  // carried on playing underneath would now be audible during the call rather
+  // than interrupted by it. Stop at the moment a call exists, whoever started
+  // it — answering an inbound one is as much a call as dialing out.
+  const { state: callState } = useCall();
+  const callActive = callState.status !== "idle";
+  useEffect(() => {
+    if (callActive && player.playing) player.pause();
+  }, [callActive, player]);
 
   /**
    * Twilio reports RecordingDuration in whole seconds, so a 2.6s message
