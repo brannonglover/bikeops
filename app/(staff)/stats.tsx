@@ -124,7 +124,7 @@ export default function StatsScreen() {
 
       {stats.topServices.length > 0 ? (
         <Card style={styles.servicesCard}>
-          <Text style={[styles.servicesTitle, { color: theme.text }]}>Top 5 Services</Text>
+          <Text style={[styles.servicesTitle, { color: theme.text }]}>Top 5 Services This Year</Text>
           {stats.topServices.map((svc, i) => (
             <View
               key={svc.name}
