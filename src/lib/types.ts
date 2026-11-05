@@ -323,6 +323,34 @@ export type CallStatus =
   | "CANCELED"
   | "VOICEMAIL";
 
+/**
+ * A phone call as shown in a staff chat thread, interleaved with its messages
+ * by `createdAt`. Sent as `calls` with the newest page of
+ * GET /api/conversations/:id/messages (servers before this field omit it).
+ */
+export interface ThreadCall {
+  id: string;
+  direction: CallDirection;
+  status: CallStatus;
+  fromNumber: string;
+  toNumber: string;
+  startedAt: string | null;
+  answeredAt: string | null;
+  endedAt: string | null;
+  durationSeconds: number | null;
+  hasRecording: boolean;
+  recordingStatus: string | null;
+  transcriptionText: string | null;
+  transcriptionStatus: string | null;
+  /** The AI phone assistant picked this call up. */
+  aiAnswered: boolean;
+  /** The assistant's write-up for staff, filed once the caller hangs up. */
+  aiSummary: string | null;
+  /** "Caller: …" / "Assistant: …" lines, one per turn. */
+  aiTranscript: string | null;
+  createdAt: string;
+}
+
 /** A row from GET /api/calls — `customer` is null for callers not yet in the database. */
 export interface Call {
   id: string;

@@ -52,7 +52,15 @@ import {
   getChatDraft,
   setChatDraft,
 } from "@/lib/chat-drafts";
-import { type Bike, type ChatMessage, type Conversation, type Customer, type Job } from "@/lib/types";
+import {
+  type Bike,
+  type ChatMessage,
+  type Conversation,
+  type Customer,
+  type Job,
+  type ThreadCall,
+} from "@/lib/types";
+import { ThreadCallCard } from "@/components/chat/ThreadCallCard";
 
 function chatDraftQueryKey(conversationId: string) {
   return ["chat-draft", conversationId] as const;
@@ -145,6 +153,10 @@ function pickActiveCustomerJob(jobs: Job[] | undefined): Job | null {
 const POLL_MS = 3000;
 const REACTION_EMOJIS = ["\u{1F44D}", "\u{2764}\u{FE0F}", "\u{1F602}", "\u{1F62E}", "\u{1F622}", "\u{1F64F}"];
 
+/** A call in the thread list; `id` is prefixed so it never collides with a message's. */
+type CallThreadItem = { id: string; createdAt: string; call: ThreadCall };
+type ThreadItem = ChatMessage | CallThreadItem;
+
 export default function ConversationScreen() {
   const { theme } = useTheme();
   const router = useRouter();
@@ -202,7 +214,7 @@ export default function ConversationScreen() {
     setShowHeaderMenu(false);
     setTimeout(action, Platform.OS === "ios" ? 220 : 0);
   }, []);
-  const flatListRef = useRef<FlatList<ChatMessage>>(null);
+  const flatListRef = useRef<FlatList<ThreadItem>>(null);
   const isAtBottomRef = useRef(true);
   const didInitialAutoScrollRef = useRef(false);
   const pendingScrollToMessageIdRef = useRef<string | null>(null);
@@ -1009,6 +1021,30 @@ export default function ConversationScreen() {
     ? Boolean(messagesData?.hasMore)
     : hasMoreMessagesRef.current;
 
+  const threadCalls: ThreadCall[] = useMemo(() => {
+    if (!messagesData || Array.isArray(messagesData)) return [];
+    const calls = (messagesData as { calls?: unknown }).calls;
+    return Array.isArray(calls) ? (calls as ThreadCall[]) : [];
+  }, [messagesData]);
+
+  // Calls sit in the thread at the moment they happened. While older messages
+  // are still unloaded, a call from before the oldest loaded one is held back
+  // until scrolling up reaches it, so it never floats above a gap.
+  const threadItems: ThreadItem[] = useMemo(() => {
+    if (threadCalls.length === 0) return messages;
+    const oldestLoaded = messages[0] ? Date.parse(messages[0].createdAt) : null;
+    const callItems: CallThreadItem[] = threadCalls
+      .filter(
+        (call) =>
+          !(hasMoreMessages && oldestLoaded !== null && Date.parse(call.createdAt) < oldestLoaded)
+      )
+      .map((call) => ({ id: `call:${call.id}`, createdAt: call.createdAt, call }));
+    if (callItems.length === 0) return messages;
+    return [...messages, ...callItems].sort(
+      (a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt)
+    );
+  }, [messages, threadCalls, hasMoreMessages]);
+
   useEffect(() => {
     if (messages.length === 0 && isLoading) {
       setLinkPreviewsEnabled(false);
@@ -1103,7 +1139,7 @@ export default function ConversationScreen() {
 
   const scrollToMessageId = useCallback(
     (targetMessageId: string, opts?: { animated?: boolean }) => {
-      const index = messages.findIndex((m) => m.id === targetMessageId);
+      const index = threadItems.findIndex((m) => m.id === targetMessageId);
       if (index < 0) return false;
       try {
         flatListRef.current?.scrollToIndex({
@@ -1116,7 +1152,7 @@ export default function ConversationScreen() {
         return false;
       }
     },
-    [messages]
+    [threadItems]
   );
 
   const ensureInitialScroll = useCallback(() => {
@@ -1911,7 +1947,7 @@ export default function ConversationScreen() {
         <View style={{ flex: 1 }}>
         <FlatList
           ref={flatListRef}
-          data={messages}
+          data={threadItems}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.messageList}
           onScroll={handleScroll}
@@ -1959,6 +1995,7 @@ export default function ConversationScreen() {
             ) : null
           }
           renderItem={({ item }) => {
+            if ("call" in item) return <ThreadCallCard call={item.call} />;
             const isOwn = item.sender === "STAFF";
             const hasAttachments = (item.attachments?.length ?? 0) > 0;
             const imageOnly = hasAttachments && !item.body;
