@@ -1,6 +1,6 @@
 {
   "name": "bikeops",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "scripts": {
     "dev": "next dev -p 3000",
@@ -28,7 +28,7 @@
     "test:security:db": "RUN_CATALOG_DB_TESTS=1 tsx --tsconfig scripts/tsconfig.route-tests.json --test --test-concurrency=1 src/lib/job-authz.db.test.ts src/lib/job-history-routes.db.test.ts src/lib/api-authz-more.db.test.ts src/lib/tenant-host-blob.db.test.ts src/lib/password-reset.db.test.ts src/lib/bike-year.db.test.ts src/lib/shared-job-bikes.db.test.ts src/lib/account-deletion.db.test.ts",
     "test:security": "tsx --tsconfig scripts/tsconfig.scripts.json --test src/lib/tenant-host.test.ts",
     "test:stats": "tsx --tsconfig scripts/tsconfig.route-tests.json --test src/lib/stats-year-windows.test.ts",
-    "test:parts:db":"RUN_CATALOG_DB_TESTS=1 tsx --tsconfig scripts/tsconfig.route-tests.json --test --test-concurrency=1 src/lib/parts-tab.db.test.ts src/lib/db-driver.db.test.ts",
+    "test:parts:db": "RUN_CATALOG_DB_TESTS=1 tsx --tsconfig scripts/tsconfig.route-tests.json --test --test-concurrency=1 src/lib/parts-tab.db.test.ts src/lib/db-driver.db.test.ts",
     "check:booking-spam": "TS_NODE_PROJECT=scripts/tsconfig.scripts.json ts-node -r tsconfig-paths/register scripts/check-booking-spam.ts",
     "check:conversation-context": "TS_NODE_PROJECT=scripts/tsconfig.scripts.json ts-node -r tsconfig-paths/register scripts/check-conversation-context.ts",
     "check:assistant-collection": "TS_NODE_PROJECT=scripts/tsconfig.scripts.json ts-node -r tsconfig-paths/register scripts/check-assistant-collection.ts",
