@@ -212,6 +212,9 @@ export async function POST(request: NextRequest) {
     toNumber: toE164,
     callerId: TWILIO_VOICE_NUMBER,
     statusCallbackUrl: `${base}/api/webhooks/twilio/voice/status`,
+    // Sent only by the experiment/in-band-ringback test build; see
+    // buildOutgoingCallTwiml.
+    inbandRingback: params.Ringback === "inband",
   });
 
   return xmlResponse(twiml);

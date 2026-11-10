@@ -201,15 +201,28 @@ export function buildDequeueTwiml(opts: {
  *
  * ringTone is pinned to "us" so a caller Twilio does generate ringback for
  * hears a familiar US tone rather than Twilio's foreign-sounding default.
+ *
+ * EXPERIMENT (experiment/in-band-ringback): `inbandRingback` drops
+ * answerOnBridge for an app build that asks for it. The SDK's own ringback is
+ * an audio player outside the call, and it stutters in the moment between
+ * the customer or their voicemail picking up and the SDK reporting
+ * Connected. With answerOnBridge the app's leg gets no audio at all while
+ * ringing — a test build with the local ringback removed heard dead air —
+ * so the ring has to come from Twilio on an answered leg instead, where it
+ * and the customer's voice share one audio path. This flag exists to hear
+ * whether Twilio actually plays ringTone down that leg. Builds that don't
+ * send it are unaffected.
  */
 export function buildOutgoingCallTwiml(opts: {
   toNumber: string;
   callerId: string;
   statusCallbackUrl: string;
+  inbandRingback?: boolean;
 }): string {
-  const { toNumber, callerId, statusCallbackUrl } = opts;
+  const { toNumber, callerId, statusCallbackUrl, inbandRingback = false } = opts;
+  const bridge = inbandRingback ? "" : ` answerOnBridge="true"`;
   return twiml(
-    `<Dial callerId="${escapeXml(callerId)}" answerOnBridge="true" ringTone="us">` +
+    `<Dial callerId="${escapeXml(callerId)}"${bridge} ringTone="us">` +
       `<Number statusCallback="${escapeXml(statusCallbackUrl)}" ` +
       `statusCallbackEvent="initiated ringing answered completed" statusCallbackMethod="POST">` +
       `${escapeXml(toNumber)}</Number></Dial>`
