@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { Price } from "@/components/ui/Price";
+import { RowActionButton } from "@/components/ui/RowActionButton";
 import { CatalogPageSkeleton } from "@/components/ui/Skeleton";
 
 const SUPPLIER_OPTIONS = ["Amazon", "Performance Bike", "Other"];
@@ -929,19 +930,16 @@ export default function ProductsPage() {
                           )}
                         </div>
                       </div>
-                      <div className="flex gap-2 flex-shrink-0">
-                        <button
-                          onClick={() => startEdit(product)}
-                          className="text-sm text-blue-600 hover:underline"
-                        >
+                      <div className="flex flex-wrap justify-end gap-2 flex-shrink-0">
+                        <RowActionButton variant="edit" onClick={() => startEdit(product)}>
                           Edit
-                        </button>
-                        <button
+                        </RowActionButton>
+                        <RowActionButton
+                          variant="delete"
                           onClick={() => handleDelete(product.id, product.name)}
-                          className="text-sm text-red-600 hover:underline"
                         >
                           Delete
-                        </button>
+                        </RowActionButton>
                       </div>
                     </div>
                   </>
