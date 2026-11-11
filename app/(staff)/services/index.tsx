@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import {
   View,
   Text,
@@ -19,6 +19,8 @@ import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
+import { CatalogChips } from "@/components/ui/CatalogChips";
+import { matchesCatalogChip } from "@/lib/catalog-chips";
 import { formatCurrency } from "@/lib/format";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 
@@ -32,6 +34,7 @@ export default function ServicesScreen() {
   const [description, setDescription] = useState("");
   const [price, setPrice] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [selectedChip, setSelectedChip] = useState<string | null>(null);
 
   const {
     data: services = [],
@@ -45,7 +48,7 @@ export default function ServicesScreen() {
     },
   });
 
-  const filteredServices = services.filter((svc) => {
+  const searchedServices = services.filter((svc) => {
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
     return (
@@ -53,6 +56,13 @@ export default function ServicesScreen() {
       (svc.description && svc.description.toLowerCase().includes(q))
     );
   });
+
+  // Name only: service descriptions are checklists ("adjust brakes, true
+  // wheels…") that would file a tune-up under every chip.
+  const chipTexts = useMemo(() => searchedServices.map((s) => s.name), [searchedServices]);
+  const filteredServices = selectedChip
+    ? searchedServices.filter((_, i) => matchesCatalogChip(selectedChip, chipTexts[i]))
+    : searchedServices;
 
   const [isManualRefresh, setIsManualRefresh] = useState(false);
   const handleRefresh = useCallback(async () => {
@@ -150,12 +160,20 @@ export default function ServicesScreen() {
           autoCorrect={false}
           containerStyle={styles.searchInput}
         />
+        <CatalogChips texts={chipTexts} selected={selectedChip} onSelect={setSelectedChip} />
       </View>
 
       {services.length === 0 ? (
         <EmptyState icon="build-outline" title="No services" />
       ) : filteredServices.length === 0 ? (
-        <EmptyState icon="search-outline" title={`No services match "${searchQuery}"`} />
+        <EmptyState
+          icon="search-outline"
+          title={
+            searchedServices.length > 0
+              ? "No services match this filter"
+              : `No services match "${searchQuery}"`
+          }
+        />
       ) : (
         <FlatList
           data={filteredServices}

@@ -20,6 +20,8 @@ import { LoadingScreen } from "@/components/ui/LoadingScreen";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
+import { CatalogChips } from "@/components/ui/CatalogChips";
+import { matchesCatalogChip } from "@/lib/catalog-chips";
 import { formatCurrency } from "@/lib/format";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 
@@ -34,6 +36,7 @@ export default function ProductsScreen() {
   const [price, setPrice] = useState("");
   const [stockQuantity, setStockQuantity] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [selectedChip, setSelectedChip] = useState<string | null>(null);
 
   const styles = useMemo(
     () =>
@@ -146,7 +149,7 @@ export default function ProductsScreen() {
     },
   });
 
-  const filteredProducts = useMemo(() => {
+  const searchedProducts = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     if (!q) return products;
     return products.filter(
@@ -156,6 +159,18 @@ export default function ProductsScreen() {
         (p.supplier?.toLowerCase().includes(q) ?? false)
     );
   }, [products, searchQuery]);
+
+  const chipTexts = useMemo(
+    () => searchedProducts.map((p) => `${p.name} ${p.description ?? ""}`),
+    [searchedProducts]
+  );
+  const filteredProducts = useMemo(
+    () =>
+      selectedChip
+        ? searchedProducts.filter((_, i) => matchesCatalogChip(selectedChip, chipTexts[i]))
+        : searchedProducts,
+    [searchedProducts, chipTexts, selectedChip]
+  );
 
   const [isManualRefresh, setIsManualRefresh] = useState(false);
   const handleRefresh = useCallback(async () => {
@@ -237,6 +252,7 @@ export default function ProductsScreen() {
           autoCorrect={false}
           containerStyle={styles.searchInput}
         />
+        <CatalogChips texts={chipTexts} selected={selectedChip} onSelect={setSelectedChip} />
       </View>
 
       {products.length === 0 ? (
@@ -244,7 +260,11 @@ export default function ProductsScreen() {
       ) : filteredProducts.length === 0 ? (
         <EmptyState
           icon="search-outline"
-          title={`No products match "${searchQuery}"`}
+          title={
+            searchedProducts.length > 0
+              ? "No products match this filter"
+              : `No products match "${searchQuery}"`
+          }
         />
       ) : (
         <FlatList
