@@ -5,6 +5,7 @@ import { requireStaffShop } from "@/lib/api-auth";
 import { sendBikeReadyInvoiceEmail, sendJobEmail, getTemplateForStage, sendBookingDeclinedEmail } from "@/lib/email";
 import { sendJobSms, getTemplateSlugForStage } from "@/lib/sms";
 import { syncCollectionJobService } from "@/lib/collection-fee";
+import { releaseStockForJob, takeStockForJob } from "@/lib/product-stock";
 import { getAppFeatures } from "@/lib/app-settings";
 import { computeJobSubtotal, computeTotalPaid, getJobPaymentSummary } from "@/lib/job-payments";
 import { getEffectiveEmailUpdatesConsent, getEffectiveSmsConsent } from "@/lib/sms-consent";
@@ -733,6 +734,13 @@ export async function PATCH(
           data: { waitingOnPartsAt: null },
         });
       }
+      // A cancelled job sold nothing: its products go back on the shelf, and
+      // come off again if the job is restored.
+      if (stageChanged && data.stage === "CANCELLED") {
+        await releaseStockForJob(tx, id);
+      } else if (stageChanged && existingJob.stage === "CANCELLED") {
+        await takeStockForJob(tx, id);
+      }
       const nextDeliveryType =
         data.deliveryType !== undefined ? data.deliveryType : existingJob.deliveryType;
       if (
@@ -1063,6 +1071,7 @@ export async function DELETE(
         { jobId: id },
         "This job recorded parts on a customer’s bike. Cancel the job first to withdraw them from the bike’s history, or archive it to keep them."
       );
+      await releaseStockForJob(tx, id);
       await tx.job.delete({ where: { id } });
     });
 

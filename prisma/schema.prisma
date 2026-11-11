@@ -531,6 +531,9 @@ model JobProduct {
   productId String
   product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
   quantity  Int      @default(1)
+  /// Units this line has taken out of Product.stockQuantity and not yet returned.
+  /// 0 for lines on cancelled jobs and for lines added before stock tracking.
+  stockDeductedQty Int @default(0)
   unitPrice Decimal  @db.Decimal(10, 2)
   notes     String?
   /// Optional: which bike in the job this product is for

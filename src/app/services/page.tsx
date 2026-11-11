@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { Price } from "@/components/ui/Price";
+import { RowActionButton } from "@/components/ui/RowActionButton";
 import { ServiceName } from "@/components/ui/ServiceName";
 import { CatalogPageSkeleton } from "@/components/ui/Skeleton";
 
@@ -713,29 +714,23 @@ export default function ServicesPage() {
                         </div>
                       )}
                     </div>
-                    <div className="flex gap-2 flex-shrink-0">
+                    <div className="flex flex-wrap justify-end gap-2 flex-shrink-0">
                       {!s.isSystem && (
-                        <button
+                        <RowActionButton
+                          variant={s.isHidden ? "show" : "hide"}
                           onClick={() => handleToggleHidden(s.id, !!s.isHidden)}
-                          className={`text-sm ${s.isHidden ? "text-emerald-600" : "text-amber-600"} hover:underline`}
                           title={s.isHidden ? "Show to customers" : "Hide from customers"}
                         >
                           {s.isHidden ? "Show" : "Hide"}
-                        </button>
+                        </RowActionButton>
                       )}
-                      <button
-                        onClick={() => startEdit(s)}
-                        className="text-sm text-blue-600 hover:underline"
-                      >
+                      <RowActionButton variant="edit" onClick={() => startEdit(s)}>
                         Edit
-                      </button>
+                      </RowActionButton>
                       {!s.isSystem && (
-                        <button
-                          onClick={() => handleDelete(s.id, s.name)}
-                          className="text-sm text-red-600 hover:underline"
-                        >
+                        <RowActionButton variant="delete" onClick={() => handleDelete(s.id, s.name)}>
                           Delete
-                        </button>
+                        </RowActionButton>
                       )}
                     </div>
                   </>

@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { getStaffToken } from "@/lib/api-auth";
 import { prisma } from "@/lib/db";
 import { z } from "zod";
+import {
+  adjustStockForQuantityChange,
+  releaseStockForLine,
+  takeStockForLine,
+} from "@/lib/product-stock";
 
 const addProductSchema = z.object({
   productId: z.string().min(1),
@@ -25,7 +30,7 @@ export async function POST(
     const data = addProductSchema.parse(body);
 
     const [job, product, jobBike] = await Promise.all([
-      prisma.job.findFirst({ where: { id: jobId, shopId }, select: { id: true } }),
+      prisma.job.findFirst({ where: { id: jobId, shopId }, select: { id: true, stage: true } }),
       prisma.product.findFirst({ where: { id: data.productId, shopId } }),
       data.jobBikeId
         ? prisma.jobBike.findFirst({ where: { id: data.jobBikeId, jobId, shopId }, select: { id: true } })
@@ -42,19 +47,27 @@ export async function POST(
       );
     }
 
-    const jobProduct = await prisma.jobProduct.create({
-      data: {
-        shopId,
-        jobId,
-        productId: data.productId,
-        quantity: data.quantity,
-        unitPrice: product.price,
-        jobBikeId: data.jobBikeId ?? null,
-      },
-      include: {
-        product: true,
-        jobBike: { select: { id: true, make: true, model: true, nickname: true } },
-      },
+    // Selling the product takes it off the shelf. A cancelled job sells nothing;
+    // restoring the job takes the stock then.
+    const jobProduct = await prisma.$transaction(async (tx) => {
+      const line = await tx.jobProduct.create({
+        data: {
+          shopId,
+          jobId,
+          productId: data.productId,
+          quantity: data.quantity,
+          unitPrice: product.price,
+          jobBikeId: data.jobBikeId ?? null,
+        },
+      });
+      if (job.stage !== "CANCELLED") await takeStockForLine(tx, line);
+      return tx.jobProduct.findUniqueOrThrow({
+        where: { id: line.id },
+        include: {
+          product: true,
+          jobBike: { select: { id: true, make: true, model: true, nickname: true } },
+        },
+      });
     });
 
     return NextResponse.json(jobProduct);
@@ -94,6 +107,7 @@ export async function PATCH(
 
     const existing = await prisma.jobProduct.findFirst({
       where: { shopId, id: data.jobProductId, jobId },
+      include: { job: { select: { stage: true } } },
     });
 
     if (!existing) {
@@ -106,6 +120,9 @@ export async function PATCH(
     if (data.unitPrice !== undefined) updateData.unitPrice = Math.round(data.unitPrice * 100) / 100;
 
     const updated = await prisma.$transaction(async (tx) => {
+      if (data.quantity !== undefined && existing.job.stage !== "CANCELLED") {
+        await adjustStockForQuantityChange(tx, existing, data.quantity);
+      }
       const line = await tx.jobProduct.update({
         where: { id: data.jobProductId },
         data: updateData,
@@ -150,15 +167,19 @@ export async function DELETE(
       );
     }
 
-    const result = await prisma.jobProduct.deleteMany({
-      where: {
-        shopId,
-        id: jobProductId,
-        jobId,
-      },
+    // Removing a line puts back whatever it took off the shelf.
+    const removed = await prisma.$transaction(async (tx) => {
+      const line = await tx.jobProduct.findFirst({
+        where: { shopId, id: jobProductId, jobId },
+        select: { id: true, productId: true, stockDeductedQty: true },
+      });
+      if (!line) return false;
+      await releaseStockForLine(tx, line);
+      const result = await tx.jobProduct.deleteMany({ where: { id: line.id } });
+      return result.count > 0;
     });
 
-    if (result.count === 0) {
+    if (!removed) {
       return NextResponse.json(
         { error: "Job product not found" },
         { status: 404 }
