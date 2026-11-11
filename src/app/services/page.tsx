@@ -1,10 +1,12 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { Price } from "@/components/ui/Price";
 import { RowActionButton } from "@/components/ui/RowActionButton";
 import { ServiceName } from "@/components/ui/ServiceName";
 import { CatalogPageSkeleton } from "@/components/ui/Skeleton";
+import { CatalogChips } from "@/components/ui/CatalogChips";
+import { matchesCatalogChip } from "@/lib/catalog-chips";
 
 interface Service {
   id: string;
@@ -45,6 +47,7 @@ export default function ServicesPage() {
   const [firstRowIsHeader, setFirstRowIsHeader] = useState(true);
   const [expandedServiceIds, setExpandedServiceIds] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
+  const [selectedChip, setSelectedChip] = useState<string | null>(null);
   const [actionsOpen, setActionsOpen] = useState(false);
   const actionsRef = useRef<HTMLDivElement>(null);
 
@@ -82,6 +85,17 @@ export default function ServicesPage() {
       })
       .finally(() => setLoading(false));
   }, [searchQuery]);
+
+  // Name only: service descriptions are checklists ("adjust brakes, true
+  // wheels…") that would file a tune-up under every chip.
+  const chipTexts = useMemo(() => services.map((s) => s.name), [services]);
+  const visibleServices = useMemo(
+    () =>
+      selectedChip
+        ? services.filter((_, i) => matchesCatalogChip(selectedChip, chipTexts[i]))
+        : services,
+    [services, chipTexts, selectedChip]
+  );
 
   const startEdit = (s: Service) => {
     setEditing(s.id);
@@ -648,13 +662,19 @@ export default function ServicesPage() {
         </div>
       )}
 
+      <CatalogChips texts={chipTexts} selected={selectedChip} onSelect={setSelectedChip} />
+
       <div className="space-y-4">
-        {services.length === 0 && !showAddForm ? (
+        {visibleServices.length === 0 && !showAddForm ? (
           <p className="text-slate-500 py-8">
-            {searchQuery ? `No services match "${searchQuery}".` : "No services yet. Add one to get started."}
+            {services.length > 0
+              ? "No services match this filter."
+              : searchQuery
+                ? `No services match "${searchQuery}".`
+                : "No services yet. Add one to get started."}
           </p>
         ) : (
-          services.map((s) => (
+          visibleServices.map((s) => (
             <div
               key={s.id}
               className="border border-slate-200 rounded-lg p-4 shadow-sm bg-white"

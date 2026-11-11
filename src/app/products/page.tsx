@@ -1,9 +1,11 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { Price } from "@/components/ui/Price";
 import { RowActionButton } from "@/components/ui/RowActionButton";
 import { CatalogPageSkeleton } from "@/components/ui/Skeleton";
+import { CatalogChips } from "@/components/ui/CatalogChips";
+import { matchesCatalogChip } from "@/lib/catalog-chips";
 
 const SUPPLIER_OPTIONS = ["Amazon", "Performance Bike", "Other"];
 
@@ -56,6 +58,7 @@ export default function ProductsPage() {
   });
   const [firstRowIsHeader, setFirstRowIsHeader] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
+  const [selectedChip, setSelectedChip] = useState<string | null>(null);
   const [actionsOpen, setActionsOpen] = useState(false);
   const actionsRef = useRef<HTMLDivElement>(null);
 
@@ -89,6 +92,18 @@ export default function ProductsPage() {
       })
       .finally(() => setLoading(false));
   }, [searchQuery]);
+
+  const chipTexts = useMemo(
+    () => products.map((p) => `${p.name} ${p.description ?? ""}`),
+    [products]
+  );
+  const visibleProducts = useMemo(
+    () =>
+      selectedChip
+        ? products.filter((_, i) => matchesCatalogChip(selectedChip, chipTexts[i]))
+        : products,
+    [products, chipTexts, selectedChip]
+  );
 
   const startEdit = (product: Product) => {
     uploadGeneration.current++;
@@ -879,13 +894,19 @@ export default function ProductsPage() {
         </div>
       )}
 
+      <CatalogChips texts={chipTexts} selected={selectedChip} onSelect={setSelectedChip} />
+
       <div className="space-y-4">
-        {products.length === 0 && !showAddForm ? (
+        {visibleProducts.length === 0 && !showAddForm ? (
           <p className="text-slate-500 py-8">
-            No products yet. Add one to get started.
+            {products.length > 0
+              ? "No products match this filter."
+              : searchQuery
+                ? `No products match "${searchQuery}".`
+                : "No products yet. Add one to get started."}
           </p>
         ) : (
-          products.map((product) => (
+          visibleProducts.map((product) => (
             <div
               key={product.id}
               className="border border-slate-200 rounded-lg p-4 bg-white shadow-sm flex gap-4"
