@@ -20,7 +20,15 @@ import {
 import { callsQueryKey } from "@/lib/staff-queries";
 import { useAuth } from "@/lib/auth";
 import { normalizeNotificationData } from "@/lib/notification-routing";
-import { configureCallKit, initializePushRegistry } from "@/lib/voice";
+import {
+  configureCallKit,
+  getActiveCall,
+  getPendingCallInvites,
+  initializePushRegistry,
+  onIncomingCallInvite,
+  registerForIncomingCalls,
+  unregisterForIncomingCalls,
+} from "@/lib/voice";
 import { useTheme } from "@/lib/ThemeContext";
 import { formatPhoneNumber } from "@/lib/format";
 import { CallScreen } from "@/components/calls/CallScreen";
@@ -30,6 +38,28 @@ export type RegistrationState = {
   status: "idle" | "registering" | "registered" | "failed";
   error: string | null;
 };
+
+const REGISTRATION_IDLE: RegistrationState = { status: "idle", error: null };
+
+/**
+ * Folds the two things a ring depends on into the one state screens show.
+ * A failure in either wins, notifications first because that one the user can
+ * fix from Settings; otherwise the device is only "registered" once both are.
+ */
+function combineRegistration(
+  permission: RegistrationState,
+  voice: RegistrationState
+): RegistrationState {
+  if (permission.status === "failed") return permission;
+  if (voice.status === "failed") return voice;
+  if (permission.status === "registering" || voice.status === "registering") {
+    return { status: "registering", error: null };
+  }
+  if (permission.status === "registered" && voice.status === "registered") {
+    return { status: "registered", error: null };
+  }
+  return REGISTRATION_IDLE;
+}
 
 /**
  * A notification older than this is from a call that has already timed out to
@@ -41,9 +71,10 @@ const CALL_NOTIFICATION_TTL_MS = 45_000;
 type CallContextValue = {
   state: CallState;
   /**
-   * Whether this device can actually receive inbound calls. Inbound calls ring
-   * via ordinary push notifications, so notification permission is the whole
-   * requirement — no Twilio-side registration is involved.
+   * Whether this device can actually receive inbound calls: notification
+   * permission (the queue path rings by ordinary notification, and Android
+   * needs it to show Twilio's call notification) and this device's Twilio
+   * registration (the native-ring path pushes only to registered devices).
    */
   registration: RegistrationState;
   startCall: (toNumber: string, displayName?: string) => Promise<void>;
@@ -285,6 +316,8 @@ export function CallProvider({ children }: { children: ReactNode }) {
     state,
     startCall,
     presentIncomingCall,
+    presentInvite,
+    adoptActiveCall,
     acceptIncoming,
     rejectIncoming,
     hangUp,
@@ -294,10 +327,10 @@ export function CallProvider({ children }: { children: ReactNode }) {
   } = useCallManager();
   const { staffUser } = useAuth();
   const queryClient = useQueryClient();
-  const [registration, setRegistration] = useState<RegistrationState>({
-    status: "idle",
-    error: null,
-  });
+  const [permission, setPermission] = useState<RegistrationState>(REGISTRATION_IDLE);
+  const [voiceRegistration, setVoiceRegistration] =
+    useState<RegistrationState>(REGISTRATION_IDLE);
+  const registration = combineRegistration(permission, voiceRegistration);
 
   // The full call screen is the default; minimizing trades it for the banner.
   const [minimized, setMinimized] = useState(false);
@@ -343,6 +376,11 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const minimize = useCallback(() => setMinimized(true), []);
   const expand = useCallback(() => setMinimized(false), []);
 
+  // Twilio invites. Subscribed for the provider's whole life rather than per
+  // staff session: on a cold start the invite can fire before the session has
+  // been read back from the keychain, and the OS is ringing regardless.
+  useEffect(() => onIncomingCallInvite(presentInvite), [presentInvite]);
+
   // Required for the Twilio SDK to place calls at all on iOS — see
   // initializePushRegistry. Not tied to the staff session: it has to run at
   // launch, before anyone tries to dial or answer.
@@ -351,7 +389,12 @@ export function CallProvider({ children }: { children: ReactNode }) {
   // provider the registry is about to make ready, so the order is not
   // cosmetic. A failure there is logged rather than thrown — it costs the
   // recents opt-out, not the ability to make calls.
+  //
+  // Then whatever the SDK took in before JS was running. A call answered from
+  // the lock screen is adopted first, so that an invite still pending behind
+  // it cannot claim the screen.
   useEffect(() => {
+    let cancelled = false;
     void (async () => {
       await configureCallKit().catch((error) => {
         console.warn("[voice] CallKit configuration failed:", error);
@@ -359,36 +402,130 @@ export function CallProvider({ children }: { children: ReactNode }) {
       await initializePushRegistry().catch((error) => {
         console.warn("[voice] PushKit registry init failed:", error);
       });
+      if (cancelled) return;
+
+      const active = await getActiveCall();
+      if (cancelled) return;
+      if (active) {
+        console.log("[voice] adopting a call answered before launch");
+        adoptActiveCall(active);
+      }
+
+      try {
+        const pending = await getPendingCallInvites();
+        if (cancelled) return;
+        pending.forEach(presentInvite);
+      } catch (error) {
+        console.warn("[voice] reading pending call invites failed:", error);
+      }
     })();
+    return () => {
+      cancelled = true;
+    };
+  }, [adoptActiveCall, presentInvite]);
+
+  /**
+   * Register/unregister calls run one at a time, in order. Without that a
+   * quick sign-out could unregister before a slower register finished, and
+   * the registration would outlive the session.
+   */
+  const voiceOpsRef = useRef<Promise<void>>(Promise.resolve());
+  const queueVoiceOp = useCallback((op: () => Promise<void>) => {
+    voiceOpsRef.current = voiceOpsRef.current.then(op).catch(() => {});
   }, []);
 
   /**
-   * Whether this device can be rung at all.
+   * Registers this device with Twilio for as long as a staff member is signed
+   * in, so the server's native-ring path (<Dial><Client>) can reach it. On the
+   * old queue path the registration simply goes unused — see
+   * registerForIncomingCalls.
    *
-   * Nothing is registered with Twilio — see registerForIncomingCalls for why
-   * that is deliberate — so an inbound call reaches this phone as an ordinary
-   * push notification and notification permission is the entire requirement.
-   * A device with it switched off is not a device that rings quietly; it is
-   * one that never hears about the call, which is worth saying out loud here
-   * rather than leaving to be discovered by a customer going unanswered.
+   * Keyed on the user id rather than the user object: auth re-reads the
+   * cached session on every foreground, handing back an equal user in a new
+   * object, and that is no reason to register again. A failed attempt is
+   * retried on the next foreground instead.
+   */
+  const staffUserId = staffUser ? staffUser.id : null;
+  const wasSignedInRef = useRef(false);
+  useEffect(() => {
+    if (staffUserId === null) {
+      setVoiceRegistration(REGISTRATION_IDLE);
+      if (wasSignedInRef.current) {
+        wasSignedInRef.current = false;
+        queueVoiceOp(async () => {
+          try {
+            await unregisterForIncomingCalls();
+            console.log("[voice] unregistered for incoming calls");
+          } catch (error) {
+            console.warn("[voice] unregistering for incoming calls failed:", error);
+          }
+        });
+      }
+      return;
+    }
+
+    wasSignedInRef.current = true;
+    let cancelled = false;
+    let failed = false;
+
+    const register = () =>
+      queueVoiceOp(async () => {
+        if (cancelled) return;
+        setVoiceRegistration({ status: "registering", error: null });
+        try {
+          await registerForIncomingCalls();
+          failed = false;
+          console.log("[voice] registered for incoming calls");
+          if (!cancelled) setVoiceRegistration({ status: "registered", error: null });
+        } catch (error) {
+          failed = true;
+          console.warn("[voice] registering for incoming calls failed:", error);
+          if (!cancelled) {
+            setVoiceRegistration({
+              status: "failed",
+              error: "This phone couldn't sign up to ring for incoming calls",
+            });
+          }
+        }
+      });
+
+    register();
+    const sub = AppState.addEventListener("change", (next) => {
+      if (next === "active" && failed) register();
+    });
+
+    return () => {
+      cancelled = true;
+      sub.remove();
+    };
+  }, [staffUserId, queueVoiceOp]);
+
+  /**
+   * Whether notifications can reach this device.
+   *
+   * The queue path rings by ordinary push notification, and on Android the
+   * native-ring path shows Twilio's call notification, so a device with
+   * notifications switched off is not one that rings quietly; it is one that
+   * never hears about the call, which is worth saying out loud here rather
+   * than leaving to be discovered by a customer going unanswered.
    *
    * Rechecked on foreground because permission can be revoked from Settings
    * while the app sits in the background.
    */
   useEffect(() => {
     if (!staffUser) {
-      setRegistration({ status: "idle", error: null });
+      setPermission(REGISTRATION_IDLE);
       return;
     }
 
     let cancelled = false;
 
     const check = async () => {
-      setRegistration((prev) => ({ status: "registering", error: prev.error }));
+      setPermission((prev) => ({ status: "registering", error: prev.error }));
       try {
         const { granted } = await Notifications.getPermissionsAsync();
         if (cancelled) return;
-        setRegistration({
+        setPermission({
           status: granted ? "registered" : "failed",
           error: granted
             ? null
@@ -396,7 +533,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
         });
       } catch (error) {
         if (cancelled) return;
-        setRegistration({
+        setPermission({
           status: "failed",
           error:
             error instanceof Error
@@ -417,9 +554,11 @@ export function CallProvider({ children }: { children: ReactNode }) {
     };
   }, [staffUser]);
 
-  // Inbound calls arrive as notifications rather than Twilio invites, so the
-  // ring is wired up here rather than in useNotifications — CallProvider sits
-  // inside NotificationProvider and so can't reach back up to it.
+  // The queue path: while the shop's server still parks callers in a queue,
+  // inbound calls arrive as notifications rather than Twilio invites. Kept
+  // alongside the invite path above so this build rings on either server.
+  // Wired up here rather than in useNotifications — CallProvider sits inside
+  // NotificationProvider and so can't reach back up to it.
   useEffect(() => {
     if (!staffUser) return;
 

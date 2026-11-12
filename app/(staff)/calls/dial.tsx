@@ -113,12 +113,14 @@ export default function DialScreen() {
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
       {registration.status === "failed" ? (
-        // Dialing out still works, but a device with notifications off will
-        // never ring for the callback — worth saying before the call goes out.
+        // Dialing out still works, but a device that can't be rung will never
+        // ring for the callback — worth saying before the call goes out. Either
+        // notifications are off or the Twilio registration failed; the error
+        // says which.
         <View style={[styles.warningBanner, { backgroundColor: colors.amber[600] }]}>
           <Ionicons name="warning-outline" size={16} color={colors.white} />
           <Text style={styles.warningText} numberOfLines={2}>
-            Notifications are off — callbacks won&apos;t ring this device
+            {registration.error ?? "Callbacks won't ring this device"}
           </Text>
         </View>
       ) : null}

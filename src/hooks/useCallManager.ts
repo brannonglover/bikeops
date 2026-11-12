@@ -125,10 +125,13 @@ const IDLE_STATE: CallState = {
  * Owns the single active call for the app — outbound dials and inbound calls
  * alike.
  *
- * Inbound calls arrive as ordinary push notifications, not Twilio invites:
- * the caller holds in a server-side queue and presentIncomingCall() puts the
- * ringing UI up. Answering dials into that queue. See lib/voice.ts for why
- * this app avoids PushKit entirely.
+ * Inbound calls arrive one of two ways, depending on the shop's server:
+ *  - As Twilio Client invites (<Dial><Client>), which the OS rings natively;
+ *    presentInvite() mirrors them here and answering accepts the invite.
+ *  - As ordinary push notifications, with the caller holding in a server-side
+ *    queue; presentIncomingCall() puts the ringing UI up and answering dials
+ *    into that queue.
+ * The app handles both so it can ship before the server switches over.
  */
 export function useCallManager() {
   const [state, setState] = useState<CallState>(IDLE_STATE);
@@ -285,10 +288,11 @@ export function useCallManager() {
   /**
    * Mirrors an inbound Twilio invite into app state.
    *
-   * Currently unwired: no invite ever arrives, because the app no longer
-   * registers for them and the server no longer creates them. Kept with the
-   * rest of that path as the rollback — see registerForIncomingCalls in
-   * lib/voice.ts for the two things that have to move together to use it.
+   * Fed by CallProvider from two places: the SDK's live CallInvite event, and
+   * the invites already pending when JS starts. Invites only arrive once the
+   * shop's server rings staff with <Dial><Client> (voiceNativeRingEnabled);
+   * until then the notification path in presentIncomingCall does the ringing
+   * and this never runs.
    *
    * The phone is already ringing when this runs — the SDK reports the call to
    * CallKit (or Android's incoming-call notification) natively, before JS is
@@ -299,6 +303,12 @@ export function useCallManager() {
   const presentInvite = useCallback(
     (incoming: IncomingInvite) => {
       const { invite } = incoming;
+
+      // The launch sweep and the live event can both hand over the same
+      // invite, as two different CallInvite objects. Wiring it twice would
+      // attach every call listener twice once it is answered.
+      const current = inviteRef.current;
+      if (current && current.getCallSid() === invite.getCallSid()) return;
 
       // Cancelled is the device-side half of the server's leg sweep: the caller
       // hung up, their hold ran out, or a colleague picked up. Whichever it
@@ -344,6 +354,33 @@ export function useCallManager() {
           // so nothing here has to retire the answer buttons on a clock.
           ringEndsAt: null,
         };
+      });
+    },
+    [attachCallListeners]
+  );
+
+  /**
+   * Takes over a call that was answered before JS was running.
+   *
+   * Answering from the lock screen while the app is terminated is handled by
+   * the SDK and CallKit alone: by the time a line of JS runs the call is up,
+   * and neither the invite nor its Accepted event is anywhere to be seen. This
+   * is how the app's own screen, with its hang-up and mute, catches up with it.
+   */
+  const adoptActiveCall = useCallback(
+    (call: Call) => {
+      const current = callRef.current;
+      if (current && (current === call || current.getSid() === call.getSid())) return;
+      endedByUserRef.current = false;
+      attachCallListeners(call);
+      setState({
+        ...IDLE_STATE,
+        status: "connected",
+        number: call.getFrom() ?? null,
+        direction: "inbound",
+        // When it actually connected is not on record here, so the timer
+        // counts from when the app found it rather than from nothing.
+        connectedAt: Date.now(),
       });
     },
     [attachCallListeners]
@@ -603,6 +640,7 @@ export function useCallManager() {
     startCall,
     presentIncomingCall,
     presentInvite,
+    adoptActiveCall,
     acceptIncoming,
     rejectIncoming,
     hangUp,

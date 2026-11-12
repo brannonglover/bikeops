@@ -19,12 +19,12 @@ function currentPlatform(): "ios" | "android" {
 /**
  * Stands up the SDK's PushKit registry at launch.
  *
- * Kept for the sake of dialing, not ringing. The SDK's iOS CallKit path cannot
+ * Needed for dialing and ringing alike. The SDK's iOS CallKit path cannot
  * start any call without it, so dropping this breaks placing a call and
- * answering a queued one alike. It brings no inbound call in by itself: Twilio
- * sends a VoIP push only to a device that called voice.register(), which this
- * app deliberately does not — see registerForIncomingCalls. Has to run before
- * any dial.
+ * answering a queued one. It is also what hands the SDK the VoIP device token
+ * that registerForIncomingCalls passes on to Twilio, so it has to run before
+ * that as well as before any dial. By itself it brings no inbound call in:
+ * Twilio pushes only to a device that has registered.
  */
 export async function initializePushRegistry(): Promise<void> {
   if (Platform.OS !== "ios") return;
@@ -147,11 +147,12 @@ export function onAudioDevicesUpdated(
 /**
  * Answers an inbound call announced by a push notification.
  *
- * Inbound calls are not Twilio invites here — they wait in the shop's queue
- * while an ordinary notification rings the device (this app deliberately does
- * not register for PushKit, because iOS would then force the call onto the
- * native CallKit screen). Answering therefore means placing an outbound leg
- * that dials into that queue, which /outgoing recognises by Mode=answer.
+ * This is the queue path, used while the shop's server still parks inbound
+ * callers in a queue and rings staff with an ordinary notification rather than
+ * a Twilio invite (voiceNativeRingEnabled off). There is no invite to accept,
+ * so answering means placing an outbound leg that dials into that queue, which
+ * /outgoing recognises by Mode=answer. Invites are accepted in
+ * useCallManager's acceptIncoming instead.
  */
 export async function answerQueuedCall(
   callId: string,
@@ -216,21 +217,29 @@ export function withConnectTimeout<T>(work: Promise<T>, ms: number): Promise<T> 
 
 
 /**
+ * The access token the last successful registration used.
+ *
+ * Unregistering needs a token for the same identity, but by the time sign-out
+ * reaches CallProvider the staff session has already been ended on the server,
+ * so a fresh one can no longer be fetched. Tokens last an hour (the server's
+ * ttl), which covers sign-out soon after launch or foregrounding; past that,
+ * unregistering fails and is logged.
+ */
+let registeredToken: string | null = null;
+
+/**
  * Registers this device to receive inbound calls as Twilio Client invites.
  *
- * Deliberately not called. Registering is what hands inbound calls to the
- * operating system: Twilio delivers the invite as a VoIP push, and iOS then
- * *requires* every VoIP push to be reported to CallKit, so the call is
- * answered on Apple's incoming-call screen and filed in Apple's phone app
- * rather than in BikeOps. Not registering is the only way for the app's own
- * call screen to be the one that rings — which is why inbound calls are
- * announced by an ordinary notification instead (see answerQueuedCall).
+ * Called by CallProvider once a staff member is signed in. Registering hands
+ * inbound calls to the operating system: Twilio delivers the invite as a VoIP
+ * push (FCM on Android), and iOS *requires* every VoIP push to be reported to
+ * CallKit, so the ring and the answer happen on the system's incoming-call
+ * screen. The app's own CallScreen takes over once the call is answered.
  *
- * Kept, with its counterpart below, as the rollback: the server half is still
- * there too, behind NATIVE_RING_SUPPORTED_BY_APP in bikeopsco's voice-legs.ts.
- * Calling this again without flipping that constant rings nothing, and
- * flipping that constant without calling this again sends callers to
- * voicemail in silence. The two move together or not at all.
+ * Harmless while the shop's server still rings staff the old way: Twilio
+ * only pushes when the server dials this device's Client identity, which it
+ * does only with voiceNativeRingEnabled on. Until then the ordinary
+ * "incoming_call" notification and answerQueuedCall keep doing the ringing.
  *
  * Requires a push credential configured on the Twilio side, which the access
  * token carries. Without one the registration still succeeds and no push is
@@ -240,15 +249,26 @@ export function withConnectTimeout<T>(work: Promise<T>, ms: number): Promise<T> 
 export async function registerForIncomingCalls(): Promise<void> {
   const { token } = await getVoiceAccessToken(currentPlatform());
   await getVoiceDevice().register(token);
+  registeredToken = token;
 }
 
 /**
  * Stops inbound calls reaching this device. Called on sign-out so a phone that
  * has been handed on does not keep ringing for the shop.
+ *
+ * Prefers a fresh token and falls back to the one registration used, since
+ * sign-out has usually ended the session a fresh one would come from.
  */
 export async function unregisterForIncomingCalls(): Promise<void> {
-  const { token } = await getVoiceAccessToken(currentPlatform());
+  let token: string | null = null;
+  try {
+    ({ token } = await getVoiceAccessToken(currentPlatform()));
+  } catch (error) {
+    token = registeredToken;
+    if (!token) throw error;
+  }
   await getVoiceDevice().unregister(token);
+  registeredToken = null;
 }
 
 /** Details the server attached to an invite via the `To` query string. */
