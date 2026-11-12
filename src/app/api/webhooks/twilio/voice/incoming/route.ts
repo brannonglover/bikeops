@@ -10,6 +10,7 @@ import {
   getVoiceWebhookBaseUrl,
 } from "@/lib/voice";
 import { ringStaffForHeldCaller } from "@/lib/voice-legs";
+import { isDirectRingEnabled, ringStaffTwiml } from "@/lib/voice-ring";
 import { connectCallToVoiceAgent, isAiVoiceAnswering } from "@/lib/ai/voice-agent";
 
 export const runtime = "nodejs";
@@ -23,10 +24,11 @@ function xmlResponse(xml: string): NextResponse {
  * Voice → "A call comes in" → POST https://YOUR_SHOP.bikeops.co/api/webhooks/twilio/voice/incoming
  *
  * With the AI phone assistant on, the call is handed to it. Otherwise — or if
- * the assistant can't be reached — the caller is parked in the shop queue and
- * staff are alerted with an ordinary push notification; tapping it dials them
- * into the queue. See buildIncomingCallTwiml for why this no longer dials
- * <Client> directly.
+ * the assistant can't be reached — staff are rung. A shop with
+ * `voiceNativeRingEnabled` rings every staff device directly with
+ * <Dial><Client> (see ringStaffTwiml); any other shop parks the caller in the
+ * hold queue and alerts staff with a repeated push, which answering dials
+ * into.
  */
 export async function POST(request: NextRequest) {
   const ctx = await authenticateVoiceWebhook(request);
@@ -100,18 +102,26 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Ringing has to start before the TwiML response, or the caller begins
-  // holding before any device has been told to wake up.
-  await ringStaffForHeldCaller({
-    shopId: shop.id,
-    callId: call.id,
-    callSid,
-    baseUrl: base,
-    fromNumber: fromE164,
-    customerName: call.customer
-      ? [call.customer.firstName, call.customer.lastName].filter(Boolean).join(" ")
-      : null,
-  });
+  const customerName = call.customer
+    ? [call.customer.firstName, call.customer.lastName].filter(Boolean).join(" ")
+    : null;
+
+  // Direct ring: every staff device rings natively and the caller hears a
+  // real ring until one answers. Twilio does the rest — see ringStaffTwiml.
+  if (await isDirectRingEnabled(shop.id)) {
+    const ring = await ringStaffTwiml({
+      shopId: shop.id,
+      callId: call.id,
+      base,
+      fromNumber: fromE164,
+      customerName,
+    });
+    if (ring) return xmlResponse(ring);
+  }
+
+  // Queue path. Ringing has to start before the TwiML response, or the caller
+  // begins holding before any device has been told to wake up.
+  await ringStaffForHeldCaller({ shopId: shop.id, callSid });
 
   const twiml = buildIncomingCallTwiml({
     queueName: buildQueueName(shop.id),

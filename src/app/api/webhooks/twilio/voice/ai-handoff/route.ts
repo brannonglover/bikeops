@@ -7,6 +7,7 @@ import {
   getVoiceWebhookBaseUrl,
 } from "@/lib/voice";
 import { ringStaffForHeldCaller } from "@/lib/voice-legs";
+import { isDirectRingEnabled, ringStaffTwiml } from "@/lib/voice-ring";
 
 export const runtime = "nodejs";
 
@@ -19,10 +20,10 @@ function xmlResponse(xml: string): NextResponse {
  * REST redirect from /api/webhooks/elevenlabs/transfer, which ends the stream
  * to the assistant and runs this document instead.
  *
- * From here the call is an ordinary held caller: parked in the shop queue
- * while staff are rung, exactly as /incoming does it. If nobody picks up,
- * /dequeued sends them back to the assistant to take a message rather than to
- * voicemail.
+ * From here staff are rung exactly as /incoming does it — directly, or from
+ * the hold queue for a shop not on the direct ring. If nobody picks up, the
+ * caller goes back to the assistant to take a message rather than to
+ * voicemail (via /dial-result or /dequeued respectively).
  */
 export async function POST(request: NextRequest) {
   const ctx = await authenticateVoiceWebhook(request);
@@ -58,16 +59,24 @@ export async function POST(request: NextRequest) {
     data: { status: "RINGING", startedAt: new Date(), aiHandoffAt: new Date() },
   });
 
-  await ringStaffForHeldCaller({
-    shopId: shop.id,
-    callId: call.id,
-    callSid,
-    baseUrl: base,
-    fromNumber: call.fromNumber,
-    customerName: call.customer
-      ? [call.customer.firstName, call.customer.lastName].filter(Boolean).join(" ")
-      : null,
-  });
+  // Direct ring, as /incoming does it. The caller is already on an answered
+  // line here (the assistant took it), so what they hear while staff are rung
+  // is Twilio's ringTone rather than their carrier's — and if nobody picks up,
+  // /dial-result hands them back to the assistant to take a message.
+  if (await isDirectRingEnabled(shop.id)) {
+    const ring = await ringStaffTwiml({
+      shopId: shop.id,
+      callId: call.id,
+      base,
+      fromNumber: call.fromNumber,
+      customerName: call.customer
+        ? [call.customer.firstName, call.customer.lastName].filter(Boolean).join(" ")
+        : null,
+    });
+    if (ring) return xmlResponse(ring);
+  }
+
+  await ringStaffForHeldCaller({ shopId: shop.id, callSid });
 
   return xmlResponse(
     buildIncomingCallTwiml({

@@ -2,29 +2,20 @@ import "server-only";
 
 import Twilio from "twilio";
 import { prisma } from "@/lib/db";
-import { formatPhoneDisplay } from "@/lib/phone";
-import {
-  RING_SECONDS,
-  buildStaffIdentity,
-  ringStaffForCall,
-  sendQueuedCallerToVoicemail,
-  TWILIO_VOICE_NUMBER,
-} from "@/lib/voice";
+import { ringStaffForCall, sendQueuedCallerToVoicemail } from "@/lib/voice";
 
 /**
- * Ringing staff with real Twilio Client invites, rather than a repeated push.
+ * The hold-queue ring path: the caller is parked by <Enqueue> and staff are
+ * alerted by a push repeated on every /wait pass. It now runs only for a shop
+ * with `voiceNativeRingEnabled` off — the direct <Dial><Client> ring in
+ * voice-ring.ts replaces it — and stays as the rollback until that path is
+ * proven, after which this module goes.
  *
- * The caller side is untouched: they are still parked in the shop queue by
- * <Enqueue>. What changes is how staff are alerted — each registered device is
- * rung by its own outbound call to `client:<identity>`, which Twilio delivers as
- * a VoIP push, so the OS shows its own incoming-call screen and rings until
- * someone acts. Answering bridges that leg into the queue the caller is already
- * holding in, which is why none of the queue TwiML had to change.
- *
- * The cost of a real ring is that it no longer stops by itself. A push that is
- * never sent again is a ring that ends; a live Twilio leg rings until something
- * cancels it. Every path that settles a call therefore has to sweep the legs it
- * leaves behind — see cancelStaffLegs, and the four callers of it.
+ * The leg helpers below belonged to the retired Design B, which rang each
+ * device with its own REST-created Client call while still holding the caller
+ * in the queue. Nothing creates CallLeg rows any more, so they are inert, but
+ * /dequeued, /staff-answer and /staff-leg still reference them and they leave
+ * with those routes.
  */
 
 const accountSid = process.env.TWILIO_ACCOUNT_SID?.trim() ?? null;
@@ -33,25 +24,9 @@ const authToken = process.env.TWILIO_AUTH_TOKEN?.trim() ?? null;
 /** Leg states that mean a device could still be ringing. */
 const LIVE_LEG_STATUSES = ["PENDING", "RINGING"] as const;
 
-/**
- * Twilio's limits on custom parameters passed through the `To` query string:
- * at most 8, names <= 32 bytes, values <= 128 bytes. Only two are sent, but the
- * caller's name is free text and has to be cut to fit.
- */
-const MAX_PARAM_VALUE_BYTES = 128;
-
 function twilioClient() {
   if (!accountSid || !authToken) throw new Error("Twilio is not configured");
   return Twilio(accountSid, authToken);
-}
-
-/** Trims a custom-parameter value to Twilio's byte limit, not its length. */
-function fitParamValue(value: string): string {
-  let out = value;
-  while (Buffer.byteLength(out, "utf8") > MAX_PARAM_VALUE_BYTES) {
-    out = out.slice(0, -1);
-  }
-  return out;
 }
 
 /**
@@ -67,149 +42,21 @@ function isAlreadyGone(error: unknown): boolean {
 }
 
 /**
- * Whether the staff app on the other end can be rung with Client invites.
- *
- * Off, and deliberately not a per-shop decision. Invites ring a device only if
- * that device called voice.register(), and the staff app stopped doing so when
- * inbound calls moved back to this app's own call screen: iOS forces a PushKit
- * call onto the native CallKit UI, so registering is exactly what took the
- * call out of BikeOps and put it in the system phone app.
- *
- * This being a constant rather than the shop flag is the point. A shop left on
- * `voiceNativeRingEnabled` once the app no longer registers is the worst of
- * both paths: fanOutStaffLegs dials one leg per staff user whether or not any
- * device is listening, /wait sends no push because it believes the phones are
- * already ringing, and the caller holds in silence until voicemail takes them
- * — with nothing in the logs that looks like a failure.
- *
- * Going back to native ringing therefore takes two commits, not a settings
- * toggle: flip this, and ship a staff build that registers again.
- */
-const NATIVE_RING_SUPPORTED_BY_APP: boolean = false;
-
-/** Whether this shop rings staff with Client invites rather than a push. */
-export async function isNativeRingEnabled(shopId: string): Promise<boolean> {
-  if (!NATIVE_RING_SUPPORTED_BY_APP) return false;
-  const settings = await prisma.appSettings.findUnique({
-    where: { shopId },
-    select: { voiceNativeRingEnabled: true },
-  });
-  return settings?.voiceNativeRingEnabled ?? false;
-}
-
-/**
- * Starts ringing staff for a caller who is about to be parked in the queue,
- * whichever way this shop rings. Has to run before the <Enqueue> TwiML is
- * returned, or the caller begins holding before any device has been told.
+ * Starts ringing staff for a caller who is about to be parked in the queue:
+ * one notification now, repeated by /wait for as long as the caller holds.
+ * Has to run before the <Enqueue> TwiML is returned, or the caller begins
+ * holding before any device has been told.
  *
  * Never throws: a ring that fails must not take the call down — the caller
  * should still reach voicemail rather than hear an error.
  */
 export async function ringStaffForHeldCaller(opts: {
   shopId: string;
-  callId: string;
   callSid: string;
-  baseUrl: string;
-  fromNumber: string;
-  customerName: string | null;
 }): Promise<void> {
-  const { shopId, callId, callSid, baseUrl, fromNumber, customerName } = opts;
-  if (await isNativeRingEnabled(shopId)) {
-    // One real Twilio invite per device: the OS rings it, continuously, until
-    // somebody acts. Nothing repeats it, and nothing here has to stop it —
-    // /staff-answer and /dequeued own cancellation between them.
-    await fanOutStaffLegs({ shopId, callId, baseUrl, fromNumber, customerName }).catch(
-      (error) => {
-        console.error("[voice] could not ring staff for incoming call:", error);
-      }
-    );
-  } else {
-    // The previous path: one notification now, repeated by /wait for as long as
-    // the caller holds. Kept as the rollback while the invite path is proven.
-    await ringStaffForCall(shopId, callSid).catch((error) => {
-      console.error("[voice] staff push for incoming call failed:", error);
-    });
-  }
-}
-
-/**
- * Rings every staff device for a call that has just been parked in the queue.
- *
- * One outbound call per identity. Each carries the ids both callbacks need in
- * its own URLs, so nothing has to be looked up by SID to know which leg a
- * callback is about.
- *
- * `timeout` is the backstop: if every cancellation path below were to fail,
- * Twilio still stops ringing the device at the end of the caller's own hold
- * window, so no device is left ringing for a caller who has gone.
- */
-export async function fanOutStaffLegs(opts: {
-  shopId: string;
-  callId: string;
-  baseUrl: string;
-  fromNumber: string;
-  customerName?: string | null;
-}): Promise<number> {
-  const { shopId, callId, baseUrl, fromNumber, customerName } = opts;
-  if (!TWILIO_VOICE_NUMBER) throw new Error("Twilio voice number is not configured");
-  // Captured locally: the narrowing above is lost inside the per-leg closure,
-  // because an imported binding could in principle change between the two.
-  const callerId = TWILIO_VOICE_NUMBER;
-
-  const users = await prisma.user.findMany({ where: { shopId }, select: { id: true } });
-  if (users.length === 0) return 0;
-
-  const callerLabel = fitParamValue(
-    customerName?.trim() || formatPhoneDisplay(fromNumber) || "Unknown caller"
-  );
-
-  const client = twilioClient();
-  let rung = 0;
-
-  await Promise.all(
-    users.map(async (user) => {
-      const identity = buildStaffIdentity(shopId, user.id);
-      // The row first: its id goes in both callback URLs, so it has to exist
-      // before Twilio is asked to create anything.
-      const leg = await prisma.callLeg.create({
-        data: { callId, identity, status: "PENDING" },
-        select: { id: true },
-      });
-
-      // Custom parameters ride in the `To` query string — Twilio's documented
-      // route for REST-created Client calls, read on the device as
-      // callInvite.customParameters. This is what lets the app show the right
-      // caller and, on answer, open the right call.
-      const params = new URLSearchParams({ callId, name: callerLabel });
-      const to = `client:${identity}?${params.toString()}`;
-
-      try {
-        const created = await client.calls.create({
-          to,
-          from: callerId,
-          url: `${baseUrl}/api/webhooks/twilio/voice/staff-answer?legId=${leg.id}`,
-          method: "POST",
-          statusCallback: `${baseUrl}/api/webhooks/twilio/voice/staff-leg?legId=${leg.id}`,
-          statusCallbackEvent: ["initiated", "ringing", "answered", "completed"],
-          statusCallbackMethod: "POST",
-          timeout: RING_SECONDS,
-        });
-        await prisma.callLeg.update({
-          where: { id: leg.id },
-          data: { callSid: created.sid, status: "RINGING" },
-        });
-        rung += 1;
-      } catch (error) {
-        // One unreachable device must not stop the others ringing.
-        console.error("[voice] could not ring staff leg", { identity, error });
-        await prisma.callLeg
-          .update({ where: { id: leg.id }, data: { status: "ENDED" } })
-          .catch(() => {});
-      }
-    })
-  );
-
-  return rung;
+  await ringStaffForCall(opts.shopId, opts.callSid).catch((error) => {
+    console.error("[voice] staff push for incoming call failed:", error);
+  });
 }
 
 /**

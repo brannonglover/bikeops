@@ -43,6 +43,22 @@ export async function POST(request: NextRequest) {
     return new NextResponse("ok", { status: 200 });
   }
 
+  // A staff leg of an inbound direct ring (buildRingStaffTwiml). One inbound
+  // call has a leg per staff device, and every one but the winner ends as
+  // canceled, busy or no-answer — so none of those may close the row the way a
+  // single outbound <Number> leg's would. The only thing a staff leg says
+  // about the call is that it connected: that is the answer, and that leg is
+  // the child worth keeping. The caller's own leg and /dial-result close it.
+  if (parentCallSid && call.direction === "INBOUND") {
+    if (status === "IN_PROGRESS") {
+      await prisma.call.updateMany({
+        where: { id: call.id, answeredAt: null, endedAt: null },
+        data: { status: "IN_PROGRESS", answeredAt: new Date(), twilioChildCallSid: callSid },
+      });
+    }
+    return new NextResponse("ok", { status: 200 });
+  }
+
   // Already reached a terminal state — don't let a stray late callback (e.g.
   // the parent leg's own "completed" arriving after the child leg's) regress
   // duration/timestamps. Only the write is skipped, not the outreach check

@@ -55,6 +55,111 @@ export function ringWindowCutoff(now: Date = new Date()): Date {
   return new Date(now.getTime() - RING_SECONDS * 1000);
 }
 
+/**
+ * How long staff devices ring on the direct-ring path before the caller goes
+ * to voicemail. Longer than RING_SECONDS because it now has to cover a VoIP
+ * push reaching a locked phone, not a queue loop on our own clock — and,
+ * unlike the queue, the caller is hearing a real ring the whole time rather
+ * than holding on an answered line.
+ */
+export const DIAL_RING_SECONDS = 30;
+
+/** Twilio's ceiling on nouns inside a single <Dial>. */
+export const MAX_DIAL_CLIENTS = 10;
+
+/**
+ * Twilio's limit on a custom parameter value is 128 bytes. The caller's name
+ * is free text, so it is cut to fit by bytes rather than characters.
+ */
+const MAX_PARAM_VALUE_BYTES = 128;
+
+/** Trims a custom-parameter value to Twilio's byte limit, not its length. */
+export function fitParamValue(value: string): string {
+  let out = value;
+  while (Buffer.byteLength(out, "utf8") > MAX_PARAM_VALUE_BYTES) {
+    out = out.slice(0, -1);
+  }
+  return out;
+}
+
+/**
+ * TwiML that rings every staff device directly: one <Dial> holding a <Client>
+ * per staff identity.
+ *
+ * This is the whole ring, and Twilio runs all of it. answerOnBridge keeps the
+ * caller's own leg unanswered until a person picks up, so they hear a real
+ * ring and their call connects at the moment it truly does. Each <Client>
+ * becomes a VoIP push the OS rings natively. The first device to answer is
+ * bridged and Twilio cancels the rest, and when nobody does — timeout, or
+ * every device declining — the action URL hears DialCallStatus and sends the
+ * caller on to voicemail. None of the queue, leg-claiming or ring-deadline
+ * machinery of the <Enqueue> path is needed.
+ *
+ * The <Parameter>s are what the app reads off the invite (describeInvite in
+ * the mobile repo) to show the caller and open the right Call row.
+ *
+ * Only the staff legs carry statusCallback, so /status can stamp answeredAt
+ * from the leg that actually connected.
+ */
+export function buildRingStaffTwiml(opts: {
+  identities: string[];
+  callId: string;
+  callerLabel: string;
+  actionUrl: string;
+  statusCallbackUrl: string;
+  timeoutSeconds?: number;
+}): string {
+  const {
+    identities,
+    callId,
+    callerLabel,
+    actionUrl,
+    statusCallbackUrl,
+    timeoutSeconds = DIAL_RING_SECONDS,
+  } = opts;
+
+  const clients = identities
+    .slice(0, MAX_DIAL_CLIENTS)
+    .map(
+      (identity) =>
+        `<Client statusCallback="${escapeXml(statusCallbackUrl)}" ` +
+        `statusCallbackEvent="ringing answered completed" statusCallbackMethod="POST">` +
+        `<Identity>${escapeXml(identity)}</Identity>` +
+        `<Parameter name="callId" value="${escapeXml(fitParamValue(callId))}"/>` +
+        `<Parameter name="name" value="${escapeXml(fitParamValue(callerLabel))}"/>` +
+        `</Client>`
+    )
+    .join("");
+
+  return twiml(
+    `<Dial answerOnBridge="true" timeout="${timeoutSeconds}" ringTone="us" ` +
+      `action="${escapeXml(actionUrl)}" method="POST">${clients}</Dial>`
+  );
+}
+
+/**
+ * What /dial-result does with the caller once the staff ring is over.
+ *
+ * `completed` means a device answered and the conversation has finished, so
+ * there is nothing left but to hang up. Everything else — nobody answered,
+ * every device declined (Twilio reports a rejected Client as busy), or the
+ * dial failed outright — still has a caller on the line who should be able to
+ * leave a message.
+ */
+export function dialResultOutcome(dialCallStatus: string | undefined): "hangup" | "unanswered" {
+  return dialCallStatus === "completed" ? "hangup" : "unanswered";
+}
+
+/** TwiML for /dial-result, from dialResultOutcome. */
+export function buildDialResultTwiml(opts: {
+  dialCallStatus: string | undefined;
+  unansweredUrl: string;
+}): string {
+  return dialResultOutcome(opts.dialCallStatus) === "hangup"
+    ? twiml("<Hangup/>")
+    : twiml(`<Redirect method="POST">${escapeXml(opts.unansweredUrl)}</Redirect>`);
+}
+
 /** The single per-shop hold queue. <Enqueue> creates it on first use. */
 export function buildQueueName(shopId: string): string {
   return `shop-${shopId}`;
