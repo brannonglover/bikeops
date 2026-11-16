@@ -31,6 +31,7 @@ import { mergeBoardJob } from "@/lib/board-stage-merge";
 import { JOBS_REFRESH_EVENT } from "@/lib/jobs-refresh";
 import { BikeSpecsTab } from "@/components/jobs/BikeSpecsTab";
 import { HistoryTab } from "@/components/jobs/HistoryTab";
+import { EstimateTab } from "@/components/jobs/EstimateTab";
 import { LinkifiedMessageBody } from "@/components/chat/LinkifiedMessageBody";
 import { BikeImageSearch } from "@/components/bikes/BikeImageSearch";
 import {
@@ -2115,7 +2116,7 @@ interface JobDetailModalProps {
   onJobDeleted?: (jobId: string) => void;
 }
 
-type Tab = "details" | "invoice" | "bike_specs" | "history";
+type Tab = "details" | "invoice" | "estimate" | "bike_specs" | "history";
 
 function PaidStatusBlock({ job }: { job: Job }) {
   const [resending, setResending] = useState(false);
@@ -3429,10 +3430,10 @@ export function JobDetailModal({ job: jobProp, isOpen, onClose, onJobUpdated, on
           </button>
         </div>
 
-        <div className="flex border-b border-slate-200 flex-shrink-0">
+        <div className="flex overflow-x-auto border-b border-slate-200 flex-shrink-0">
           <button
             onClick={() => setActiveTab("details")}
-            className={`flex-1 sm:flex-none px-4 sm:px-6 py-3 text-sm font-medium transition-colors touch-manipulation ${
+            className={`flex-1 sm:flex-none whitespace-nowrap px-2 sm:px-6 py-3 text-sm font-medium transition-colors touch-manipulation ${
               activeTab === "details"
                 ? "text-blue-600 border-b-2 border-blue-600"
                 : "text-slate-500 hover:text-slate-700"
@@ -3442,7 +3443,7 @@ export function JobDetailModal({ job: jobProp, isOpen, onClose, onJobUpdated, on
           </button>
           <button
             onClick={() => setActiveTab("invoice")}
-            className={`flex-1 sm:flex-none px-4 sm:px-6 py-3 text-sm font-medium transition-colors touch-manipulation ${
+            className={`flex-1 sm:flex-none whitespace-nowrap px-2 sm:px-6 py-3 text-sm font-medium transition-colors touch-manipulation ${
               activeTab === "invoice"
                 ? "text-blue-600 border-b-2 border-blue-600"
                 : "text-slate-500 hover:text-slate-700"
@@ -3451,8 +3452,18 @@ export function JobDetailModal({ job: jobProp, isOpen, onClose, onJobUpdated, on
             Invoice
           </button>
           <button
+            onClick={() => setActiveTab("estimate")}
+            className={`flex-1 sm:flex-none whitespace-nowrap px-2 sm:px-6 py-3 text-sm font-medium transition-colors touch-manipulation ${
+              activeTab === "estimate"
+                ? "text-blue-600 border-b-2 border-blue-600"
+                : "text-slate-500 hover:text-slate-700"
+            }`}
+          >
+            Estimate
+          </button>
+          <button
             onClick={() => setActiveTab("bike_specs")}
-            className={`flex-1 sm:flex-none px-4 sm:px-6 py-3 text-sm font-medium transition-colors touch-manipulation ${
+            className={`flex-1 sm:flex-none whitespace-nowrap px-2 sm:px-6 py-3 text-sm font-medium transition-colors touch-manipulation ${
               activeTab === "bike_specs"
                 ? "text-blue-600 border-b-2 border-blue-600"
                 : "text-slate-500 hover:text-slate-700"
@@ -3462,7 +3473,7 @@ export function JobDetailModal({ job: jobProp, isOpen, onClose, onJobUpdated, on
           </button>
           <button
             onClick={() => setActiveTab("history")}
-            className={`flex-1 sm:flex-none px-4 sm:px-6 py-3 text-sm font-medium transition-colors touch-manipulation ${
+            className={`flex-1 sm:flex-none whitespace-nowrap px-2 sm:px-6 py-3 text-sm font-medium transition-colors touch-manipulation ${
               activeTab === "history"
                 ? "text-blue-600 border-b-2 border-blue-600"
                 : "text-slate-500 hover:text-slate-700"
@@ -3481,6 +3492,15 @@ export function JobDetailModal({ job: jobProp, isOpen, onClose, onJobUpdated, on
             <BikeSpecsTab job={job} />
           ) : activeTab === "history" ? (
             <HistoryTab job={job} />
+          ) : activeTab === "estimate" ? (
+            <EstimateTab
+              job={job}
+              onJobUpdated={(updated) => {
+                jobEnrichGenRef.current += 1;
+                setJob(updated);
+                onJobUpdated?.(updated);
+              }}
+            />
           ) : activeTab === "invoice" ? (
             <InvoiceTab
               job={job}

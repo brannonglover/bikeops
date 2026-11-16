@@ -46,6 +46,8 @@ model Shop {
   jobSms                      JobSms[]
   products                    Product[]
   jobProducts                 JobProduct[]
+  jobEstimates                JobEstimate[]
+  jobEstimateItems            JobEstimateItem[]
   mechanics                   Mechanic[]
   conversations               Conversation[]
   messages                    Message[]
@@ -182,6 +184,7 @@ model JobBike {
   jobSmses           JobSms[]
   jobServices        JobService[]
   jobProducts        JobProduct[]
+  estimateItems      JobEstimateItem[]
   componentOverrides JobBikeComponentOverride[]
 
   @@index([jobId])
@@ -310,6 +313,7 @@ model Job {
   sentSms                     JobSms[]
   jobServices                 JobService[]
   jobProducts                 JobProduct[]
+  estimates                   JobEstimate[]
   payments                    Payment[]
   conversations               Conversation[]
   /// The conversation this job was created from, when staff built it out of a
@@ -371,6 +375,7 @@ model Service {
   isSystem    Boolean      @default(false)
   isHidden    Boolean      @default(false)
   jobServices JobService[]
+  estimateItems JobEstimateItem[]
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
 
@@ -500,6 +505,7 @@ model Product {
   stockQuantity Int          @default(0)
   supplier      String?
   jobProducts   JobProduct[]
+  estimateItems JobEstimateItem[]
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
 
@@ -543,6 +549,84 @@ model JobProduct {
 
   @@index([shopId])
   @@index([jobId])
+}
+
+/// Work the shop proposes and the customer approves or declines line by line.
+/// Nothing on an estimate counts toward the job's bill until the customer
+/// approves it: each approved item then becomes an ordinary JobService or
+/// JobProduct line. Declined items stay here as "recommended for later".
+model JobEstimate {
+  id               String            @id @default(cuid())
+  shopId           String
+  shop             Shop              @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  jobId            String
+  job              Job               @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  status           EstimateStatus    @default(SENT)
+  /// Note from the shop shown above the items ("Found a worn chain...").
+  message          String?
+  /// Stage the job left for WAITING_ON_CUSTOMER when this was sent; the job
+  /// returns there once the customer answers. Null when the job was not moved.
+  resumeStage      Stage?
+  sentAt           DateTime          @default(now())
+  sentBySms        Boolean           @default(false)
+  sentByEmail      Boolean           @default(false)
+  sentByPush       Boolean           @default(false)
+  respondedAt      DateTime?
+  /// True when staff recorded the answer (e.g. the customer approved by phone).
+  respondedByStaff Boolean           @default(false)
+  customerComment  String?
+  items            JobEstimateItem[]
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  @@index([shopId])
+  @@index([jobId])
+}
+
+model JobEstimateItem {
+  id          String               @id @default(cuid())
+  shopId      String
+  shop        Shop                 @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  estimateId  String
+  estimate    JobEstimate          @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  kind        EstimateItemKind
+  serviceId   String?
+  service     Service?             @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  productId   String?
+  product     Product?             @relation(fields: [productId], references: [id], onDelete: SetNull)
+  /// Name and price as quoted, so later catalog edits don't rewrite the estimate.
+  name        String
+  description String?
+  quantity    Int                  @default(1)
+  unitPrice   Decimal              @db.Decimal(10, 2)
+  jobBikeId   String?
+  jobBike     JobBike?             @relation(fields: [jobBikeId], references: [id], onDelete: SetNull)
+  decision    EstimateItemDecision @default(PENDING)
+  /// The job line an approval created (JobService.id or JobProduct.id).
+  jobLineId   String?
+  sortOrder   Int                  @default(0)
+  createdAt   DateTime             @default(now())
+
+  @@index([shopId])
+  @@index([estimateId])
+}
+
+enum EstimateStatus {
+  SENT
+  RESPONDED
+  CANCELLED
+}
+
+enum EstimateItemKind {
+  SERVICE
+  PRODUCT
+  CUSTOM
+}
+
+enum EstimateItemDecision {
+  PENDING
+  APPROVED
+  DECLINED
 }
 
 model Conversation {

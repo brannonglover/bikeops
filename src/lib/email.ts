@@ -2911,3 +2911,178 @@ export async function sendCustomerBroadcastEmails(
     };
   }
 }
+
+export interface EstimateEmailItem {
+  name: string;
+  quantity: number;
+  unitPrice: number;
+  decision?: "PENDING" | "APPROVED" | "DECLINED";
+}
+
+function buildEstimateItemRows(items: EstimateEmailItem[], showDecision: boolean): string {
+  return items
+    .map((item, i) => {
+      const lineTotal = item.unitPrice * (item.quantity || 1);
+      const decisionCell = showDecision
+        ? `<td class="email-table-label" style="padding:14px 18px;border-bottom:1px solid #e2e8f0;font-size:15px;font-weight:600;text-align:center;color:${
+            item.decision === "APPROVED" ? "#047857" : "#b91c1c"
+          }">${item.decision === "APPROVED" ? "Approved" : "Declined"}</td>`
+        : "";
+      return `
+      <tr class="email-table-row${i % 2 === 1 ? " email-table-row-alt" : ""}">
+        <td class="email-table-value" style="padding:14px 18px;border-bottom:1px solid #e2e8f0;color:#334155;font-size:16px">${escapeHtml(item.name)}${
+          item.quantity > 1 ? ` <span style="color:#64748b">× ${item.quantity}</span>` : ""
+        }</td>
+        ${decisionCell}
+        <td class="email-table-value" style="padding:14px 18px;border-bottom:1px solid #e2e8f0;color:#0f172a;font-weight:600;text-align:right;font-size:16px">${formatPrice(lineTotal)}</td>
+      </tr>`;
+    })
+    .join("");
+}
+
+/** Customer email: the shop sent an estimate to review on the status page. */
+export async function sendEstimateEmail(details: {
+  shopId: string;
+  jobId: string;
+  to: string;
+  customerFirstName: string | null;
+  bikeName: string;
+  message: string | null;
+  items: EstimateEmailItem[];
+  total: number;
+  reviewUrl: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  const blocked = skipIfCustomerNotificationsBlocked("sendEstimateEmail");
+  if (blocked) return blocked;
+
+  const resend = getResend();
+  if (!resend) return { ok: false, error: "Email not configured" };
+
+  const { prisma } = await import("./db");
+  const shopRow = await prisma.shop
+    .findUnique({ where: { id: details.shopId }, select: { name: true } })
+    .catch(() => null);
+  const shopName = shopRow?.name ?? SHOP_NAME;
+
+  const greeting = details.customerFirstName?.trim()
+    ? `Hi ${escapeHtml(details.customerFirstName.trim())},`
+    : "Hi,";
+  const note = details.message?.trim()
+    ? `<div class="email-summary-box" style="padding:16px;background-color:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;margin:0 0 24px;font-size:16px;color:#334155">${escapeHtml(details.message.trim()).replace(/\r\n|\r|\n/g, "<br />")}</div>`
+    : "";
+
+  const innerHtml = `
+<p class="email-body-cell" style="margin:0 0 16px;font-size:16px;color:#475569">${greeting}</p>
+<p class="email-body-cell" style="margin:0 0 24px;font-size:16px;color:#475569">${escapeHtml(shopName)} has an estimate for your ${escapeHtml(details.bikeName)}. Approve or decline each item, and we'll get back to work. Nothing is added to your bill until you approve it.</p>
+${note}
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" class="email-table" style="margin-bottom:24px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
+  <tbody>${buildEstimateItemRows(details.items, false)}</tbody>
+</table>
+<div class="email-summary-box" style="padding:16px;background-color:#f1f5f9;border-radius:8px;border:1px solid #e2e8f0">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+    <tr>
+      <td class="email-table-label" style="font-size:16px;font-weight:600;color:#475569">Estimate total</td>
+      <td class="email-table-value" style="font-size:18px;font-weight:700;color:#334155;text-align:right">${formatPrice(details.total)}</td>
+    </tr>
+  </table>
+</div>
+${buildCustomerEmailCtaButton(details.reviewUrl, "Review estimate")}
+`.trim();
+
+  const branding = await getCustomerEmailBrandingAssets(details.shopId);
+  const html = buildReadOnlyCustomerEmailHtml({
+    innerHtml,
+    headerLogoSrc: branding.headerLogoSrc,
+    heading: "Estimate ready to review",
+  });
+  const attachments = customerEmailBrandingAttachments(branding);
+
+  try {
+    const { error } = await sendResendEmail(resend, {
+      ...getCustomerEmailSendOptions(),
+      to: details.to,
+      subject: `Estimate for your ${details.bikeName} - ${formatPrice(details.total)}`,
+      html,
+      ...(attachments && { attachments }),
+    });
+    if (error) return { ok: false, error: error.message };
+
+    await prisma.jobEmail.create({
+      data: {
+        shopId: details.shopId,
+        jobId: details.jobId,
+        templateSlug: "estimate_sent",
+        recipient: details.to,
+      },
+    });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Unknown error" };
+  }
+}
+
+/** Staff email: a customer approved or declined an estimate. */
+export async function sendEstimateResponseNotification(details: {
+  shopId: string;
+  jobId: string;
+  customerName: string;
+  bikeName: string;
+  items: EstimateEmailItem[];
+  approvedTotal: number;
+  customerComment: string | null;
+}): Promise<{ ok: boolean; error?: string }> {
+  const resend = getResend();
+  if (!resend) return { ok: false, error: "Email not configured" };
+
+  const notifyEmail = await getShopNotifyEmail(details.shopId);
+  if (!notifyEmail) return { ok: false, error: "No notification email configured" };
+
+  const { prisma } = await import("./db");
+  const shopRow = await prisma.shop
+    .findUnique({ where: { id: details.shopId }, select: { subdomain: true } })
+    .catch(() => null);
+  const staffJobUrl = getStaffJobOpenUrl(details.jobId, shopRow?.subdomain);
+
+  const approvedCount = details.items.filter((i) => i.decision === "APPROVED").length;
+  const summary =
+    approvedCount === 0
+      ? `${details.customerName} declined the estimate for the ${details.bikeName}.`
+      : `${details.customerName} approved ${approvedCount} of ${details.items.length} items (${formatPrice(details.approvedTotal)}) for the ${details.bikeName}. Approved items are on the job's invoice now.`;
+  const comment = details.customerComment?.trim()
+    ? `<p class="email-body-cell" style="margin:0 0 24px;font-size:16px;color:#334155"><strong>Customer note:</strong> ${escapeHtml(details.customerComment.trim())}</p>`
+    : "";
+
+  const innerHtml = `
+<p class="email-body-cell" style="margin:0 0 24px;font-size:16px;color:#475569">${escapeHtml(summary)}</p>
+${comment}
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" class="email-table" style="margin-bottom:24px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
+  <tbody>${buildEstimateItemRows(details.items, true)}</tbody>
+</table>
+${staffJobUrl ? buildCustomerEmailCtaButton(staffJobUrl, "View job") : ""}
+`.trim();
+
+  const branding = await getCustomerEmailBrandingAssets(details.shopId);
+  const html = buildCustomerEmailHtml({
+    innerHtml,
+    headerLogoSrc: branding.headerLogoSrc,
+    heading: approvedCount === 0 ? "Estimate declined" : "Estimate approved",
+  });
+  const attachments = customerEmailBrandingAttachments(branding);
+
+  try {
+    const { error } = await sendResendEmail(resend, {
+      from: getFromEmail(),
+      to: notifyEmail,
+      subject:
+        approvedCount === 0
+          ? `Estimate declined - ${details.customerName}, ${details.bikeName}`
+          : `Estimate approved - ${details.customerName}, ${details.bikeName}`,
+      html,
+      ...(attachments && { attachments }),
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Unknown error" };
+  }
+}

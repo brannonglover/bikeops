@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import { jobAccessApiSuffix, readJobAccessParam, withJobAccessQuery } from "@/lib/job-access-url";
 import Link from "next/link";
@@ -10,6 +10,7 @@ import { Price } from "@/components/ui/Price";
 import { BikePlaceholderIcon } from "@/components/ui/BikePlaceholderIcon";
 import { computeJobSubtotal, getJobPaymentSummary } from "@/lib/job-payments";
 import { CustomerCardSkeleton } from "@/components/ui/Skeleton";
+import { EstimateApprovalCard } from "@/components/estimates/EstimateApprovalCard";
 
 const STAGE_LABELS: Record<string, string> = {
   PENDING_APPROVAL: "Awaiting confirmation",
@@ -173,7 +174,12 @@ type StatusJob = {
   /** Staff-only internal reason is never sent to this page; this is the customer half. */
   customerCancellationMessage?: string | null;
   jobServices: StatusJobService[];
-  jobProducts?: { quantity: number; unitPrice: string | number }[];
+  jobProducts?: {
+    id: string;
+    quantity: number;
+    unitPrice: string | number;
+    product?: { name: string } | null;
+  }[];
 };
 
 function ServiceDescription({ text }: { text: string }) {
@@ -275,6 +281,9 @@ export default function StatusPage() {
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [expandedBikes, setExpandedBikes] = useState<Set<string>>(new Set());
   const [expandedServices, setExpandedServices] = useState<Set<string>>(new Set());
+  const [hasOpenEstimate, setHasOpenEstimate] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+  const reloadJob = useCallback(() => setReloadKey((k) => k + 1), []);
 
   function toggleBike(id: string) {
     setExpandedBikes((prev) => {
@@ -339,7 +348,7 @@ export default function StatusPage() {
         }
       })
       .finally(() => setLoading(false));
-  }, [jobId, jobAccess]);
+  }, [jobId, jobAccess, reloadKey]);
 
   if (loading) {
     return <CustomerCardSkeleton label="Loading status" className="max-w-[35rem]" />;
@@ -356,13 +365,6 @@ export default function StatusPage() {
     );
   }
 
-  const total = (job.jobServices ?? []).reduce(
-    (sum: number, js: { unitPrice: string | number; quantity: number }) => {
-      const price = typeof js.unitPrice === "string" ? parseFloat(js.unitPrice) : Number(js.unitPrice);
-      return sum + price * (js.quantity || 1);
-    },
-    0
-  );
   const subtotal = computeJobSubtotal({
     jobServices: job.jobServices ?? [],
     jobProducts: job.jobProducts ?? [],
@@ -387,7 +389,10 @@ export default function StatusPage() {
   const hasAssignedServices = [...servicesByBikeId.keys()].some((k) => k !== null);
 
   const stageLabel = STAGE_LABELS[job.stage] ?? job.stage;
-  const stageDesc = STAGE_DESCRIPTIONS[job.stage] ?? "";
+  const stageDesc =
+    job.stage === "WAITING_ON_CUSTOMER" && hasOpenEstimate
+      ? "We need your go-ahead on the estimate above before we continue."
+      : STAGE_DESCRIPTIONS[job.stage] ?? "";
 
   const bikes: StatusJobBike[] = (job.jobBikes ?? []).length > 0
     ? [...(job.jobBikes ?? [])].sort((a: StatusJobBike & { sortOrder?: number }, b: StatusJobBike & { sortOrder?: number }) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
@@ -395,8 +400,19 @@ export default function StatusPage() {
   const hasBikes = bikes.length > 0;
   const hasMultipleBikes = bikes.length > 1;
 
+  const bikeNames = Object.fromEntries(
+    bikes.map((b) => [b.id, resolveBikeDisplay(b).name] as const)
+  );
+
   return (
     <div className="w-full max-w-[35rem] space-y-6">
+      <EstimateApprovalCard
+        jobId={job.id}
+        jobAccess={jobAccess}
+        bikeNames={hasMultipleBikes ? bikeNames : {}}
+        onOpenChange={setHasOpenEstimate}
+        onAnswered={reloadJob}
+      />
       <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
         <h1 className="text-lg font-bold text-slate-900">
           {job.bikeMake} {job.bikeModel}
@@ -629,11 +645,31 @@ export default function StatusPage() {
           </div>
         )}
 
-        {job.jobServices && job.jobServices.length > 0 && (
+        {(job.jobProducts ?? []).length > 0 && (
+          <div className="mt-4 pt-4 border-t border-slate-200">
+            <h2 className="text-sm font-semibold text-slate-700 mb-2">Parts</h2>
+            <ul className="space-y-0.5">
+              {(job.jobProducts ?? []).map((jp) => (
+                <li key={jp.id} className="flex items-center justify-between text-sm gap-2 py-1.5">
+                  <span className="text-slate-600 truncate">
+                    {jp.product?.name ?? "Part"}
+                    {jp.quantity > 1 && <span className="text-slate-400"> × {jp.quantity}</span>}
+                  </span>
+                  <Price
+                    amount={(typeof jp.unitPrice === "string" ? parseFloat(jp.unitPrice) : Number(jp.unitPrice)) * (jp.quantity || 1)}
+                    variant="total"
+                  />
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {((job.jobServices ?? []).length > 0 || (job.jobProducts ?? []).length > 0) && (
           <div className="mt-3 pt-3 border-t border-slate-200 flex items-center justify-between">
             <span className="text-sm font-semibold text-slate-700">Total</span>
             <p className="text-sm font-semibold text-slate-900">
-              <Price amount={total} variant="total" />
+              <Price amount={subtotal} variant="total" />
             </p>
           </div>
         )}
