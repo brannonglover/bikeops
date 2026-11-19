@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db";
 import { getRequestShop, requireStaffShop } from "@/lib/api-auth";
 import { hasJobReadAccess } from "@/lib/job-customer-access";
 import { computeAmountWithSurcharge, getStripe, toCents } from "@/lib/stripe";
-import { computeJobSubtotal, computeTotalPaid, getJobPaymentSummary } from "@/lib/job-payments";
+import { computeJobTotal, computeTotalPaid, getJobPaymentSummary } from "@/lib/job-payments";
 import { z } from "zod";
 
 const bodySchema = z.object({
@@ -61,10 +61,7 @@ export async function POST(
       return NextResponse.json({ error: "Job not found" }, { status: 404 });
     }
 
-    const subtotal = computeJobSubtotal({
-      jobServices: job.jobServices,
-      jobProducts: job.jobProducts,
-    });
+    const subtotal = computeJobTotal(job);
 
     if (subtotal <= 0) {
       return NextResponse.json(

@@ -16,7 +16,8 @@ import {
   getJobBikeDisplayTitle,
   type JobBikeDisplayParts,
 } from "@/lib/job-display";
-import { getJobPaymentSummary } from "@/lib/job-payments";
+import { computeJobTotalsFromApi, getJobPaymentSummary } from "@/lib/job-payments";
+import { InvoicePricingRows } from "@/components/jobs/InvoicePricingRows";
 import { formatPhoneDisplay, phoneTelHref } from "@/lib/phone";
 import {
   decodeCollectionWindowForInput,
@@ -4604,15 +4605,8 @@ function InvoiceTab({ job, onJobUpdated }: { job: Job; onJobUpdated?: (job: Job)
     })();
   };
 
-  const total =
-    jobServices.reduce((sum, js) => {
-      const price = typeof js.unitPrice === "string" ? parseFloat(js.unitPrice) : Number(js.unitPrice);
-      return sum + price * (js.quantity || 1);
-    }, 0) +
-    jobProductsList.reduce((sum, jp) => {
-      const price = typeof jp.unitPrice === "string" ? parseFloat(jp.unitPrice) : Number(jp.unitPrice);
-      return sum + price * (jp.quantity || 1);
-    }, 0);
+  const totals = computeJobTotalsFromApi({ ...job, jobServices, jobProducts: jobProductsList });
+  const total = totals.total;
 
   const grossPaid =
     typeof job.totalPaid === "number"
@@ -5287,7 +5281,8 @@ function InvoiceTab({ job, onJobUpdated }: { job: Job; onJobUpdated?: (job: Job)
               document.body
             )}
         </div>
-      <div className="flex justify-between items-center pt-4 mt-4 border-t-2 border-slate-200">
+      <InvoicePricingRows job={job} totals={totals} onJobUpdated={commitJob} />
+      <div className="flex justify-between items-center pt-3 mt-3 border-t border-slate-200">
         <span className="font-bold text-slate-900">Total</span>
         <Price amount={total} variant="total" />
       </div>

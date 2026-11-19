@@ -6,7 +6,7 @@ import { jobAccessApiSuffix, readJobAccessParam, withJobAccessQuery } from "@/li
 import { loadStripe } from "@stripe/stripe-js";
 import { Elements, PaymentElement, useStripe, useElements } from "@stripe/react-stripe-js";
 import { Price } from "@/components/ui/Price";
-import { computeJobSubtotal, getJobPaymentSummary } from "@/lib/job-payments";
+import { computeJobTotalsFromApi, getJobPaymentSummary, type JobPricing } from "@/lib/job-payments";
 import { CustomerCardSkeleton } from "@/components/ui/Skeleton";
 
 const PAYABLE_STAGES = ["RECEIVED", "WORKING_ON", "WAITING_ON_CUSTOMER", "WAITING_ON_PARTS", "BIKE_READY", "COMPLETED"] as const;
@@ -126,7 +126,8 @@ export default function PayPage() {
     jobProducts?: { product: { name: string }; quantity: number; unitPrice: string | number }[];
     paymentStatus: string;
     totalPaid?: number;
-  } | null>(null);
+    discountReason?: string | null;
+  } & Partial<JobPricing> | null>(null);
   const [stripePromise, setStripePromise] = useState<ReturnType<typeof loadStripe> | null>(null);
   const [clientSecret, setClientSecret] = useState<string | null>(null);
   const [paymentAmount, setPaymentAmount] = useState<{
@@ -156,10 +157,7 @@ export default function PayPage() {
         const jobData = await jobRes.json();
         setJob(jobData);
 
-        const localSubtotal = computeJobSubtotal({
-          jobServices: jobData.jobServices ?? [],
-          jobProducts: jobData.jobProducts ?? [],
-        });
+        const localSubtotal = computeJobTotalsFromApi(jobData).total;
         const localPaymentSummary = getJobPaymentSummary({
           currentStatus: jobData.paymentStatus,
           subtotal: localSubtotal,
@@ -239,12 +237,8 @@ export default function PayPage() {
     );
   }
 
-  const originalSubtotal =
-    paymentAmount?.originalSubtotal ??
-    computeJobSubtotal({
-      jobServices: job.jobServices ?? [],
-      jobProducts: job.jobProducts ?? [],
-    });
+  const jobTotals = computeJobTotalsFromApi(job);
+  const originalSubtotal = paymentAmount?.originalSubtotal ?? jobTotals.total;
   const totalPaid = paymentAmount?.totalPaid ?? (typeof job.totalPaid === "number" ? job.totalPaid : 0);
   const paymentSummary = getJobPaymentSummary({
     currentStatus: job.paymentStatus,
@@ -380,6 +374,28 @@ export default function PayPage() {
             <p className="py-2 text-sm text-slate-500">No services or products have been added yet.</p>
           )}
         </div>
+          {(jobTotals.discount > 0 || jobTotals.tax > 0) && (
+            <div className="mt-3 space-y-1 border-t border-slate-200 pt-3 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500">Subtotal</span>
+                <span className="tabular-nums text-slate-700">${jobTotals.itemsTotal.toFixed(2)}</span>
+              </div>
+              {jobTotals.discount > 0 && (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="min-w-0 truncate text-slate-500">
+                    Discount{job.discountReason ? ` (${job.discountReason})` : ""}
+                  </span>
+                  <span className="tabular-nums text-emerald-700">−${jobTotals.discount.toFixed(2)}</span>
+                </div>
+              )}
+              {jobTotals.tax > 0 && (
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500">Sales tax ({jobTotals.taxRatePercent}%)</span>
+                  <span className="tabular-nums text-slate-700">${jobTotals.tax.toFixed(2)}</span>
+                </div>
+              )}
+            </div>
+          )}
       </div>
 
       {clientSecret && stripePromise ? (

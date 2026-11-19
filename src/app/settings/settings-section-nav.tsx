@@ -6,6 +6,7 @@ import {
   Brush,
   CircleDot,
   MessageSquareText,
+  Percent,
   SlidersHorizontal,
 } from "lucide-react";
 
@@ -13,6 +14,7 @@ const SETTINGS_LINKS = [
   { href: "/settings/appearance", label: "Appearance", icon: Brush },
   { href: "/settings/branding", label: "Branding", icon: CircleDot },
   { href: "/settings/features", label: "Features", icon: SlidersHorizontal },
+  { href: "/settings/sales-tax", label: "Sales tax", icon: Percent },
   { href: "/settings/twilio", label: "Twilio SMS", icon: MessageSquareText },
 ] as const;
 

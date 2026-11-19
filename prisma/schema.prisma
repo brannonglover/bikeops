@@ -308,6 +308,20 @@ model Job {
   receivedAt                  DateTime?
   archivedAt                  DateTime?
   columnSortOrder             Float?
+  /// Sales tax, copied from the shop's settings when the job is created (and
+  /// re-copied while the job has no payments), so changing the shop rate never
+  /// changes what a paid job owed. 8.25 means 8.25%.
+  taxRatePercent              Decimal         @default(0) @db.Decimal(6, 3)
+  /// Whether labor (service lines) and parts (product lines) are taxed.
+  taxServices                 Boolean         @default(false)
+  taxProducts                 Boolean         @default(false)
+  /// Staff marked this job tax-exempt (e.g. a resale or nonprofit customer).
+  taxExempt                   Boolean         @default(false)
+  /// Job-level discount, taken off before tax. AMOUNT is dollars; PERCENT is
+  /// 0-100. Null type means no discount.
+  discountType                DiscountType?
+  discountValue               Decimal         @default(0) @db.Decimal(10, 2)
+  discountReason              String?
   paymentStatus               PaymentStatus   @default(UNPAID)
   sentEmails                  JobEmail[]
   sentSms                     JobSms[]
@@ -415,6 +429,11 @@ enum Stage {
   BIKE_READY
   COMPLETED
   CANCELLED
+}
+
+enum DiscountType {
+  AMOUNT
+  PERCENT
 }
 
 enum DeliveryType {
@@ -1089,6 +1108,12 @@ model AppSettings {
   aiVoiceEnabled           Boolean   @default(false)
   /// The name the phone assistant introduces itself with. Null: no name.
   aiVoiceName              String?
+  /// Sales tax rate for new jobs; 8.25 means 8.25%. 0 means no sales tax.
+  salesTaxRatePercent      Decimal   @default(0) @db.Decimal(6, 3)
+  /// Whether labor (services) is taxed. Varies by state.
+  taxServices              Boolean   @default(false)
+  /// Whether parts (products) are taxed.
+  taxProducts              Boolean   @default(true)
   createdAt                DateTime  @default(now())
   updatedAt                DateTime  @updatedAt
 

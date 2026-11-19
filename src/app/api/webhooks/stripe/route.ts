@@ -3,7 +3,7 @@ import Stripe from "stripe";
 import { getStripe } from "@/lib/stripe";
 import { prisma } from "@/lib/db";
 import { sendPaymentReceiptEmail } from "@/lib/email";
-import { computeJobSubtotal, computeTotalPaid, getJobPaymentSummary } from "@/lib/job-payments";
+import { computeJobTotal, computeTotalPaid, getJobPaymentSummary, pickJobPricing } from "@/lib/job-payments";
 import { buildPaymentReceivedDetails, notifyShopOfPayment } from "@/lib/payment-notifications";
 import { syncStripeSubscription, toStripeDate } from "@/lib/billing";
 import { publishJobEvent } from "@/lib/realtime/publish-job-event";
@@ -28,10 +28,7 @@ async function refreshJobPaymentStatus(jobId: string) {
     throw new Error(`Job ${jobId} not found while refreshing payment status`);
   }
 
-  const subtotal = computeJobSubtotal({
-    jobServices: jobWithPayments.jobServices,
-    jobProducts: jobWithPayments.jobProducts,
-  });
+  const subtotal = computeJobTotal(jobWithPayments);
   const totalPaid = computeTotalPaid(jobWithPayments.payments);
   const paymentSummary = getJobPaymentSummary({
     currentStatus: jobWithPayments.paymentStatus,
@@ -156,10 +153,7 @@ export async function POST(request: NextRequest) {
           throw new Error(`Job ${jobId} not found while applying Stripe payment`);
         }
 
-        const subtotal = computeJobSubtotal({
-          jobServices: jobWithPayments.jobServices,
-          jobProducts: jobWithPayments.jobProducts,
-        });
+        const subtotal = computeJobTotal(jobWithPayments);
         const totalPaid = computeTotalPaid(jobWithPayments.payments);
         const paymentSummary = getJobPaymentSummary({
           currentStatus: jobWithPayments.paymentStatus,
@@ -211,6 +205,7 @@ export async function POST(request: NextRequest) {
                 email: recipientEmail,
               }
             : { firstName: "", lastName: null, email: recipientEmail },
+          ...pickJobPricing(job),
           jobServices: job.jobServices.map((js) => ({
             service: js.service ? { name: js.service.name } : null,
             customServiceName: js.customServiceName,

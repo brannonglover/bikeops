@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { JOBS_REFRESH_EVENT } from "@/lib/jobs-refresh";
+import { computeJobTotalsFromApi, type JobPricing } from "@/lib/job-payments";
 
 type HistoryJobService = {
   id: string;
@@ -25,7 +26,7 @@ type HistoryJobBike = {
   nickname: string | null;
 };
 
-type HistoryJob = {
+type HistoryJob = Partial<JobPricing> & {
   id: string;
   stage: string;
   paymentStatus: string;
@@ -76,15 +77,7 @@ function paymentBadgeClass(status: string): string {
 }
 
 function jobTotal(job: HistoryJob): number {
-  const serviceTotal = job.jobServices.reduce(
-    (sum, s) => sum + s.quantity * parseFloat(s.unitPrice),
-    0
-  );
-  const productTotal = job.jobProducts.reduce(
-    (sum, p) => sum + p.quantity * parseFloat(p.unitPrice),
-    0
-  );
-  return serviceTotal + productTotal;
+  return computeJobTotalsFromApi(job).total;
 }
 
 function bikeSummary(job: HistoryJob): string {

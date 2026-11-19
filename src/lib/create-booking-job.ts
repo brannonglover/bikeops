@@ -12,6 +12,7 @@ import { Stage } from "@prisma/client";
 import { buildSmsConsentOptInUpdate } from "@/lib/sms-consent";
 import { syncCollectionJobService } from "@/lib/collection-fee";
 import { resolveProfileBikeForJobBike } from "@/lib/resolve-profile-bike";
+import { jobTaxFieldsForShop } from "@/lib/sales-tax";
 
 export type BookingJobBike = {
   make: string;
@@ -134,6 +135,7 @@ export async function createBookingJob(
   const newJob = await tx.job.create({
     data: {
       shopId,
+      ...(await jobTaxFieldsForShop(shopId, tx)),
       stage: input.stage ?? Stage.PENDING_APPROVAL,
       bikeMake: bikeMakeSummary,
       bikeModel: bikeModelSummary,

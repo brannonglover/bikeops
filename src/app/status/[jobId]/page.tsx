@@ -8,7 +8,7 @@ import Image from "next/image";
 import { isPrivateFileUrl } from "@/lib/image-src";
 import { Price } from "@/components/ui/Price";
 import { BikePlaceholderIcon } from "@/components/ui/BikePlaceholderIcon";
-import { computeJobSubtotal, getJobPaymentSummary } from "@/lib/job-payments";
+import { computeJobTotalsFromApi, getJobPaymentSummary, type JobPricing } from "@/lib/job-payments";
 import { CustomerCardSkeleton } from "@/components/ui/Skeleton";
 import { EstimateApprovalCard } from "@/components/estimates/EstimateApprovalCard";
 
@@ -154,7 +154,8 @@ type JobQueueInfo = {
   label: string;
 };
 
-type StatusJob = {
+type StatusJob = Partial<JobPricing> & {
+  discountReason?: string | null;
   id: string;
   bikeMake: string;
   bikeModel: string;
@@ -365,10 +366,8 @@ export default function StatusPage() {
     );
   }
 
-  const subtotal = computeJobSubtotal({
-    jobServices: job.jobServices ?? [],
-    jobProducts: job.jobProducts ?? [],
-  });
+  const jobTotals = computeJobTotalsFromApi(job);
+  const subtotal = jobTotals.total;
   const paymentSummary = getJobPaymentSummary({
     currentStatus: job.paymentStatus,
     subtotal,
@@ -665,6 +664,28 @@ export default function StatusPage() {
           </div>
         )}
 
+        {(jobTotals.discount > 0 || jobTotals.tax > 0) && (
+          <div className="mt-3 space-y-1 border-t border-slate-200 pt-3 text-sm">
+            <div className="flex items-center justify-between">
+              <span className="text-slate-500">Subtotal</span>
+              <span className="tabular-nums text-slate-700">${jobTotals.itemsTotal.toFixed(2)}</span>
+            </div>
+            {jobTotals.discount > 0 && (
+              <div className="flex items-center justify-between gap-2">
+                <span className="min-w-0 truncate text-slate-500">
+                  Discount{job.discountReason ? ` (${job.discountReason})` : ""}
+                </span>
+                <span className="tabular-nums text-emerald-700">−${jobTotals.discount.toFixed(2)}</span>
+              </div>
+            )}
+            {jobTotals.tax > 0 && (
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500">Sales tax ({jobTotals.taxRatePercent}%)</span>
+                <span className="tabular-nums text-slate-700">${jobTotals.tax.toFixed(2)}</span>
+              </div>
+            )}
+          </div>
+        )}
         {((job.jobServices ?? []).length > 0 || (job.jobProducts ?? []).length > 0) && (
           <div className="mt-3 pt-3 border-t border-slate-200 flex items-center justify-between">
             <span className="text-sm font-semibold text-slate-700">Total</span>

@@ -4,7 +4,7 @@ import { getStripe } from "@/lib/stripe";
 import { prisma } from "@/lib/db";
 import { requireStaffShop } from "@/lib/api-auth";
 import { sendPaymentReceiptEmail } from "@/lib/email";
-import { computeJobSubtotal, computeTotalPaid, getJobPaymentSummary } from "@/lib/job-payments";
+import { computeJobTotal, computeTotalPaid, getJobPaymentSummary, pickJobPricing } from "@/lib/job-payments";
 import { buildPaymentReceivedDetails, notifyShopOfPayment } from "@/lib/payment-notifications";
 
 export async function POST(
@@ -51,10 +51,7 @@ export async function POST(
     return NextResponse.json({ error: "Job not found" }, { status: 404 });
   }
 
-  const subtotal = computeJobSubtotal({
-    jobServices: job.jobServices,
-    jobProducts: job.jobProducts,
-  });
+  const subtotal = computeJobTotal(job);
   const totalPaid = computeTotalPaid(job.payments);
   const paymentSummary = getJobPaymentSummary({
     currentStatus: job.paymentStatus,
@@ -164,10 +161,7 @@ export async function POST(
         throw new Error(`Job ${jobId} not found while reprocessing payment`);
       }
 
-      const updatedSubtotal = computeJobSubtotal({
-        jobServices: jobWithPayments.jobServices,
-        jobProducts: jobWithPayments.jobProducts,
-      });
+      const updatedSubtotal = computeJobTotal(jobWithPayments);
       const updatedTotalPaid = computeTotalPaid(jobWithPayments.payments);
       const updatedPaymentSummary = getJobPaymentSummary({
         currentStatus: jobWithPayments.paymentStatus,
@@ -218,6 +212,7 @@ export async function POST(
             email: recipientEmail,
           }
         : { firstName: "", lastName: null, email: recipientEmail },
+      ...pickJobPricing(job),
       jobServices: job.jobServices.map((js) => ({
         service: js.service ? { name: js.service.name } : null,
         customServiceName: js.customServiceName,
@@ -253,10 +248,7 @@ export async function POST(
     },
   });
   if (updatedJob) {
-    const updatedSubtotal = computeJobSubtotal({
-      jobServices: updatedJob.jobServices,
-      jobProducts: updatedJob.jobProducts,
-    });
+    const updatedSubtotal = computeJobTotal(updatedJob);
     const updatedTotalPaid = computeTotalPaid(updatedJob.payments);
     const updatedPaymentSummary = getJobPaymentSummary({
       currentStatus: updatedJob.paymentStatus,

@@ -7,7 +7,12 @@ import { sendJobSms, getTemplateSlugForStage } from "@/lib/sms";
 import { syncCollectionJobService } from "@/lib/collection-fee";
 import { releaseStockForJob, takeStockForJob } from "@/lib/product-stock";
 import { getAppFeatures } from "@/lib/app-settings";
-import { computeJobSubtotal, computeTotalPaid, getJobPaymentSummary } from "@/lib/job-payments";
+import {
+  computeJobTotal,
+  computeJobTotals,
+  computeTotalPaid,
+  getJobPaymentSummary,
+} from "@/lib/job-payments";
 import { getEffectiveEmailUpdatesConsent, getEffectiveSmsConsent } from "@/lib/sms-consent";
 import { hasJobReadAccess, hasStaffJobAccess } from "@/lib/job-customer-access";
 import { getShopForHost } from "@/lib/shop";
@@ -140,10 +145,7 @@ export async function GET(
       );
     }
 
-    const subtotal = computeJobSubtotal({
-      jobServices: job.jobServices,
-      jobProducts: job.jobProducts,
-    });
+    const subtotal = computeJobTotal(job);
     const totalPaid = computeTotalPaid(job.payments);
     const paymentSummary = getJobPaymentSummary({
       currentStatus: job.paymentStatus,
@@ -193,6 +195,7 @@ export async function GET(
         : customer,
       paymentStatus: paymentSummary.paymentStatus,
       totalPaid,
+      totals: computeJobTotals(job),
       queueInfo,
     });
     res.headers.set("Cache-Control", "no-store");
@@ -1000,10 +1003,7 @@ export async function PATCH(
       );
     }
 
-    const subtotal = computeJobSubtotal({
-      jobServices: job.jobServices,
-      jobProducts: job.jobProducts,
-    });
+    const subtotal = computeJobTotal(job);
     const totalPaid = computeTotalPaid(job.payments);
     const paymentSummary = getJobPaymentSummary({
       currentStatus: job.paymentStatus,
@@ -1027,6 +1027,7 @@ export async function PATCH(
       customer,
       paymentStatus: paymentSummary.paymentStatus,
       totalPaid,
+      totals: computeJobTotals(job),
       queueInfo,
     });
     res.headers.set("Cache-Control", "no-store");

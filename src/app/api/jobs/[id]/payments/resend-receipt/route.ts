@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { requireStaffShop } from "@/lib/api-auth";
 import { sendPaymentReceiptEmail } from "@/lib/email";
+import { pickJobPricing } from "@/lib/job-payments";
 
 export async function POST(
   request: NextRequest,
@@ -54,6 +55,7 @@ export async function POST(
             email: job.customer.email,
           }
         : null,
+      ...pickJobPricing(job),
       jobServices: job.jobServices.map((js) => ({
         service: js.service ? { name: js.service.name } : null,
         customServiceName: js.customServiceName,

@@ -21,6 +21,7 @@ import {
   getStaffWaitlistOpenUrl,
 } from "./env";
 import { phoneTelHref } from "./phone";
+import { computeJobTotals, type JobPricing, type JobTotals } from "./job-payments";
 
 type ResendSendOptions = Parameters<Resend["emails"]["send"]>[0];
 
@@ -1878,6 +1879,9 @@ export interface JobForInvoice {
   jobProducts?: JobProductForInvoice[];
 }
 
+/** An invoice needs the job's tax and discount to show (and charge) the right total. */
+export type JobForPricedInvoice = JobForInvoice & JobPricing & { discountReason?: string | null };
+
 function formatPrice(amount: number): string {
   return amount.toLocaleString("en-US", {
     style: "currency",
@@ -1886,12 +1890,29 @@ function formatPrice(amount: number): string {
   });
 }
 
+/** Subtotal / discount / tax rows, shown only when the job has a discount or tax. */
+function buildDiscountAndTaxRowsHtml(totals: JobTotals, discountReason?: string | null): string {
+  if (totals.discount <= 0 && totals.tax <= 0) return "";
+  const row = (label: string, value: string) => `
+    <tr>
+      <td class="email-table-label" style="font-size:15px;font-weight:600;color:#64748b;padding-bottom:8px">${label}</td>
+      <td class="email-table-value" style="font-size:15px;font-weight:600;color:#334155;text-align:right;padding-bottom:8px">${value}</td>
+    </tr>`;
+  const discountLabel = discountReason?.trim() ? `Discount (${escapeHtml(discountReason.trim())})` : "Discount";
+  return [
+    row("Subtotal", formatPrice(totals.itemsTotal)),
+    totals.discount > 0 ? row(discountLabel, `−${formatPrice(totals.discount)}`) : "",
+    totals.tax > 0 ? row(`Sales tax (${totals.taxRatePercent}%)`, formatPrice(totals.tax)) : "",
+  ].join("");
+}
+
 function buildInvoiceInnerHtml(
-  job: JobForInvoice,
-  subtotal: number,
+  job: JobForPricedInvoice,
+  totals: JobTotals,
   totalPaid: number,
   shopName: string
 ): string {
+  const subtotal = totals.total;
   const hasSurcharge = totalPaid > subtotal;
   const customerName = job.customer
     ? [job.customer.firstName, job.customer.lastName].filter(Boolean).join(" ").trim() || "Customer"
@@ -1949,9 +1970,10 @@ function buildInvoiceInnerHtml(
 
 <div class="email-summary-box" style="padding:16px;background-color:#f1f5f9;border-radius:8px;border:1px solid #e2e8f0">
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+    ${buildDiscountAndTaxRowsHtml(totals, job.discountReason)}
     ${hasSurcharge ? `
     <tr>
-      <td class="email-table-label" style="font-size:16px;font-weight:600;color:#475569">Subtotal</td>
+      <td class="email-table-label" style="font-size:16px;font-weight:600;color:#475569">${totals.discount > 0 || totals.tax > 0 ? "Total" : "Subtotal"}</td>
       <td class="email-table-value" style="font-size:16px;font-weight:600;color:#334155;text-align:right">${formatPrice(subtotal)}</td>
     </tr>
     <tr>
@@ -1973,12 +1995,13 @@ function buildInvoiceInnerHtml(
 }
 
 function buildBikeReadyInvoiceInnerHtml(
-  job: JobForInvoice,
-  subtotal: number,
+  job: JobForPricedInvoice,
+  totals: JobTotals,
   totalPaid: number,
   shopName: string,
   billUrl: string
 ): string {
+  const subtotal = totals.total;
   const customerName = job.customer
     ? [job.customer.firstName, job.customer.lastName].filter(Boolean).join(" ").trim() || "Customer"
     : "Customer";
@@ -2036,6 +2059,7 @@ function buildBikeReadyInvoiceInnerHtml(
 
 <div class="email-summary-box" style="padding:16px;background-color:#f1f5f9;border-radius:8px;border:1px solid #e2e8f0;margin-bottom:24px">
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+    ${buildDiscountAndTaxRowsHtml(totals, job.discountReason)}
     <tr>
       <td class="email-table-label" style="font-size:16px;font-weight:600;color:#475569">Total</td>
       <td class="email-table-value" style="font-size:18px;font-weight:700;color:#334155;text-align:right">${formatPrice(subtotal)}</td>
@@ -2307,7 +2331,7 @@ export async function sendChatStaffReplyReminder(
 }
 
 export async function sendPaymentReceiptEmail(
-  job: JobForInvoice,
+  job: JobForPricedInvoice,
   totalPaid?: number
 ): Promise<{ ok: boolean; error?: string }> {
   const blocked = skipIfCustomerNotificationsBlocked("sendPaymentReceiptEmail");
@@ -2330,22 +2354,15 @@ export async function sendPaymentReceiptEmail(
     .catch(() => null);
   const shopName = shopRow?.name ?? SHOP_NAME;
 
-  const subtotal =
-    (job.jobServices ?? []).reduce((sum, js) => {
-      const price = typeof js.unitPrice === "string" ? parseFloat(js.unitPrice) : Number(js.unitPrice);
-      return sum + price * (js.quantity || 1);
-    }, 0) +
-    (job.jobProducts ?? []).reduce((sum, jp) => {
-      const price = typeof jp.unitPrice === "string" ? parseFloat(jp.unitPrice) : Number(jp.unitPrice);
-      return sum + price * (jp.quantity || 1);
-    }, 0);
+  const totals = computeJobTotals(job);
+  const subtotal = totals.total;
 
   const paid = totalPaid ?? subtotal;
 
   const subject = `Payment receipt – ${job.bikeMake} ${job.bikeModel} – ${shopName}`;
 
   const branding = await getCustomerEmailBrandingAssets(job.shopId);
-  const innerHtml = buildInvoiceInnerHtml(job, subtotal, paid, shopName);
+  const innerHtml = buildInvoiceInnerHtml(job, totals, paid, shopName);
   const html = buildReadOnlyCustomerEmailHtml({
     innerHtml,
     headerLogoSrc: branding.headerLogoSrc,
@@ -2385,7 +2402,7 @@ export async function sendPaymentReceiptEmail(
 }
 
 export async function sendBikeReadyInvoiceEmail(
-  job: JobForInvoice,
+  job: JobForPricedInvoice,
   totalPaid = 0
 ): Promise<{ ok: boolean; error?: string }> {
   const blocked = skipIfCustomerNotificationsBlocked("sendBikeReadyInvoiceEmail");
@@ -2407,20 +2424,12 @@ export async function sendBikeReadyInvoiceEmail(
     .findUnique({ where: { id: job.shopId }, select: { name: true, subdomain: true } })
     .catch(() => null);
   const shopName = shopRow?.name ?? SHOP_NAME;
-  const subtotal =
-    (job.jobServices ?? []).reduce((sum, js) => {
-      const price = typeof js.unitPrice === "string" ? parseFloat(js.unitPrice) : Number(js.unitPrice);
-      return sum + price * (js.quantity || 1);
-    }, 0) +
-    (job.jobProducts ?? []).reduce((sum, jp) => {
-      const price = typeof jp.unitPrice === "string" ? parseFloat(jp.unitPrice) : Number(jp.unitPrice);
-      return sum + price * (jp.quantity || 1);
-    }, 0);
+  const totals = computeJobTotals(job);
   const billUrl = getCustomerBillUrl(job.id, job.shopId, shopRow?.subdomain);
   const subject = `Your bike is ready - bill for ${job.bikeMake} ${job.bikeModel}`;
 
   const branding = await getCustomerEmailBrandingAssets(job.shopId);
-  const innerHtml = buildBikeReadyInvoiceInnerHtml(job, subtotal, totalPaid, shopName, billUrl);
+  const innerHtml = buildBikeReadyInvoiceInnerHtml(job, totals, totalPaid, shopName, billUrl);
   const html = buildReadOnlyCustomerEmailHtml({
     innerHtml,
     headerLogoSrc: branding.headerLogoSrc,

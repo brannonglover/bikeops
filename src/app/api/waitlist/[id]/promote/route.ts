@@ -11,6 +11,7 @@ import { getEffectiveEmailUpdatesConsent, getEffectiveSmsConsent } from "@/lib/s
 import { customerHasPushTokens, sendPushToCustomer } from "@/lib/push";
 import { publishJobEvent } from "@/lib/realtime/publish-job-event";
 import { resolveProfileBikeForJobBike } from "@/lib/resolve-profile-bike";
+import { jobTaxFieldsForShop } from "@/lib/sales-tax";
 
 function safeServiceIds(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -84,6 +85,7 @@ export async function POST(
       const newJob = await tx.job.create({
         data: {
           shopId,
+          ...(await jobTaxFieldsForShop(shopId, tx)),
           stage: Stage.BOOKED_IN,
           bikeMake: bikeMakeSummary,
           bikeModel: bikeModelSummary,

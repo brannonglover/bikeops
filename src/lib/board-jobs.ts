@@ -1,7 +1,13 @@
 import { Stage } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { withPrismaRetry } from "@/lib/prisma-retry";
-import { computeJobSubtotal, computeTotalPaid, getJobPaymentSummary } from "@/lib/job-payments";
+import {
+  computeJobTotal,
+  computeTotalPaid,
+  getJobPaymentSummary,
+  type JobPricing,
+  type JobTotalsInput,
+} from "@/lib/job-payments";
 import { getEffectiveEmailUpdatesConsent, getEffectiveSmsConsent } from "@/lib/sms-consent";
 import { enrichJobsWithCatalogThumbnails } from "@/lib/bike-catalog-client";
 import type { Job } from "@/lib/types";
@@ -31,6 +37,12 @@ export const boardJobSelect = {
   archivedAt: true,
   columnSortOrder: true,
   paymentStatus: true,
+  taxRatePercent: true,
+  taxServices: true,
+  taxProducts: true,
+  taxExempt: true,
+  discountType: true,
+  discountValue: true,
   workingOnJobBikeId: true,
   mechanicId: true,
   createdAt: true,
@@ -169,9 +181,9 @@ function boardJobsOrderBy(archived?: boolean) {
 }
 
 function mapBoardJobs(
-  jobs: Array<{
-    jobServices: Parameters<typeof computeJobSubtotal>[0]["jobServices"];
-    jobProducts: Parameters<typeof computeJobSubtotal>[0]["jobProducts"];
+  jobs: Array<JobPricing & {
+    jobServices: JobTotalsInput["jobServices"];
+    jobProducts: JobTotalsInput["jobProducts"];
     payments: Parameters<typeof computeTotalPaid>[0];
     paymentStatus: Parameters<typeof getJobPaymentSummary>[0]["currentStatus"];
     customer: {
@@ -186,10 +198,7 @@ function mapBoardJobs(
   }>
 ) {
   return jobs.map((job) => {
-    const subtotal = computeJobSubtotal({
-      jobServices: job.jobServices,
-      jobProducts: job.jobProducts,
-    });
+    const subtotal = computeJobTotal(job);
     const totalPaid = computeTotalPaid(job.payments);
     const paymentSummary = getJobPaymentSummary({
       currentStatus: job.paymentStatus,

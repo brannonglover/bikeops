@@ -14,10 +14,11 @@ import { publishJobEvent } from "@/lib/realtime/publish-job-event";
 import { getAppFeatures } from "@/lib/app-settings";
 import { mirrorJobStageToCustomerChat } from "@/lib/system-chat";
 import { getBoardJobsForShop } from "@/lib/board-jobs";
-import { computeJobSubtotal, computeTotalPaid, getJobPaymentSummary } from "@/lib/job-payments";
+import { computeJobTotal, computeTotalPaid, getJobPaymentSummary } from "@/lib/job-payments";
 import { getEffectiveEmailUpdatesConsent } from "@/lib/sms-consent";
 import { normalizeJobCollectionWindowsForStorage } from "@/lib/normalize-job-collection-windows";
 import { optionalTrimmedString } from "@/lib/zod-helpers";
+import { jobTaxFieldsForShop } from "@/lib/sales-tax";
 import {
   enrichJobsWithCatalogThumbnails,
   enrichJobBikesWithCatalogThumbnails,
@@ -186,10 +187,7 @@ export async function GET(request: NextRequest) {
       })
     );
     const jobsWithPaymentState = jobs.map((job) => {
-      const subtotal = computeJobSubtotal({
-        jobServices: job.jobServices,
-        jobProducts: job.jobProducts,
-      });
+      const subtotal = computeJobTotal(job);
       const totalPaid = computeTotalPaid(job.payments);
       const paymentSummary = getJobPaymentSummary({
         currentStatus: job.paymentStatus,
@@ -261,6 +259,7 @@ export async function POST(request: NextRequest) {
       const newJob = await tx.job.create({
         data: {
           shop: { connect: { id: shopId } },
+          ...(await jobTaxFieldsForShop(shopId, tx)),
           stage: Stage.BOOKED_IN,
           bikeMake: bikes.length === 1 ? bikes[0].make : "Multiple",
           bikeModel: bikes.length === 1 ? (bikes[0].model ?? "") : `${bikes.length} bikes`,

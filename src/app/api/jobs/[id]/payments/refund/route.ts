@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { requireStaffShop } from "@/lib/api-auth";
 import { getStripe, toCents, fromCents } from "@/lib/stripe";
-import { computeJobSubtotal, computeTotalPaid, getJobPaymentSummary } from "@/lib/job-payments";
+import { computeJobTotal, computeTotalPaid, getJobPaymentSummary } from "@/lib/job-payments";
 import { z } from "zod";
 import { publishJobEvent } from "@/lib/realtime/publish-job-event";
 
@@ -131,10 +131,7 @@ export async function POST(
     });
 
     if (updatedJob) {
-      const updatedSubtotal = computeJobSubtotal({
-        jobServices: updatedJob.jobServices,
-        jobProducts: updatedJob.jobProducts,
-      });
+      const updatedSubtotal = computeJobTotal(updatedJob);
       const updatedTotalPaid = computeTotalPaid(updatedJob.payments);
       const paymentSummary = getJobPaymentSummary({
         currentStatus: updatedJob.paymentStatus,

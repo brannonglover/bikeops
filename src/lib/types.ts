@@ -265,6 +265,14 @@ export interface Job {
   paymentStatus?: PaymentStatus;
   /** Sum of successful payments applied toward the job total (excludes card processing surcharge). */
   totalPaid?: number;
+  /** Sales tax copied onto the job (Decimal arrives as a string, e.g. "8.250"). */
+  taxRatePercent?: string | number;
+  taxServices?: boolean;
+  taxProducts?: boolean;
+  taxExempt?: boolean;
+  discountType?: "AMOUNT" | "PERCENT" | null;
+  discountValue?: string | number;
+  discountReason?: string | null;
   jobServices?: JobService[];
   jobProducts?: JobProduct[];
   createdAt: string;

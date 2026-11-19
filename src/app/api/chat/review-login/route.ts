@@ -8,7 +8,7 @@ import {
   getSessionCookieName,
 } from "@/lib/chat-session";
 import {
-  computeJobSubtotal,
+  computeJobTotal,
   computeTotalPaid,
   getJobPaymentSummary,
 } from "@/lib/job-payments";
@@ -63,10 +63,7 @@ async function ensureAppleReviewDemoJob(shopId: string, customerId: string) {
   });
 
   const hasPayable = candidates.some((job) => {
-    const subtotal = computeJobSubtotal({
-      jobServices: job.jobServices,
-      jobProducts: job.jobProducts,
-    });
+    const subtotal = computeJobTotal(job);
     const totalPaid = computeTotalPaid(job.payments);
     const summary = getJobPaymentSummary({
       currentStatus: job.paymentStatus,
