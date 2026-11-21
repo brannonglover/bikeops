@@ -4,6 +4,7 @@ import { coerceCustomerPhone } from "@/lib/phone";
 import { z } from "zod";
 import { resolveStaffShopId, requireStaffShop } from "@/lib/api-auth";
 import { buildStaffVerbalSmsConsentUpdate } from "@/lib/sms-consent";
+import { createCustomerAbsorbingPlaceholder } from "@/lib/customer-placeholder";
 
 const createCustomerSchema = z.object({
   firstName: z.string().min(1),
@@ -73,17 +74,17 @@ export async function POST(request: NextRequest) {
       consentFields = buildStaffVerbalSmsConsentUpdate(staff.userId);
     }
 
-    const customer = await prisma.customer.create({
-      data: {
-        shopId: shop.id,
-        firstName: data.firstName,
-        lastName: data.lastName ?? null,
-        email: data.email ?? null,
-        phone: coerceCustomerPhone(data.phone),
-        address: data.address ?? null,
-        notes: data.notes ?? null,
-        ...consentFields,
-      },
+    // A stranger who called or texted first already has a placeholder on this
+    // number; filling it in keeps one customer per phone.
+    const { customer } = await createCustomerAbsorbingPlaceholder(prisma, {
+      shopId: shop.id,
+      firstName: data.firstName,
+      lastName: data.lastName ?? null,
+      email: data.email ?? null,
+      phone: coerceCustomerPhone(data.phone),
+      address: data.address ?? null,
+      notes: data.notes ?? null,
+      ...consentFields,
     });
 
     return NextResponse.json(customer);

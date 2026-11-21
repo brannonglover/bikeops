@@ -3,6 +3,7 @@ import { requireStaffShop } from "@/lib/api-auth";
 import * as XLSX from "xlsx";
 import { prisma } from "@/lib/db";
 import { coerceCustomerPhone } from "@/lib/phone";
+import { createCustomerAbsorbingPlaceholder } from "@/lib/customer-placeholder";
 import {
   parseCSV,
   applyCustomerMapping,
@@ -154,16 +155,16 @@ export async function POST(request: NextRequest) {
       }
 
       try {
-        const customer = await prisma.customer.create({
-          data: {
-            shopId: shop.id,
-            firstName,
-            lastName,
-            email,
-            phone: coerceCustomerPhone(phone),
-            address,
-            notes,
-          },
+        // A row whose number a caller's placeholder already holds fills that
+        // placeholder in rather than adding a second customer on the phone.
+        const { customer } = await createCustomerAbsorbingPlaceholder(prisma, {
+          shopId: shop.id,
+          firstName,
+          lastName,
+          email,
+          phone: coerceCustomerPhone(phone),
+          address,
+          notes,
         });
         created.push({
           firstName: customer.firstName,
