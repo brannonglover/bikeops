@@ -1,3 +1,6 @@
 # Each app keeps its own .gitignore (apps/web, apps/mobile).
 node_modules/
 .DS_Store
+
+# Vercel CLI link (run vercel from the repo root; projects set Root Directory)
+.vercel

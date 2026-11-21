@@ -20,8 +20,17 @@ npm install
 npm run dev          # http://localhost:3000
 ```
 
-Deploys go through the Vercel CLI from `apps/web` (the `.vercel` link lives
-there). See `apps/web/DEPLOYMENT.md`. The production `build` script runs
+Vercel deploys from GitHub: every push to `main` builds production and other
+branches build previews. Two Vercel projects use this repo:
+
+| Vercel project        | Root Directory       | Serves                 |
+| --------------------- | -------------------- | ---------------------- |
+| `bikeopsco`           | `apps/web`           | `*.bikeops.co` (app)   |
+| `bikeopsco-marketing` | `apps/web/marketing` | `bikeops.co`, `www`    |
+
+Run the Vercel CLI from the repo root, not from `apps/web`: the projects set a
+Root Directory, and the CLI's `.vercel` link lives at the root. See
+`apps/web/DEPLOYMENT.md`. The production `build` script runs
 `prisma migrate deploy`, so any production build applies pending migrations.
 
 ## Mobile (`apps/mobile`)
