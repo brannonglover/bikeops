@@ -1,6 +1,13 @@
 import { Platform } from "react-native";
 import { setIsAudioActiveAsync } from "expo-audio";
-import { AudioDevice, Call, CallInvite, CallKit, Voice } from "@twilio/voice-react-native-sdk";
+import {
+  AudioDevice,
+  Call,
+  CallInvite,
+  CallKit,
+  type IncomingCallMessage,
+  Voice,
+} from "@twilio/voice-react-native-sdk";
 import { getVoiceAccessToken } from "@/lib/api";
 
 let voiceDevice: Voice | null = null;
@@ -94,6 +101,16 @@ async function releaseAudioSession(): Promise<void> {
  * Places an outbound call to a phone number via the shop's Twilio number.
  * The custom `To` param is read by the /outgoing TwiML webhook to dial the
  * PSTN leg — see bikeopsco's src/lib/voice.ts for the server-side half.
+ *
+ * `Ringback: "inband"` asks for the ring to come from the call itself rather
+ * than from the SDK. The SDK's ringback is a separate audio player, and it
+ * went choppy at the moment the customer or their voicemail picked up, while
+ * it and the call's audio both held the speaker. To play the ring inside the
+ * call, the server answers this leg up front, so the SDK reports Connected
+ * while the customer's phone is still ringing — the real answer arrives later
+ * as a call message (isCustomerAnsweredMessage), and only that counts as the
+ * call going live. It also means the SDK never reports Ringing, which is the
+ * only thing that starts its own ringback.
  */
 export async function placeOutboundCall(
   toNumber: string,
@@ -103,9 +120,29 @@ export async function placeOutboundCall(
   await releaseAudioSession();
   const voice = getVoiceDevice();
   return voice.connect(token, {
-    params: { To: toNumber },
+    params: { To: toNumber, Ringback: "inband" },
     contactHandle: displayName,
   });
+}
+
+/**
+ * Whether a call message is the server saying the customer has picked up an
+ * outbound call — the moment it goes live, for a call placed with in-call
+ * ringback. Sent by tellAppCustomerAnswered in bikeopsco's src/lib/voice.ts.
+ */
+export function isCustomerAnsweredMessage(message: IncomingCallMessage): boolean {
+  if (message.getMessageType() !== "user-defined-message") return false;
+  const content: unknown = message.getContent();
+  try {
+    const parsed: unknown = typeof content === "string" ? JSON.parse(content) : content;
+    return (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      (parsed as { type?: unknown }).type === "customer-answered"
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**

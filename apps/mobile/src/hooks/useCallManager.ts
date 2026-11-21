@@ -3,6 +3,7 @@ import { AudioDevice, Call, CallInvite } from "@twilio/voice-react-native-sdk";
 import {
   answerQueuedCall,
   type IncomingInvite,
+  isCustomerAnsweredMessage,
   listAudioDevices,
   onAudioDevicesUpdated,
   placeOutboundCall,
@@ -34,7 +35,11 @@ export type CallState = {
   isMuted: boolean;
   /** Where call audio is routed right now — drives the speaker toggle. */
   audioRoute: AudioDevice.Type | null;
-  /** When the media legs joined, for the in-call duration timer. */
+  /**
+   * When the other party picked up, for the in-call duration timer. For an
+   * outbound call that is the server's answered message, not the SDK's
+   * Connected — see awaitingAnswerRef.
+   */
   connectedAt: number | null;
   /** Server-side Call id of a ringing inbound call, from its notification. */
   pendingCallId: string | null;
@@ -108,6 +113,24 @@ const CONNECT_TIMEOUT_MS = 12_000;
  */
 const CONNECT_SILENCE_TIMEOUT_MS = 20_000;
 
+/**
+ * Ends a call that the SDK hands back after we stopped waiting for it.
+ *
+ * withConnectTimeout gives up on connect() but cannot cancel it, and a
+ * connect that resolves late is a live call: Twilio dials, the customer's
+ * phone rings, and the app has already put up "Call failed" and then cleared
+ * the screen. With no screen there is no End button, which left staff hunting
+ * for the system call controls to hang up. releaseStrayCalls can't catch it
+ * either, because it runs before the late call exists.
+ */
+function hangUpLateCall(pending: Promise<Call> | null): void {
+  void pending
+    ?.then((call) => call.disconnect())
+    .catch(() => {
+      // Never connected, or already gone — nothing to hang up.
+    });
+}
+
 const IDLE_STATE: CallState = {
   status: "idle",
   number: null,
@@ -151,6 +174,17 @@ export function useCallManager() {
    * below are choosing between.
    */
   const inviteRef = useRef<CallInvite | null>(null);
+  /**
+   * True while an outbound call is waiting for the customer to pick up.
+   *
+   * Outbound calls play their ring from inside the call (see
+   * placeOutboundCall), which means Twilio answers the app's leg at once and
+   * the SDK reports Connected while the customer's phone is still ringing. So
+   * Connected does not end "Calling…" for these calls; the server's
+   * customer-answered call message does, and this is what tells the two
+   * apart.
+   */
+  const awaitingAnswerRef = useRef(false);
 
   /** Wires the shared lifecycle events every connected call needs. */
   const attachCallListeners = useCallback((call: Call) => {
@@ -160,11 +194,26 @@ export function useCallManager() {
       setState((prev) => ({ ...prev, status: "ringing" }));
     });
     call.on(Call.Event.Connected, () => {
+      if (awaitingAnswerRef.current) {
+        // Our leg is up and the ring is playing down it; the customer has
+        // not answered yet.
+        setState((prev) => ({ ...prev, status: "ringing" }));
+        return;
+      }
       setState((prev) => ({
         ...prev,
         status: "connected",
         // Reconnects re-fire Connected; keep the original start so the timer
         // shows the length of the call, not of the latest media session.
+        connectedAt: prev.connectedAt ?? Date.now(),
+      }));
+    });
+    call.on(Call.Event.MessageReceived, (message) => {
+      if (!awaitingAnswerRef.current || !isCustomerAnsweredMessage(message)) return;
+      awaitingAnswerRef.current = false;
+      setState((prev) => ({
+        ...prev,
+        status: "connected",
         connectedAt: prev.connectedAt ?? Date.now(),
       }));
     });
@@ -205,7 +254,10 @@ export function useCallManager() {
       setState((prev) => ({ ...prev, status: "reconnecting" }));
     });
     call.on(Call.Event.Reconnected, () => {
-      setState((prev) => ({ ...prev, status: "connected" }));
+      setState((prev) => ({
+        ...prev,
+        status: awaitingAnswerRef.current ? "ringing" : "connected",
+      }));
     });
     call.on(Call.Event.ConnectFailure, (error) => {
       callRef.current = null;
@@ -216,6 +268,7 @@ export function useCallManager() {
   const startCall = useCallback(
     async (toNumber: string, displayName?: string) => {
       endedByUserRef.current = false;
+      awaitingAnswerRef.current = true;
       setState({
         ...IDLE_STATE,
         status: "connecting",
@@ -224,14 +277,15 @@ export function useCallManager() {
         direction: "outbound",
       });
 
+      let placing: Promise<Call> | null = null;
       try {
         // Clear anything a previous failed attempt left holding CallKit's
         // single call slot, or this dial is refused before it starts.
         await releaseStrayCalls();
-        attachCallListeners(
-          await withConnectTimeout(placeOutboundCall(toNumber, displayName), CONNECT_TIMEOUT_MS)
-        );
+        placing = placeOutboundCall(toNumber, displayName);
+        attachCallListeners(await withConnectTimeout(placing, CONNECT_TIMEOUT_MS));
       } catch (error) {
+        hangUpLateCall(placing);
         await releaseStrayCalls();
         setState((prev) => ({
           ...prev,
@@ -324,6 +378,7 @@ export function useCallManager() {
       invite.on(CallInvite.Event.Accepted, (call) => {
         inviteRef.current = null;
         endedByUserRef.current = false;
+        awaitingAnswerRef.current = false;
         setState((prev) => ({ ...prev, status: "connecting", direction: "inbound" }));
         attachCallListeners(call);
       });
@@ -398,6 +453,7 @@ export function useCallManager() {
     const invite = inviteRef.current;
     if (invite) {
       endedByUserRef.current = false;
+      awaitingAnswerRef.current = false;
       setState((prev) => ({ ...prev, status: "connecting" }));
       try {
         const call = await invite.accept();
@@ -423,16 +479,15 @@ export function useCallManager() {
       return;
     }
     endedByUserRef.current = false;
+    awaitingAnswerRef.current = false;
     setState((prev) => ({ ...prev, status: "connecting" }));
+    let answering: Promise<Call> | null = null;
     try {
       await releaseStrayCalls();
-      attachCallListeners(
-        await withConnectTimeout(
-          answerQueuedCall(callId, state.displayName ?? undefined),
-          CONNECT_TIMEOUT_MS
-        )
-      );
+      answering = answerQueuedCall(callId, state.displayName ?? undefined);
+      attachCallListeners(await withConnectTimeout(answering, CONNECT_TIMEOUT_MS));
     } catch (error) {
+      hangUpLateCall(answering);
       // Leaving the refused call in place would block the next answer too.
       await releaseStrayCalls();
       const rangOut = state.ringEndsAt !== null && Date.now() >= state.ringEndsAt;
@@ -559,6 +614,7 @@ export function useCallManager() {
     callRef.current = null;
     inviteRef.current = null;
     endedByUserRef.current = true;
+    awaitingAnswerRef.current = false;
     setState(IDLE_STATE);
     try {
       if (call) await call.disconnect();
@@ -632,6 +688,7 @@ export function useCallManager() {
   const reset = useCallback(() => {
     callRef.current = null;
     inviteRef.current = null;
+    awaitingAnswerRef.current = false;
     setState(IDLE_STATE);
   }, []);
 
