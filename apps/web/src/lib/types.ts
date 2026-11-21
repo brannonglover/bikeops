@@ -1,0 +1,280 @@
+export type Stage =
+  | "PENDING_APPROVAL"
+  | "BOOKED_IN"
+  | "RECEIVED"
+  | "WORKING_ON"
+  | "WAITING_ON_CUSTOMER"
+  | "WAITING_ON_PARTS"
+  | "BIKE_READY"
+  | "COMPLETED"
+  | "CANCELLED";
+
+export type DeliveryType = "DROP_OFF_AT_SHOP" | "COLLECTION_SERVICE";
+
+export type BikeType = "REGULAR" | "E_BIKE";
+
+export interface Bike {
+  id: string;
+  make: string;
+  model: string | null;
+  bikeType: BikeType | null;
+  nickname: string | null;
+  imageUrl: string | null;
+}
+
+export interface Customer {
+  id: string;
+  firstName: string;
+  lastName: string | null;
+  email: string | null;
+  phone: string | null;
+  emailUpdatesConsent?: boolean;
+  emailUpdatesConsentSource?: string | null;
+  emailUpdatesConsentUpdatedAt?: string | null;
+  smsConsent?: boolean;
+  smsConsentSource?: string | null;
+  smsConsentUpdatedAt?: string | null;
+  /** Auto-created to hold a text from an unknown number; name is a placeholder. */
+  provisional?: boolean;
+  /** When staff first opened the thread; clears the inbox "New" badge. */
+  provisionalSeenAt?: string | null;
+  address: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+  bikes?: Bike[];
+}
+
+export interface Service {
+  id: string;
+  name: string;
+  description: string | null;
+  price: number | string; // Prisma Decimal can come as string
+  slug?: string | null;
+  isSystem?: boolean;
+  isHidden?: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface JobService {
+  id: string;
+  jobId: string;
+  serviceId: string | null;
+  service: Service | null;
+  customServiceName?: string | null;
+  quantity: number;
+  unitPrice: number | string;
+  notes: string | null;
+  jobBikeId?: string | null;
+  jobBike?: { id: string; make: string; model: string; nickname: string | null } | null;
+}
+
+export interface Product {
+  id: string;
+  name: string;
+  description: string | null;
+  price: number | string;
+}
+
+export interface JobProduct {
+  id: string;
+  jobId: string;
+  productId: string;
+  product: Product;
+  quantity: number;
+  unitPrice: number | string;
+  notes: string | null;
+  jobBikeId?: string | null;
+  jobBike?: { id: string; make: string; model: string; nickname: string | null } | null;
+}
+
+export type PaymentStatus = "UNPAID" | "PENDING" | "PAID" | "REFUNDED";
+
+export type MessageSender = "STAFF" | "CUSTOMER" | "SYSTEM";
+
+export interface MessageAttachment {
+  id: string;
+  url: string;
+  filename: string;
+  mimeType: string;
+  createdAt: string;
+}
+
+export interface MessageReaction {
+  id: string;
+  messageId: string;
+  emoji: string;
+  reactorType: MessageSender;
+  createdAt: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  conversationId: string;
+  sender: MessageSender;
+  body: string | null;
+  attachments: MessageAttachment[];
+  reactions: MessageReaction[];
+  createdAt: string;
+  editedAt?: string | null;
+  smsProvider?: string | null;
+  smsSid?: string | null;
+  smsDeliveryStatus?: string | null;
+  smsDeliveryStatusName?: string | null;
+  smsDeliveryStatusDescription?: string | null;
+  smsDeliveryError?: string | null;
+  smsDeliveredAt?: string | null;
+  /** Written by the AI assistant rather than a person at the shop. */
+  aiGenerated?: boolean;
+  /**
+   * Client-only delivery indicator for optimistic UI (not persisted).
+   * - SENDING: request in flight
+   * - DELIVERED: request succeeded (shown briefly as "Sent")
+   * - FAILED: request failed (optional future use)
+   */
+  clientDeliveryState?: "SENDING" | "DELIVERED" | "FAILED";
+}
+
+/**
+ * A phone call as shown in a staff chat thread, interleaved with its messages
+ * by `createdAt`. Sent with the first page of GET /api/conversations/[id]/messages.
+ */
+export interface ThreadCall {
+  id: string;
+  direction: "INBOUND" | "OUTBOUND";
+  status:
+    | "QUEUED"
+    | "RINGING"
+    | "IN_PROGRESS"
+    | "COMPLETED"
+    | "BUSY"
+    | "FAILED"
+    | "NO_ANSWER"
+    | "CANCELED"
+    | "VOICEMAIL";
+  fromNumber: string;
+  toNumber: string;
+  startedAt: string | null;
+  answeredAt: string | null;
+  endedAt: string | null;
+  durationSeconds: number | null;
+  /** A voicemail exists; the audio streams from GET /api/calls/[id]/recording. */
+  hasRecording: boolean;
+  /** "completed" once Twilio has processed the recording and it will play. */
+  recordingStatus: string | null;
+  transcriptionText: string | null;
+  transcriptionStatus: string | null;
+  /** The AI phone assistant picked this call up. */
+  aiAnswered: boolean;
+  /** The assistant's write-up for staff, filed once the caller hangs up. */
+  aiSummary: string | null;
+  /** "Caller: …" / "Assistant: …" lines, one per turn. */
+  aiTranscript: string | null;
+  createdAt: string;
+}
+
+export interface Conversation {
+  id: string;
+  customerId: string;
+  jobId: string | null;
+  customer: Customer;
+  job?: {
+    id: string;
+    bikeMake: string;
+    bikeModel: string | null;
+    jobBikes?: JobBike[];
+  } | null;
+  messages: ChatMessage[];
+  archived?: boolean;
+  customerTypingAt?: string | null;
+  /** ISO time when staff last loaded this thread; unread badge if last message is newer from customer. */
+  staffLastReadAt?: string | null;
+  /** ISO time when the customer last loaded this thread; "Viewed" indicator on staff messages. */
+  customerLastReadAt?: string | null;
+  /** Whether the AI assistant is handling this thread. */
+  aiAssistantState?: "OFF" | "ACTIVE" | "PAUSED" | "DONE";
+  /** What the assistant learned before handing the thread over. */
+  aiAssistantSummary?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface JobBike {
+  id: string;
+  jobId: string;
+  make: string;
+  model: string | null;
+  year?: number | null;
+  bikeType: BikeType | null;
+  nickname: string | null;
+  imageUrl: string | null;
+  bikeId: string | null;
+  sortOrder: number;
+  completedAt: string | null;
+  waitingOnPartsAt: string | null;
+  catalogBikeId?: string | null;
+  catalogMatchedAt?: string | null;
+  /** Display-only: catalog thumbnail when no uploaded job/customer bike photo. */
+  catalogThumbnailUrl?: string | null;
+  bike?: {
+    imageUrl: string | null;
+    bikeType: BikeType | null;
+    make: string;
+    model: string | null;
+    year?: number | null;
+    nickname?: string | null;
+  } | null;
+}
+
+export interface Job {
+  id: string;
+  bikeMake: string;
+  bikeModel: string;
+  jobBikes?: JobBike[];
+  workingOnJobBikeId?: string | null;
+  stage: Stage;
+  deliveryType: DeliveryType;
+  dropOffDate: string | null;
+  /** When the job was moved into Received (actual intake). */
+  receivedAt?: string | null;
+  pickupDate: string | null;
+  collectionAddress: string | null;
+  collectionWindowStart: string | null;
+  collectionWindowEnd: string | null;
+  collectionReturnWindowStart: string | null;
+  collectionReturnWindowEnd: string | null;
+  customerId: string | null;
+  customer: Customer | null;
+  mechanicId?: string | null;
+  mechanic?: {
+    id: string;
+    fullName: string;
+    imageUrl: string | null;
+  } | null;
+  notes: string | null;
+  internalNotes: string | null;
+  customerNotes: string | null;
+  /** Internal record, staff-only. Omitted from customer-link API responses. */
+  cancellationReason?: string | null;
+  /** Customer-facing explanation shown on the status page and in the declined email. */
+  customerCancellationMessage?: string | null;
+  completedAt: string | null;
+  archivedAt?: string | null;
+  columnSortOrder?: number | null;
+  paymentStatus?: PaymentStatus;
+  /** Sum of successful payments applied toward the job total (excludes card processing surcharge). */
+  totalPaid?: number;
+  /** Sales tax copied onto the job (Decimal arrives as a string, e.g. "8.250"). */
+  taxRatePercent?: string | number;
+  taxServices?: boolean;
+  taxProducts?: boolean;
+  taxExempt?: boolean;
+  discountType?: "AMOUNT" | "PERCENT" | null;
+  discountValue?: string | number;
+  discountReason?: string | null;
+  jobServices?: JobService[];
+  jobProducts?: JobProduct[];
+  createdAt: string;
+  updatedAt: string;
+}

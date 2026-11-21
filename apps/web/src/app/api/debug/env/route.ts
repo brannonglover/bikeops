@@ -1,0 +1,86 @@
+import { NextResponse } from "next/server";
+import { prisma } from "@/lib/db";
+import {
+  areCustomerNotificationsEnabled,
+  getAppUrl,
+  getCustomerNotificationBlockReason,
+  getDatabaseUrlHostHint,
+  getEmailRedirectTo,
+  getEmailSendingDisabledReason,
+  getResendApiKey,
+  getUnredirectedEmailBlockReason,
+  isLocalDevelopment,
+  isProductionDeployment,
+} from "@/lib/env";
+
+export const dynamic = "force-dynamic";
+
+/**
+ * Debug endpoint to check which env vars the serverless function can see.
+ * Does NOT expose secret values, but it lists every variable name and hints
+ * at the database and email setup, so it answers only off production (staging
+ * and previews, where docs/staging-environment.md uses it) and, like every
+ * staff API, only with a signed-in session. Dynamic, so it reports the running
+ * function rather than a snapshot taken at build time.
+ * GET /api/debug/env
+ */
+export async function GET() {
+  if (isProductionDeployment()) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
+  const key = process.env.RESEND_API_KEY;
+  const altKey = process.env.BIKEOPS_RESEND_API_KEY;
+  const trimmed = key?.trim();
+  const altTrimmed = altKey?.trim();
+
+  // List all env var names that exist (no values) to spot which work
+  const allKeys = Object.keys(process.env).sort();
+  const customKeys = allKeys.filter(
+    (k) =>
+      !k.startsWith("npm_") &&
+      !k.startsWith("NODE_") &&
+      k !== "PATH" &&
+      k !== "PWD" &&
+      k !== "HOME"
+  );
+
+  const resolvedKey = getResendApiKey();
+  const resolvedUrl = getAppUrl();
+  const appSettings = await prisma.appSettings
+    .findFirst({ select: { notifyCustomerEnabled: true } })
+    .catch(() => null);
+
+  return NextResponse.json({
+    VERCEL_ENV: process.env.VERCEL_ENV || "(not set)",
+    isProductionDeployment: isProductionDeployment(),
+    customerNotificationsEnabled: areCustomerNotificationsEnabled(),
+    customerNotificationBlockReason: getCustomerNotificationBlockReason(),
+    isLocalDevelopment: isLocalDevelopment(),
+    emailSendingDisabledReason: getEmailSendingDisabledReason(),
+    emailRedirectTo: getEmailRedirectTo() ? "(set)" : null,
+    unredirectedEmailBlockReason: getUnredirectedEmailBlockReason(),
+    shopNotifyCustomerEnabled: appSettings?.notifyCustomerEnabled ?? null,
+    databaseUrlHostHint: getDatabaseUrlHostHint(),
+    RESEND_API_KEY: {
+      exists: typeof key === "string",
+      hasValue: !!trimmed,
+      length: key?.length ?? 0,
+      preview: key ? `${key.slice(0, 4)}...` : null,
+    },
+    BIKEOPS_RESEND_API_KEY: {
+      exists: typeof altKey === "string",
+      hasValue: !!altTrimmed,
+      length: altKey?.length ?? 0,
+      preview: altKey ? `${altKey.slice(0, 4)}...` : null,
+    },
+    resolvedResendKey: !!resolvedKey,
+    resolvedAppUrl: resolvedUrl || "(empty)",
+    platform: process.env.NETLIFY ? "Netlify" : process.env.VERCEL ? "Vercel" : "unknown",
+    NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL || "(not set)",
+    URL: process.env.URL || "(not set)",
+    DEPLOY_PRIME_URL: process.env.DEPLOY_PRIME_URL || "(not set)",
+    VERCEL_URL: process.env.VERCEL_URL || "(not set)",
+    envKeysAvailable: customKeys,
+  });
+}

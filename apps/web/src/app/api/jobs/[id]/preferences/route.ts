@@ -1,0 +1,135 @@
+import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/db";
+import { z } from "zod";
+import { hasJobReadAccess } from "@/lib/job-customer-access";
+import {
+  buildEmailUpdatesConsentUpdate,
+  buildSmsConsentUpdate,
+  getEffectiveEmailUpdatesConsent,
+  getEffectiveSmsConsent,
+} from "@/lib/sms-consent";
+import { getShopForHost } from "@/lib/shop";
+
+const updatePreferencesSchema = z
+  .object({
+    emailUpdatesConsent: z.boolean(),
+    smsConsent: z.boolean(),
+  })
+  .refine((data) => data.emailUpdatesConsent || data.smsConsent, {
+    message: "Choose at least one way to receive updates.",
+  });
+
+export const dynamic = "force-dynamic";
+
+/** The job's customer — only for a job in this shop, so a link or session for one shop can't read another's. */
+async function getCustomerForJob(jobId: string, shopId: string) {
+  const job = await prisma.job.findFirst({
+    where: { id: jobId, shopId },
+    select: {
+      customerId: true,
+      customer: {
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          phone: true,
+          emailUpdatesConsent: true,
+          emailUpdatesConsentSource: true,
+          emailUpdatesConsentUpdatedAt: true,
+          smsConsent: true,
+          smsConsentSource: true,
+          smsConsentUpdatedAt: true,
+        },
+      },
+    },
+  });
+
+  return job?.customerId && job.customer ? job.customer : null;
+}
+
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const shop = await getShopForHost(request.headers.get("host"));
+    if (!shop) {
+      return NextResponse.json({ error: "Shop not found" }, { status: 404 });
+    }
+
+    const customer = await getCustomerForJob(params.id, shop.id);
+    if (
+      !customer ||
+      !(await hasJobReadAccess(request, shop.id, params.id, customer.id))
+    ) {
+      return NextResponse.json({ error: "Customer not found for this job" }, { status: 404 });
+    }
+
+    return NextResponse.json({
+      firstName: customer.firstName,
+      lastName: customer.lastName,
+      email: customer.email,
+      phone: customer.phone,
+      emailUpdatesConsent: getEffectiveEmailUpdatesConsent(customer),
+      smsConsent: getEffectiveSmsConsent(customer),
+    });
+  } catch (error) {
+    console.error("GET /api/jobs/[id]/preferences error:", error);
+    return NextResponse.json({ error: "Failed to load preferences" }, { status: 500 });
+  }
+}
+
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const shop = await getShopForHost(request.headers.get("host"));
+    if (!shop) {
+      return NextResponse.json({ error: "Shop not found" }, { status: 404 });
+    }
+
+    const body = await request.json();
+    const data = updatePreferencesSchema.parse(body);
+    const customer = await getCustomerForJob(params.id, shop.id);
+    if (
+      !customer ||
+      !(await hasJobReadAccess(request, shop.id, params.id, customer.id))
+    ) {
+      return NextResponse.json({ error: "Customer not found for this job" }, { status: 404 });
+    }
+    if (data.emailUpdatesConsent && !customer.email?.trim()) {
+      return NextResponse.json({ error: "This customer does not have an email address on file." }, { status: 400 });
+    }
+    if (data.smsConsent && !customer.phone?.trim()) {
+      return NextResponse.json({ error: "This customer does not have a phone number on file." }, { status: 400 });
+    }
+
+    const updated = await prisma.customer.update({
+      where: { id: customer.id },
+      data: {
+        ...buildEmailUpdatesConsentUpdate(data.emailUpdatesConsent, "CUSTOMER_PREFERENCES"),
+        ...buildSmsConsentUpdate(data.smsConsent, "CUSTOMER_PREFERENCES"),
+      },
+      select: {
+        email: true,
+        phone: true,
+        emailUpdatesConsent: true,
+        smsConsent: true,
+        smsConsentUpdatedAt: true,
+      },
+    });
+
+    return NextResponse.json({
+      emailUpdatesConsent: getEffectiveEmailUpdatesConsent(updated),
+      smsConsent: getEffectiveSmsConsent(updated),
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json({ error: error.issues[0]?.message ?? "Invalid preferences" }, { status: 400 });
+    }
+    console.error("PATCH /api/jobs/[id]/preferences error:", error);
+    return NextResponse.json({ error: "Failed to update preferences" }, { status: 500 });
+  }
+}

@@ -1,0 +1,147 @@
+import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/db";
+import { requireStaffShop } from "@/lib/api-auth";
+import { sendPaymentReceiptEmail } from "@/lib/email";
+import { computeJobTotal, computeTotalPaid, getJobPaymentSummary, pickJobPricing } from "@/lib/job-payments";
+import { buildPaymentReceivedDetails, notifyShopOfPayment } from "@/lib/payment-notifications";
+import { publishJobEvent } from "@/lib/realtime/publish-job-event";
+
+export async function POST(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const auth = await requireStaffShop(request);
+    if (!auth.ok) return auth.response;
+
+    const { id: jobId } = params;
+
+    const job = await prisma.job.findFirst({
+      where: { id: jobId, shopId: auth.shop.id },
+      include: {
+        customer: true,
+        jobServices: { include: { service: true } },
+        jobProducts: { include: { product: true } },
+        payments: {
+          select: {
+            amount: true,
+            status: true,
+            stripePaymentIntentId: true,
+            paymentMethod: true,
+          },
+        },
+      },
+    });
+
+    if (!job) {
+      return NextResponse.json({ error: "Job not found" }, { status: 404 });
+    }
+
+    const subtotal = computeJobTotal(job);
+    const totalPaid = computeTotalPaid(job.payments);
+    const paymentSummary = getJobPaymentSummary({
+      currentStatus: job.paymentStatus,
+      subtotal,
+      totalPaid,
+    });
+
+    if (subtotal <= 0) {
+      return NextResponse.json(
+        { error: "Job has no services, products, or total is zero" },
+        { status: 400 }
+      );
+    }
+
+    if (paymentSummary.isPaidInFull || paymentSummary.remaining <= 0) {
+      return NextResponse.json(
+        { error: "Job is already paid" },
+        { status: 400 }
+      );
+    }
+
+    const amount = paymentSummary.remaining;
+
+    await prisma.job.update({
+      where: { id: jobId },
+      data: {
+        paymentStatus: "PAID",
+        payments: {
+          create: {
+            shop: { connect: { id: job.shopId } },
+            amount: amount.toFixed(2),
+            currency: "usd",
+            status: "succeeded",
+            paymentMethod: "cash",
+          },
+        },
+      },
+    });
+
+    await publishJobEvent("job:updated", { jobId, shopId: job.shopId });
+
+    const jobForEmail = {
+      id: job.id,
+      shopId: job.shopId,
+      bikeMake: job.bikeMake,
+      bikeModel: job.bikeModel,
+      customer: job.customer
+        ? {
+            firstName: job.customer.firstName,
+            lastName: job.customer.lastName,
+            email: job.customer.email,
+          }
+        : null,
+      ...pickJobPricing(job),
+      jobServices: job.jobServices.map((js) => ({
+        service: js.service ? { name: js.service.name } : null,
+        customServiceName: js.customServiceName,
+        quantity: js.quantity,
+        unitPrice: Number(js.unitPrice),
+      })),
+      jobProducts: (job.jobProducts ?? []).map((jp) => ({
+        product: { name: jp.product?.name ?? "Product" },
+        quantity: jp.quantity,
+        unitPrice: Number(jp.unitPrice),
+      })),
+    };
+
+    const recipientEmail = job.customer?.email?.trim();
+    if (jobForEmail && recipientEmail) {
+      const result = await sendPaymentReceiptEmail(jobForEmail, amount);
+      if (!result.ok) {
+        console.error("Payment receipt email failed for cash payment:", result.error);
+      }
+    }
+
+    notifyShopOfPayment(
+      buildPaymentReceivedDetails({
+        shopId: job.shopId,
+        jobId: job.id,
+        amount,
+        currency: "usd",
+        paymentMethod: "cash",
+        bikeMake: job.bikeMake,
+        bikeModel: job.bikeModel,
+        customer: job.customer,
+        paymentSummary: {
+          isPaidInFull: true,
+          remaining: 0,
+          subtotal,
+          totalPaid: subtotal,
+        },
+      })
+    );
+
+    return NextResponse.json({
+      success: true,
+      message: "Cash payment recorded",
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error("POST /api/jobs/[id]/payments/record-cash error:", error);
+    return NextResponse.json(
+      { error: "Failed to record cash payment", details: msg },
+      { status: 500 }
+    );
+  }
+}

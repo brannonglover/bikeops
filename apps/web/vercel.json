@@ -1,0 +1,43 @@
+{
+  "installCommand": "npm install --legacy-peer-deps",
+  "regions": [
+    "pdx1"
+  ],
+  "headers": [
+    {
+      "source": "/.well-known/apple-app-site-association",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "application/json"
+        }
+      ]
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/send-follow-ups",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/send-appointment-reminders",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/chat-reminders",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/staff-booking-reminders",
+      "schedule": "0 12,13 * * *"
+    },
+    {
+      "path": "/api/cron/call-outreach",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/catalog-lookups",
+      "schedule": "*/10 * * * *"
+    }
+  ]
+}

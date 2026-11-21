@@ -1,0 +1,204 @@
+import { NextRequest, NextResponse } from "next/server";
+import { requireStaffShop } from "@/lib/api-auth";
+import { z } from "zod";
+import { prisma } from "@/lib/db";
+import {
+  buildConversationContext,
+  CONTEXT_CUSTOMER_SELECT,
+  toContactSuggestion,
+} from "@/lib/conversation-context";
+import {
+  resolveStaffConversation,
+  resolveStaffConversationForRead,
+} from "@/lib/conversation";
+import { coerceCustomerPhone } from "@/lib/phone";
+import {
+  PlaceholderMergeNeedsConfirmation,
+  updateCustomerFoldingPlaceholder,
+} from "@/lib/customer-merge";
+
+export const dynamic = "force-dynamic";
+
+/** The same columns the conversation context reads, so one query serves both. */
+const customerSelect = CONTEXT_CUSTOMER_SELECT;
+
+/** Blank form fields arrive as "" and mean "not provided", not "set to empty". */
+const optionalText = z
+  .union([z.string(), z.null()])
+  .optional()
+  .transform((value) => {
+    const trimmed = typeof value === "string" ? value.trim() : "";
+    return trimmed ? trimmed : null;
+  });
+
+const saveSchema = z.object({
+  firstName: z.string().trim().min(1, "First name is required"),
+  lastName: optionalText,
+  email: optionalText.refine(
+    (value) => value === null || z.string().email().safeParse(value).success,
+    "Enter a valid email address"
+  ),
+  phone: optionalText,
+  address: optionalText,
+  notes: optionalText,
+  /** Staff agreed to fold in this placeholder despite its own jobs or records. */
+  mergePlaceholderId: z.string().optional().nullable(),
+});
+
+/**
+ * Details for the inbox's "Create contact" form: the contact record behind the
+ * thread, plus who the conversation says this is.
+ *
+ * The name, email and numbers come from the shared conversation context rather
+ * than from anything worked out here, so the "Create job" action being built
+ * on the same thread starts from the same answer.
+ */
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const auth = await requireStaffShop(request);
+    if (!auth.ok) return auth.response;
+    const shop = auth.shop;
+    const { id } = await params;
+
+    const conversation = await resolveStaffConversationForRead(shop.id, id);
+    if (!conversation) {
+      return NextResponse.json(
+        { error: "Conversation not found" },
+        { status: 404 }
+      );
+    }
+
+    const customer = await prisma.customer.findFirst({
+      where: { id: conversation.customerId, shopId: shop.id },
+      select: customerSelect,
+    });
+    if (!customer) {
+      return NextResponse.json({ error: "Customer not found" }, { status: 404 });
+    }
+
+    const context = await buildConversationContext({
+      conversationId: conversation.id,
+      customer,
+    });
+    const { identity } = context;
+    // `suggestion` is the flat shape staff apps already in the field read, and
+    // carries the merged values to them unchanged. Newer clients read
+    // `identity`, where each value still says which layer supplied it.
+    const suggestion = toContactSuggestion(identity);
+
+    // A regular who texts from a new number also lands here, and saving would
+    // quietly leave the shop with two records for one person. Surfacing the
+    // match lets staff open the existing profile instead.
+    const possibleDuplicate = suggestion.email
+      ? await prisma.customer.findFirst({
+          where: {
+            shopId: shop.id,
+            id: { not: customer.id },
+            provisional: false,
+            email: { equals: suggestion.email, mode: "insensitive" },
+          },
+          select: { id: true, firstName: true, lastName: true, email: true },
+        })
+      : null;
+
+    return NextResponse.json({
+      customer,
+      suggestion,
+      identity,
+      possibleDuplicate,
+    });
+  } catch (error) {
+    console.error("GET /api/conversations/[id]/contact error:", error);
+    return NextResponse.json(
+      { error: "Failed to load contact details" },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * Fills in the contact behind the thread and clears its provisional flag, so it
+ * stops showing as an unidentified number in the inbox.
+ */
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const auth = await requireStaffShop(request);
+    if (!auth.ok) return auth.response;
+    const shop = auth.shop;
+    const { id } = await params;
+    const data = saveSchema.parse(await request.json());
+
+    const conversation = await resolveStaffConversation(shop.id, id);
+    if (!conversation) {
+      return NextResponse.json(
+        { error: "Conversation not found" },
+        { status: 404 }
+      );
+    }
+
+    const existing = await prisma.customer.findFirst({
+      where: { id: conversation.customerId, shopId: shop.id },
+      select: { id: true, phone: true },
+    });
+    if (!existing) {
+      return NextResponse.json({ error: "Customer not found" }, { status: 404 });
+    }
+
+    // The stored number is what SMS replies are sent to, so a blank phone field
+    // leaves it alone rather than clearing the only route back to the customer.
+    const phone = data.phone ? coerceCustomerPhone(data.phone) : null;
+
+    // A different number that another placeholder holds folds that one in, so
+    // the person doesn't end up as two contacts.
+    await updateCustomerFoldingPlaceholder({
+      shopId: shop.id,
+      customerId: existing.id,
+      previousPhone: existing.phone,
+      newPhone: phone ?? undefined,
+      confirmedPlaceholderId: data.mergePlaceholderId,
+      update: {
+        firstName: data.firstName,
+        lastName: data.lastName,
+        email: data.email,
+        ...(phone ? { phone } : {}),
+        address: data.address,
+        notes: data.notes,
+        provisional: false,
+      },
+    });
+    const customer = await prisma.customer.findUniqueOrThrow({
+      where: { id: existing.id },
+      select: customerSelect,
+    });
+
+    return NextResponse.json(customer);
+  } catch (error) {
+    if (error instanceof PlaceholderMergeNeedsConfirmation) {
+      return NextResponse.json(error.toJSON(), { status: 409 });
+    }
+    if (error instanceof z.ZodError) {
+      const messages = Object.entries(error.flatten().fieldErrors ?? {})
+        .flatMap(([field, fieldMessages]) =>
+          (Array.isArray(fieldMessages) ? fieldMessages : [fieldMessages])
+            .filter(Boolean)
+            .map((message) => `${field}: ${message}`)
+        )
+        .join("; ");
+      return NextResponse.json(
+        { error: messages || "Invalid contact details" },
+        { status: 400 }
+      );
+    }
+    console.error("POST /api/conversations/[id]/contact error:", error);
+    return NextResponse.json(
+      { error: "Failed to save contact" },
+      { status: 500 }
+    );
+  }
+}

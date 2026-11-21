@@ -1,0 +1,66 @@
+import type { Config } from "tailwindcss";
+
+const config: Config = {
+  darkMode: "class",
+  content: [
+    "./src/pages/**/*.{js,ts,jsx,tsx,mdx}",
+    "./src/components/**/*.{js,ts,jsx,tsx,mdx}",
+    "./src/app/**/*.{js,ts,jsx,tsx,mdx}",
+  ],
+  theme: {
+    extend: {
+      fontFamily: {
+        sans: ["var(--font-jakarta)", "system-ui", "-apple-system", "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", "sans-serif"],
+      },
+      colors: {
+        background: "var(--background)",
+        foreground: "var(--foreground)",
+        surface: {
+          DEFAULT: "var(--surface)",
+          border: "var(--surface-border)",
+          "border-subtle": "var(--surface-border-subtle)",
+        },
+        muted: "var(--muted)",
+        "subtle-bg": "var(--subtle-bg)",
+        "input-bg": "var(--input-bg)",
+        "input-border": "var(--input-border)",
+        "text-heading": "var(--text-heading)",
+        "text-secondary": "var(--text-secondary)",
+        "text-tertiary": "var(--text-tertiary)",
+        "text-muted": "var(--text-muted)",
+        primary: {
+          50: "#eef2ff",
+          100: "#e0e7ff",
+          200: "#c7d2fe",
+          300: "#a5b4fc",
+          400: "#818cf8",
+          500: "#6366f1",
+          600: "#4f46e5",
+          700: "#4338ca",
+          800: "#3730a3",
+          900: "#312e81",
+        },
+        accent: {
+          amber: "#f59e0b",
+          orange: "#f97316",
+        },
+      },
+      boxShadow: {
+        soft: "0 2px 15px -3px rgba(0, 0, 0, 0.07), 0 10px 20px -2px rgba(0, 0, 0, 0.04)",
+        "soft-lg": "0 10px 40px -10px rgba(0, 0, 0, 0.1), 0 2px 10px -2px rgba(0, 0, 0, 0.04)",
+        glow: "0 0 0 3px rgba(99, 102, 241, 0.2)",
+      },
+      keyframes: {
+        "bike-ride": {
+          "0%, 100%": { transform: "translateX(-3px) rotate(-1deg)" },
+          "50%": { transform: "translateX(3px) rotate(1deg)" },
+        },
+      },
+      animation: {
+        "bike-ride": "bike-ride 1.15s ease-in-out infinite",
+      },
+    },
+  },
+  plugins: [],
+};
+export default config;

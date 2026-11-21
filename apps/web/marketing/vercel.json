@@ -1,0 +1,31 @@
+{
+  "cleanUrls": true,
+  "trailingSlash": false,
+  "redirects": [
+    {
+      "source": "/bike-repair-software",
+      "destination": "/",
+      "permanent": true
+    },
+    {
+      "source": "/bike-repair-software/",
+      "destination": "/",
+      "permanent": true
+    },
+    {
+      "source": "/open/staff/chat/:conversationId*",
+      "destination": "https://app.bikeops.co/open/staff/chat/:conversationId*",
+      "permanent": false
+    },
+    {
+      "source": "/open/staff/chat",
+      "destination": "https://app.bikeops.co/open/staff/chat",
+      "permanent": false
+    },
+    {
+      "source": "/staff/chat/:conversationId*",
+      "destination": "https://app.bikeops.co/open/staff/chat/:conversationId*",
+      "permanent": false
+    }
+  ]
+}

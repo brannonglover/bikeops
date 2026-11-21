@@ -1,0 +1,5359 @@
+"use client";
+
+import Link from "next/link";
+import Image from "next/image";
+import { isPrivateFileUrl } from "@/lib/image-src";
+import { useCallback, useEffect, useState, useRef } from "react";
+import { createPortal } from "react-dom";
+import type { Bike, DeliveryType, Job, JobBike, JobProduct, JobService, Stage } from "@/lib/types";
+import { Price } from "@/components/ui/Price";
+import { BikePlaceholderIcon } from "@/components/ui/BikePlaceholderIcon";
+import { useAppFeatures } from "@/contexts/AppFeaturesContext";
+import { resolveEffectiveBikeType } from "@/lib/bike-type";
+import {
+  formatBikeTypeDisplayLineForJob,
+  getDisplayPartsForJobBikeRow,
+  getJobBikeDisplayTitle,
+  type JobBikeDisplayParts,
+} from "@/lib/job-display";
+import { computeJobTotalsFromApi, getJobPaymentSummary } from "@/lib/job-payments";
+import { InvoicePricingRows } from "@/components/jobs/InvoicePricingRows";
+import { formatPhoneDisplay, phoneTelHref } from "@/lib/phone";
+import {
+  decodeCollectionWindowForInput,
+  encodeCollectionWindowPairForStorage,
+} from "@/lib/collection-window-storage";
+import {
+  formatCollectionWindowRangeOrMissing,
+  NO_TIME_SLOT_SELECTED,
+} from "@/lib/format-collection-window";
+import { toCalendarDateInTimezone } from "@/lib/timezone";
+import { mergeBoardJob } from "@/lib/board-stage-merge";
+import { JOBS_REFRESH_EVENT } from "@/lib/jobs-refresh";
+import { BikeSpecsTab } from "@/components/jobs/BikeSpecsTab";
+import { HistoryTab } from "@/components/jobs/HistoryTab";
+import { EstimateTab } from "@/components/jobs/EstimateTab";
+import { LinkifiedMessageBody } from "@/components/chat/LinkifiedMessageBody";
+import { BikeImageSearch } from "@/components/bikes/BikeImageSearch";
+import {
+  applyJobProductLineUpdate,
+  applyJobServiceLineAdd,
+  applyJobServiceLineRemove,
+  applyJobServiceLineReplace,
+  applyJobProductLineAdd,
+  applyJobProductLineRemove,
+  applyJobProductLineReplace,
+  applyJobServiceLineUpdate,
+  mergeJobPreservingInvoiceDetails,
+} from "@/lib/job-invoice-merge";
+import {
+  applyOptimisticCompleteBike,
+  applyOptimisticDeliveryType,
+  applyOptimisticResumeWork,
+  applyOptimisticUnwaitOnly,
+  applyOptimisticWaitForParts,
+  applyOptimisticWorkingOnToggle,
+  completingBikeMakesJobReady,
+  hasWorkableBikeBesides,
+} from "@/lib/optimistic-job-patch";
+import { ServiceName } from "@/components/ui/ServiceName";
+
+function formatChatPreviewTime(iso: string): string {
+  const d = new Date(iso);
+  const diffMs = Date.now() - d.getTime();
+  const minutes = Math.floor(diffMs / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+type CustomerChatPreviewPayload = {
+  id: string;
+  lastMessage: {
+    body: string | null;
+    sender: "STAFF" | "CUSTOMER" | "SYSTEM";
+    createdAt: string;
+    attachmentCount: number;
+  } | null;
+};
+
+function CustomerChatSection({ customerId }: { customerId: string }) {
+  const features = useAppFeatures();
+  const [status, setStatus] = useState<"loading" | "error" | "ready">("loading");
+  const [conversation, setConversation] = useState<CustomerChatPreviewPayload | null>(null);
+
+  useEffect(() => {
+    if (!features.chatEnabled) {
+      setStatus("ready");
+      setConversation(null);
+      return;
+    }
+    let cancelled = false;
+    setStatus("loading");
+    fetch(
+      `/api/conversations/by-customer/${encodeURIComponent(customerId)}?markRead=1`
+    )
+      .then(async (r) => {
+        const data = (await r.json()) as {
+          conversation?: CustomerChatPreviewPayload | null;
+          error?: string;
+        };
+        if (cancelled) return;
+        if (!r.ok) {
+          setConversation(null);
+          setStatus("error");
+          return;
+        }
+        setConversation(data.conversation ?? null);
+        setStatus("ready");
+      })
+      .catch(() => {
+        if (!cancelled) setStatus("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [customerId, features.chatEnabled]);
+
+  if (!features.chatEnabled) return null;
+
+  const chatHref = `/chat?customer=${encodeURIComponent(customerId)}`;
+
+  const lastMessageLine = (msg: NonNullable<CustomerChatPreviewPayload["lastMessage"]>) => {
+    const text = msg.body?.trim();
+    const hasAtt = msg.attachmentCount > 0;
+    const prefix = msg.sender === "STAFF" ? "You: " : msg.sender === "SYSTEM" ? "Auto: " : "";
+    if (text) {
+      const t = text.length > 140 ? `${text.slice(0, 140)}…` : text;
+      return prefix + t;
+    }
+    if (hasAtt) return `${prefix}📎 Image`;
+    return `${prefix}—`;
+  };
+
+  return (
+    <div>
+      <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-2">Chat</h3>
+      {status === "loading" && <p className="text-sm text-slate-400">Loading…</p>}
+      {status === "error" && (
+        <Link
+          href={chatHref}
+          className="text-sm font-medium text-indigo-600 hover:text-indigo-800 hover:underline touch-manipulation"
+        >
+          Open chat
+        </Link>
+      )}
+      {status === "ready" && (
+        <div className="space-y-2">
+          {conversation?.lastMessage ? (
+            <p className="text-sm text-slate-600 line-clamp-3 whitespace-pre-wrap">
+              {lastMessageLine(conversation.lastMessage)}
+              <span className="text-slate-400 text-xs ml-1.5">
+                · {formatChatPreviewTime(conversation.lastMessage.createdAt)}
+              </span>
+            </p>
+          ) : (
+            <p className="text-sm text-slate-500">No messages yet.</p>
+          )}
+          <Link
+            href={chatHref}
+            className="inline-flex text-sm font-medium text-indigo-600 hover:text-indigo-800 hover:underline touch-manipulation"
+          >
+            Open chat
+          </Link>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function resolveBikeImageUrl(b: JobBike, customerBikes?: { make: string; model: string | null; imageUrl: string | null }[]): string | null {
+  const url = b.bike?.imageUrl ?? b.imageUrl ?? b.catalogThumbnailUrl ?? null;
+  if (url) return url;
+  if (!customerBikes?.length) return null;
+  const makeNorm = (b.make ?? "").trim().toLowerCase();
+  const modelNorm = (b.model ?? "").trim().toLowerCase();
+  if (!makeNorm || !modelNorm) return null;
+  const match = customerBikes.find(
+    (cb) =>
+      (cb.make ?? "").trim().toLowerCase() === makeNorm &&
+      (cb.model ?? "").trim().toLowerCase() === modelNorm
+  );
+  return match?.imageUrl ?? null;
+}
+
+type BikeTypeForm = "AUTO" | "REGULAR" | "E_BIKE";
+
+function jobBikeToFormValue(b: JobBike): BikeTypeForm {
+  if (b.bikeType === "REGULAR") return "REGULAR";
+  if (b.bikeType === "E_BIKE") return "E_BIKE";
+  return "AUTO";
+}
+
+function toPatchBikeRow(
+  b: Pick<JobBike, "make" | "model" | "nickname" | "imageUrl" | "bikeId"> & { id?: string },
+  bikeType: BikeTypeForm
+): {
+  id?: string;
+  make: string;
+  model: string | null;
+  nickname: string | null;
+  imageUrl: string | null;
+  bikeId: string | null;
+  bikeType?: "REGULAR" | "E_BIKE";
+} {
+  const base = {
+    // The job bike being edited, so it's updated in place (keeps its history).
+    ...(b.id ? { id: b.id } : {}),
+    make: b.make,
+    model: b.model,
+    nickname: b.nickname ?? null,
+    imageUrl: b.imageUrl ?? null,
+    bikeId: b.bikeId ?? null,
+  };
+  if (bikeType === "AUTO") return base;
+  return { ...base, bikeType };
+}
+
+function buildBikesPayloadForPatch(
+  job: Job,
+  changedIndex: number,
+  newType: BikeTypeForm
+) {
+  const jobBikes = [...(job.jobBikes ?? [])].sort((a, b) => a.sortOrder - b.sortOrder);
+  if (jobBikes.length > 0) {
+    return jobBikes.map((b, i) =>
+      toPatchBikeRow(b, i === changedIndex ? newType : jobBikeToFormValue(b))
+    );
+  }
+  return [
+    toPatchBikeRow(
+      {
+        make: job.bikeMake,
+        model: job.bikeModel,
+        nickname: null,
+        imageUrl: null,
+        bikeId: null,
+      },
+      newType
+    ),
+  ];
+}
+
+function InternalNotesSection({
+  job,
+  onJobUpdated,
+}: {
+  job: Job;
+  onJobUpdated?: (job: Job) => void;
+}) {
+  const [value, setValue] = useState(job.internalNotes ?? "");
+
+  useEffect(() => {
+    setValue(job.internalNotes ?? "");
+  }, [job.id, job.internalNotes]);
+
+  const persist = () => {
+    if (!onJobUpdated) return;
+    const trimmed = value.trim();
+    const current = (job.internalNotes ?? "").trim();
+    if (trimmed === current) return;
+    const snapshot = job.internalNotes ?? "";
+    onJobUpdated({ ...job, internalNotes: trimmed || null });
+    void (async () => {
+      try {
+        const res = await fetch(`/api/jobs/${job.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ internalNotes: trimmed || null }),
+        });
+        if (res.ok) {
+          onJobUpdated((await res.json()) as Job);
+        } else {
+          onJobUpdated({ ...job, internalNotes: snapshot || null });
+        }
+      } catch {
+        onJobUpdated({ ...job, internalNotes: snapshot || null });
+      }
+    })();
+  };
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-2">
+        <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wide">
+          Internal Notes
+        </h3>
+        <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+          <svg className="w-2.5 h-2.5" fill="currentColor" viewBox="0 0 20 20" aria-hidden>
+            <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
+          </svg>
+          Staff only
+        </span>
+      </div>
+      {onJobUpdated ? (
+        <textarea
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onBlur={persist}
+          rows={3}
+          placeholder="Add private notes about this job — not visible to the customer…"
+          className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none resize-none placeholder:text-slate-400"
+        />
+      ) : (
+        value ? (
+          <p className="text-sm text-slate-700 whitespace-pre-wrap">{value}</p>
+        ) : (
+          <p className="text-sm text-slate-400 italic">No internal notes.</p>
+        )
+      )}
+    </div>
+  );
+}
+
+function JobMechanicSection({
+  job,
+  onJobUpdated,
+}: {
+  job: Job;
+  onJobUpdated?: (job: Job) => void;
+}) {
+  const [mechanics, setMechanics] = useState<
+    { id: string; fullName: string; imageUrl: string | null }[]
+  >([]);
+  const [mechanicId, setMechanicId] = useState(job.mechanicId ?? "");
+  const [error, setError] = useState<string | null>(null);
+  const [loadingList, setLoadingList] = useState(Boolean(onJobUpdated));
+
+  const canEdit = Boolean(onJobUpdated);
+
+  useEffect(() => {
+    setMechanicId(job.mechanicId ?? "");
+    setError(null);
+  }, [job.id, job.mechanicId]);
+
+  useEffect(() => {
+    if (!canEdit) return;
+    let cancelled = false;
+    setLoadingList(true);
+    fetch("/api/mechanics")
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled) return;
+        const list = Array.isArray(data)
+          ? data.map(
+              (m: { id: string; fullName: string; imageUrl: string | null }) => ({
+                id: m.id,
+                fullName: m.fullName,
+                imageUrl: m.imageUrl ?? null,
+              })
+            )
+          : [];
+        setMechanics(list);
+      })
+      .catch(() => {
+        if (!cancelled) setMechanics([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingList(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canEdit]);
+
+  const persistMechanic = (nextId: string) => {
+    if (!onJobUpdated) return;
+    const normalized = nextId || null;
+    if ((job.mechanicId ?? null) === normalized) return;
+    setError(null);
+    const snapshot = job;
+    const nextMechanic =
+      normalized == null
+        ? null
+        : mechanics.find((m) => m.id === normalized) ??
+          (job.mechanic?.id === normalized ? job.mechanic : null);
+    onJobUpdated({
+      ...job,
+      mechanicId: normalized,
+      mechanic: nextMechanic,
+    });
+    void (async () => {
+      try {
+        const res = await fetch(`/api/jobs/${job.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mechanicId: normalized }),
+        });
+        const data = (await res.json().catch(() => ({}))) as Job & {
+          error?: string;
+        };
+        if (!res.ok) {
+          setMechanicId(snapshot.mechanicId ?? "");
+          setError(data.error ?? "Failed to assign mechanic");
+          onJobUpdated(snapshot);
+          return;
+        }
+        onJobUpdated(data);
+      } catch {
+        setMechanicId(snapshot.mechanicId ?? "");
+        setError("Failed to assign mechanic");
+        onJobUpdated(snapshot);
+      }
+    })();
+  };
+
+  if (!canEdit) {
+    return (
+      <div>
+        <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-2">
+          Mechanic
+        </h3>
+        <p className="text-sm text-slate-900">
+          {job.mechanic?.fullName ?? "Unassigned"}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-2">
+        Mechanic
+      </h3>
+      <select
+        value={mechanicId}
+        disabled={loadingList}
+        onChange={(e) => {
+          const next = e.target.value;
+          setMechanicId(next);
+          persistMechanic(next);
+        }}
+        className="w-full max-w-xs px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none disabled:opacity-60"
+      >
+        <option value="">Unassigned</option>
+        {mechanics.map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.fullName}
+          </option>
+        ))}
+        {job.mechanicId &&
+          job.mechanic &&
+          !mechanics.some((m) => m.id === job.mechanicId) && (
+            <option value={job.mechanic.id}>{job.mechanic.fullName}</option>
+          )}
+      </select>
+      {mechanics.length === 0 && !loadingList && (
+        <p className="mt-1.5 text-xs text-slate-500">
+          No mechanics on the roster yet. Add them under Mechanics.
+        </p>
+      )}
+      {error && <p className="mt-1.5 text-xs text-red-600">{error}</p>}
+    </div>
+  );
+}
+
+function JobDeliveryTypeSection({
+  job,
+  onJobUpdated,
+}: {
+  job: Job;
+  onJobUpdated?: (job: Job) => void;
+}) {
+  const { collectionServiceEnabled } = useAppFeatures();
+  const [deliveryType, setDeliveryType] = useState<DeliveryType>(job.deliveryType);
+  const [collectionAddress, setCollectionAddress] = useState(job.collectionAddress ?? "");
+  const [error, setError] = useState<string | null>(null);
+
+  const canEdit = Boolean(onJobUpdated);
+  const showCollectionOption =
+    collectionServiceEnabled || job.deliveryType === "COLLECTION_SERVICE";
+
+  useEffect(() => {
+    setDeliveryType(job.deliveryType);
+    setCollectionAddress(job.collectionAddress ?? "");
+    setError(null);
+  }, [job.id, job.deliveryType, job.collectionAddress]);
+
+  const persistDeliveryType = (next: DeliveryType) => {
+    if (!onJobUpdated || next === job.deliveryType) return;
+    setError(null);
+    const trimmed = collectionAddress.trim();
+    const nextAddress =
+      next === "COLLECTION_SERVICE"
+        ? trimmed || job.customer?.address?.trim() || null
+        : null;
+    const snapshot = job;
+    onJobUpdated(applyOptimisticDeliveryType(job, next, nextAddress));
+    const body: {
+      deliveryType: DeliveryType;
+      collectionAddress?: string | null;
+    } = { deliveryType: next };
+    if (next === "COLLECTION_SERVICE") {
+      body.collectionAddress = nextAddress;
+    }
+    void (async () => {
+      try {
+        const res = await fetch(`/api/jobs/${job.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = (await res.json().catch(() => ({}))) as Job & { error?: string };
+        if (!res.ok) {
+          setDeliveryType(snapshot.deliveryType);
+          setError(data.error ?? "Failed to update delivery type");
+          onJobUpdated(snapshot);
+          return;
+        }
+        onJobUpdated(data);
+      } catch {
+        setDeliveryType(snapshot.deliveryType);
+        setError("Failed to update delivery type");
+        onJobUpdated(snapshot);
+      }
+    })();
+  };
+
+  const persistCollectionAddress = () => {
+    if (!onJobUpdated || deliveryType !== "COLLECTION_SERVICE") return;
+    const trimmed = collectionAddress.trim();
+    const current = (job.collectionAddress ?? "").trim();
+    if (trimmed === current) return;
+    setError(null);
+    const snapshot = job;
+    onJobUpdated(
+      applyOptimisticDeliveryType(job, deliveryType, trimmed || null)
+    );
+    void (async () => {
+      try {
+        const res = await fetch(`/api/jobs/${job.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ collectionAddress: trimmed || null }),
+        });
+        const data = (await res.json().catch(() => ({}))) as Job & { error?: string };
+        if (!res.ok) {
+          setCollectionAddress(snapshot.collectionAddress ?? "");
+          setError(data.error ?? "Failed to update collection address");
+          onJobUpdated(snapshot);
+          return;
+        }
+        onJobUpdated(data);
+      } catch {
+        setCollectionAddress(snapshot.collectionAddress ?? "");
+        setError("Failed to update collection address");
+        onJobUpdated(snapshot);
+      }
+    })();
+  };
+
+  const label =
+    deliveryType === "COLLECTION_SERVICE" ? "Collection" : "Drop-off";
+
+  if (!canEdit) {
+    return (
+      <div>
+        <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-2">
+          Booking type
+        </h3>
+        <p className="text-sm text-slate-900">{label}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-2">
+        Booking type
+      </h3>
+      <select
+        value={deliveryType}
+        onChange={(e) => {
+          const next = e.target.value as DeliveryType;
+          setDeliveryType(next);
+          persistDeliveryType(next);
+        }}
+        className="w-full max-w-xs px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none"
+      >
+        <option value="DROP_OFF_AT_SHOP">Drop-off at shop</option>
+        {showCollectionOption && (
+          <option value="COLLECTION_SERVICE">Collection service</option>
+        )}
+      </select>
+      {deliveryType === "COLLECTION_SERVICE" && showCollectionOption && (
+        <div className="mt-3">
+          <label className="block text-xs font-medium text-slate-600 mb-1">
+            Collection address
+          </label>
+          <input
+            type="text"
+            value={collectionAddress}
+            onChange={(e) => setCollectionAddress(e.target.value)}
+            onBlur={() => persistCollectionAddress()}
+            placeholder={job.customer?.address || "Pickup/delivery address"}
+            className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none placeholder:text-slate-400"
+          />
+          <p className="text-xs text-slate-500 mt-1">
+            Collection fee is added or removed on the invoice when you change booking type.
+          </p>
+        </div>
+      )}
+      {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
+    </div>
+  );
+}
+
+function PencilIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden>
+      <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+    </svg>
+  );
+}
+
+function WrenchIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden>
+      <path fillRule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
+    </svg>
+  );
+}
+
+function applyOptimisticJobBikeImage(
+  job: Job,
+  bike: JobBike,
+  imageUrl: string | null
+): Job {
+  if (bike.id === "legacy") {
+    const singleBike = job.customer?.bikes?.length === 1 ? job.customer.bikes[0] : null;
+    if (!singleBike || !job.customer) return job;
+    return {
+      ...job,
+      customer: {
+        ...job.customer,
+        bikes: job.customer.bikes?.map((b) =>
+          b.id === singleBike.id ? { ...b, imageUrl } : b
+        ),
+      },
+    };
+  }
+  return {
+    ...job,
+    jobBikes: job.jobBikes?.map((jb) =>
+      jb.id === bike.id
+        ? { ...jb, imageUrl, bike: jb.bike ? { ...jb.bike, imageUrl } : jb.bike }
+        : jb
+    ),
+    customer:
+      job.customer && bike.bikeId
+        ? {
+            ...job.customer,
+            bikes: job.customer.bikes?.map((b) =>
+              b.id === bike.bikeId ? { ...b, imageUrl } : b
+            ),
+          }
+        : job.customer,
+  };
+}
+
+function JobBikePhotoControl({
+  imageUrl,
+  make,
+  model,
+  sizeClass,
+  canEdit,
+  onSave,
+}: {
+  imageUrl: string | null;
+  make: string;
+  model: string;
+  sizeClass: string;
+  canEdit: boolean;
+  onSave: (imageUrl: string | null) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [open]);
+
+  const saveImage = async (nextUrl: string | null) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await onSave(nextUrl);
+      setOpen(false);
+    } catch {
+      setError("Could not save photo");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/bikes/upload", { method: "POST", body: formData });
+      const data = await res.json();
+      if (res.ok && data.url) {
+        await saveImage(data.url);
+      } else {
+        setError(data.error || "Upload failed");
+      }
+    } catch {
+      setError("Upload failed");
+    } finally {
+      setBusy(false);
+      e.target.value = "";
+    }
+  };
+
+  if (!canEdit) {
+    return imageUrl ? (
+      <div className={`${sizeClass} flex-shrink-0 relative rounded-lg overflow-hidden border border-slate-100`}>
+        <Image src={imageUrl} unoptimized={isPrivateFileUrl(imageUrl)} alt="" fill className="object-cover" />
+      </div>
+    ) : (
+      <div className={`${sizeClass} flex-shrink-0 rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center`}>
+        <BikePlaceholderIcon className="w-8 h-8 text-slate-400" />
+      </div>
+    );
+  }
+
+  return (
+    <div ref={panelRef} className="relative flex-shrink-0">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        disabled={busy}
+        aria-label={imageUrl ? "Change bike photo" : "Add bike photo"}
+        title={imageUrl ? "Change bike photo" : "Add bike photo"}
+        className={`group/photo relative ${sizeClass} overflow-hidden rounded-lg border border-slate-200 bg-slate-50 transition-colors hover:border-indigo-300 hover:bg-indigo-50/40 disabled:opacity-60`}
+      >
+        {imageUrl ? (
+          <Image src={imageUrl} unoptimized={isPrivateFileUrl(imageUrl)} alt="" fill className="object-cover" sizes="96px" />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center">
+            <BikePlaceholderIcon className="w-8 h-8 text-slate-400" />
+          </div>
+        )}
+        <span className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover/photo:bg-black/25">
+          <svg className="h-4 w-4 text-white opacity-0 drop-shadow transition-opacity group-hover/photo:opacity-100" viewBox="0 0 20 20" fill="currentColor" aria-hidden>
+            <path fillRule="evenodd" d="M4 5a2 2 0 00-2 2v8a2 2 0 002 2h12a2 2 0 002-2V7a2 2 0 00-2-2h-1.586a1 1 0 01-.707-.293l-1.121-1.121A2 2 0 0011.172 3H8.828a2 2 0 00-1.414.586L6.293 4.707A1 1 0 015.586 5H4zm6 9a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
+          </svg>
+        </span>
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full z-20 mt-2 w-64 rounded-xl border border-slate-200 bg-white p-3 shadow-lg">
+          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Bike photo
+          </p>
+          {imageUrl ? (
+            <div className="relative mb-2 h-20 w-full overflow-hidden rounded-lg border border-slate-100">
+              <Image src={imageUrl} unoptimized={isPrivateFileUrl(imageUrl)} alt="" fill className="object-cover" sizes="256px" />
+            </div>
+          ) : null}
+          <div className="space-y-2">
+            <label className="flex cursor-pointer items-center justify-center rounded-lg border border-dashed border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/gif,image/webp"
+                className="hidden"
+                disabled={busy}
+                onChange={handleUpload}
+              />
+              {busy ? "Saving…" : "Upload photo"}
+            </label>
+            <BikeImageSearch
+              make={make}
+              model={model}
+              onSelect={(url) => void saveImage(url)}
+              disabled={busy}
+              onBusyChange={setBusy}
+              autoSearch={false}
+            />
+            {imageUrl ? (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void saveImage(null)}
+                className="text-xs text-red-600 hover:text-red-700 hover:underline disabled:opacity-50"
+              >
+                Remove photo
+              </button>
+            ) : null}
+          </div>
+          {error && <p className="mt-2 text-[11px] text-red-600">{error}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function JobBikeSection({
+  job,
+  onJobUpdated,
+}: {
+  job: Job;
+  onJobUpdated?: (job: Job) => void;
+}) {
+  const jobBikes: JobBike[] = job.jobBikes ?? [];
+  const hasMultiple = jobBikes.length > 1;
+  const bikes = hasMultiple || jobBikes.length === 1
+    ? jobBikes
+    : [{ id: "legacy", make: job.bikeMake, model: job.bikeModel, nickname: null, imageUrl: null, bikeId: null, sortOrder: 0, bikeType: null } as JobBike];
+  const customerBikes = job.customer?.bikes;
+  const [editingBikeIndex, setEditingBikeIndex] = useState<number | null>(null);
+  const [addingBike, setAddingBike] = useState(false);
+  const [addBikeSelectValue, setAddBikeSelectValue] = useState("");
+  const [showAddNewBikeForm, setShowAddNewBikeForm] = useState(false);
+  /** Why the last bike change was refused (e.g. it would erase repair history). */
+  const [bikeActionError, setBikeActionError] = useState<string | null>(null);
+  const [newBikeMake, setNewBikeMake] = useState("");
+  const [newBikeModel, setNewBikeModel] = useState("");
+  const [newBikeType, setNewBikeType] = useState<BikeTypeForm>("AUTO");
+
+  const patchJobInBackground = useCallback(
+    (
+      optimistic: Job,
+      body: Record<string, unknown>,
+      onSuccess?: (updated: Job) => void
+    ) => {
+      if (!onJobUpdated) return;
+      const snapshot = job;
+      setBikeActionError(null);
+      onJobUpdated(optimistic);
+      void (async () => {
+        try {
+          const res = await fetch(`/api/jobs/${job.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          if (res.ok) {
+            const updatedJob = (await res.json()) as Job;
+            if (onSuccess) {
+              onSuccess(updatedJob);
+            } else {
+              onJobUpdated(updatedJob);
+            }
+          } else {
+            onJobUpdated(snapshot);
+            if (res.status === 409) {
+              const err = (await res.json().catch(() => ({}))) as { error?: string };
+              setBikeActionError(err.error ?? "That change wasn’t saved.");
+            }
+          }
+        } catch {
+          onJobUpdated(snapshot);
+        }
+      })();
+    },
+    [job, onJobUpdated]
+  );
+
+  // Customer bikes not yet on this job
+  const existingBikeIds = new Set(jobBikes.map((jb) => jb.bikeId).filter(Boolean));
+  const availableToAdd = (customerBikes ?? []).filter((cb) => !existingBikeIds.has(cb.id));
+
+  const handleAddSavedBike = (bike: NonNullable<typeof customerBikes>[number]) => {
+    if (!onJobUpdated) return;
+    setAddingBike(true);
+    void (async () => {
+      try {
+        const res = await fetch(`/api/jobs/${job.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            addBike: {
+              make: bike.make,
+              model: bike.model,
+              nickname: bike.nickname ?? null,
+              imageUrl: bike.imageUrl ?? null,
+              bikeId: bike.id,
+              bikeType: bike.bikeType ?? undefined,
+            },
+          }),
+        });
+        if (res.ok) {
+          onJobUpdated((await res.json()) as Job);
+        }
+      } finally {
+        setAddingBike(false);
+      }
+    })();
+  };
+
+  const handleAddNewBike = () => {
+    if (!onJobUpdated || !newBikeMake.trim()) return;
+    setAddingBike(true);
+    const bikeType = newBikeType === "AUTO" ? undefined : newBikeType;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/jobs/${job.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            addBike: {
+              make: newBikeMake.trim(),
+              model: newBikeModel.trim() || null,
+              nickname: null,
+              imageUrl: null,
+              bikeId: null,
+              bikeType,
+            },
+          }),
+        });
+        if (res.ok) {
+          onJobUpdated((await res.json()) as Job);
+          setNewBikeMake("");
+          setNewBikeModel("");
+          setNewBikeType("AUTO");
+          setShowAddNewBikeForm(false);
+        }
+      } finally {
+        setAddingBike(false);
+      }
+    })();
+  };
+
+  const handleRemoveBike = (bikeId: string) => {
+    if (!onJobUpdated || bikeId === "legacy") return;
+    if (!confirm("Remove this bike from the job?")) return;
+    const remaining = (job.jobBikes ?? []).filter((b) => b.id !== bikeId);
+    let bikeMake = "—";
+    let bikeModel = "";
+    if (remaining.length === 1) {
+      bikeMake = remaining[0].make;
+      bikeModel = remaining[0].model ?? "";
+    } else if (remaining.length > 1) {
+      bikeMake = "Multiple";
+      bikeModel = `${remaining.length} bikes`;
+    }
+    const optimistic: Job = {
+      ...job,
+      jobBikes: remaining,
+      bikeMake,
+      bikeModel,
+      workingOnJobBikeId:
+        job.workingOnJobBikeId === bikeId ? null : job.workingOnJobBikeId,
+    };
+    patchJobInBackground(optimistic, { removeJobBikeId: bikeId });
+  };
+
+  useEffect(() => {
+    setEditingBikeIndex(null);
+  }, [job.id]);
+
+  const handleBikeTypeChange = (bikeIndex: number, value: string) => {
+    if (!onJobUpdated) return;
+    const newType = value as BikeTypeForm;
+    setEditingBikeIndex(null);
+    patchJobInBackground(job, {
+      bikes: buildBikesPayloadForPatch(job, bikeIndex, newType),
+    });
+  };
+
+  const handleBikeImageSave = useCallback(
+    async (bike: JobBike, dp: JobBikeDisplayParts, imageUrl: string | null) => {
+      if (!onJobUpdated) return;
+      const snapshot = job;
+      onJobUpdated(applyOptimisticJobBikeImage(job, bike, imageUrl));
+      try {
+        if (bike.id !== "legacy" && bike.bikeId && job.customerId) {
+          const res = await fetch(`/api/customers/${job.customerId}/bikes/${bike.bikeId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ imageUrl }),
+          });
+          if (!res.ok) throw new Error("save failed");
+          const jobRes = await fetch(`/api/jobs/${job.id}`);
+          if (!jobRes.ok) throw new Error("refetch failed");
+          onJobUpdated((await jobRes.json()) as Job);
+          return;
+        }
+        if (bike.id !== "legacy") {
+          const res = await fetch(`/api/jobs/${job.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              updateJobBikeImageUrl: { jobBikeId: bike.id, imageUrl },
+            }),
+          });
+          if (!res.ok) throw new Error("save failed");
+          onJobUpdated((await res.json()) as Job);
+          return;
+        }
+        const singleCustomerBike =
+          job.customer?.bikes?.length === 1 ? job.customer.bikes[0] : null;
+        if (singleCustomerBike && job.customerId) {
+          const res = await fetch(
+            `/api/customers/${job.customerId}/bikes/${singleCustomerBike.id}`,
+            {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ imageUrl }),
+            }
+          );
+          if (!res.ok) throw new Error("save failed");
+          const jobRes = await fetch(`/api/jobs/${job.id}`);
+          if (!jobRes.ok) throw new Error("refetch failed");
+          onJobUpdated((await jobRes.json()) as Job);
+          return;
+        }
+        if (!dp.make.trim()) throw new Error("no make");
+        const res = await fetch(`/api/jobs/${job.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            bikes: [
+              {
+                make: dp.make,
+                model: dp.model,
+                nickname: dp.nickname,
+                imageUrl,
+                bikeId: null,
+              },
+            ],
+          }),
+        });
+        if (!res.ok) throw new Error("save failed");
+        onJobUpdated((await res.json()) as Job);
+      } catch {
+        onJobUpdated(snapshot);
+        throw new Error("save failed");
+      }
+    },
+    [job, onJobUpdated]
+  );
+
+  const handleToggleWorkingOn = (bikeId: string) => {
+    if (!onJobUpdated) return;
+    const nextId = job.workingOnJobBikeId === bikeId ? null : bikeId;
+    const body: Record<string, unknown> = { workingOnJobBikeId: nextId };
+    if (nextId && job.stage !== "WORKING_ON") {
+      body.stage = "WORKING_ON";
+      if (job.stage === "WAITING_ON_PARTS") {
+        body.notifyCustomer = false;
+      }
+    }
+    patchJobInBackground(applyOptimisticWorkingOnToggle(job, bikeId), body);
+  };
+
+  const handleToggleComplete = (bikeId: string, isCompleted: boolean) => {
+    if (!onJobUpdated) return;
+    const body: Record<string, unknown> = isCompleted
+      ? { uncompleteJobBikeId: bikeId }
+      : { completeJobBikeId: bikeId };
+    // Same as the mobile app: once every bike is done, the card moves to Bike Ready.
+    if (!isCompleted && completingBikeMakesJobReady(job, bikeId)) {
+      body.stage = "BIKE_READY";
+      body.workingOnJobBikeId = null;
+    }
+    patchJobInBackground(
+      applyOptimisticCompleteBike(job, bikeId, isCompleted),
+      body
+    );
+  };
+
+  const handleWaitForParts = (bikeId: string) => {
+    if (!onJobUpdated) return;
+    const body: Record<string, unknown> = { waitForPartsJobBikeId: bikeId };
+    // The column follows the active work: only move the card once nothing else is workable.
+    if (
+      job.stage !== "WAITING_ON_PARTS" &&
+      !hasWorkableBikeBesides(job.jobBikes, bikeId)
+    ) {
+      body.stage = "WAITING_ON_PARTS";
+    }
+    patchJobInBackground(applyOptimisticWaitForParts(job, bikeId), body);
+  };
+
+  const handleResumeWork = (bikeId: string) => {
+    if (!onJobUpdated) return;
+    const body: Record<string, unknown> = {
+      unwaitForPartsJobBikeId: bikeId,
+      workingOnJobBikeId: bikeId,
+    };
+    if (job.stage !== "WORKING_ON") {
+      body.stage = "WORKING_ON";
+      body.notifyCustomer = false;
+    }
+    patchJobInBackground(applyOptimisticResumeWork(job, bikeId), body);
+  };
+
+  const handleClearWaitingOnPartsOnly = (bikeId: string) => {
+    if (!onJobUpdated) return;
+    const body: Record<string, unknown> = { unwaitForPartsJobBikeId: bikeId };
+    if (job.stage !== "WORKING_ON") {
+      body.stage = "WORKING_ON";
+      body.notifyCustomer = false;
+    }
+    patchJobInBackground(applyOptimisticUnwaitOnly(job, bikeId), body);
+  };
+
+  return (
+    <div>
+      <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-3">
+        {hasMultiple ? `Bikes (${bikes.length})` : "Bike"}
+      </h3>
+      <div className={`grid gap-3 ${hasMultiple ? "grid-cols-1 sm:grid-cols-2" : ""}`}>
+        {bikes.map((b, i) => {
+          const dp = getDisplayPartsForJobBikeRow(job, b);
+          const makeModel = [dp.make, dp.model].filter(Boolean).join(" ");
+          const displayName = dp.nickname?.trim() ? dp.nickname : makeModel;
+          const subtitle = dp.nickname?.trim() ? makeModel : null;
+          const imageUrl =
+            dp.imageUrl ?? resolveBikeImageUrl({ ...b, make: dp.make, model: dp.model }, customerBikes);
+          const size = hasMultiple ? "w-16 h-16" : "w-24 h-24";
+          const isEditing = onJobUpdated && editingBikeIndex === i;
+          const isWorkingOn = b.id !== "legacy" && job.workingOnJobBikeId === b.id;
+          const isCompleted = !!b.completedAt;
+          // Never show waiting for the bike currently marked as working (clears badge even if GET/PATCH order left stale waitingOnPartsAt).
+          const isWaitingOnParts =
+            !!b.waitingOnPartsAt && !isCompleted && job.workingOnJobBikeId !== b.id;
+          /** DB inconsistency: working on this bike but parts flag still set — offer clear, not another "waiting" control. */
+          const stalePartsFlagWhileWorkingOn =
+            isWorkingOn && !!b.waitingOnPartsAt && !isCompleted;
+          const canInteract = onJobUpdated && b.id !== "legacy";
+
+          return (
+            <div
+              key={b.id}
+              className={`flex gap-3 rounded-xl border p-3 shadow-sm min-w-0 transition-colors ${
+                isCompleted
+                  ? "border-emerald-300 bg-emerald-50/50"
+                  : isWaitingOnParts
+                    ? "border-red-300 bg-red-50/50 ring-1 ring-red-200"
+                    : isWorkingOn
+                      ? "border-amber-400 bg-amber-50/60 ring-1 ring-amber-300"
+                      : "border-slate-200 bg-white"
+              } ${hasMultiple ? "" : "flex-1"}`}
+            >
+              <JobBikePhotoControl
+                imageUrl={imageUrl}
+                make={dp.make}
+                model={dp.model ?? ""}
+                sizeClass={size}
+                canEdit={!!onJobUpdated}
+                onSave={(nextUrl) => handleBikeImageSave(b, dp, nextUrl)}
+              />
+              <div className="min-w-0 flex-1 flex flex-col">
+                <div className="flex items-start justify-between gap-1">
+                  <p className={`font-medium truncate ${isCompleted || isWaitingOnParts ? "text-slate-500" : "text-slate-900"}`}>{displayName}</p>
+                  {isCompleted && (
+                    <span className="flex-shrink-0 inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-emerald-700 bg-emerald-200 px-1.5 py-0.5 rounded-md whitespace-nowrap">
+                      <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" aria-hidden>
+                        <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                      </svg>
+                      Done
+                    </span>
+                  )}
+                  {isWaitingOnParts && !isCompleted && (
+                    canInteract ? (
+                      <button
+                        type="button"
+                        onClick={() => handleClearWaitingOnPartsOnly(b.id)}
+                        className="flex-shrink-0 inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-red-700 bg-red-200 px-1.5 py-0.5 rounded-md whitespace-nowrap hover:bg-red-300 transition-colors"
+                        title="Remove waiting on parts if this was a mistake"
+                      >
+                        <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" aria-hidden>
+                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clipRule="evenodd" />
+                        </svg>
+                        Waiting on parts
+                      </button>
+                    ) : (
+                      <span className="flex-shrink-0 inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-red-700 bg-red-200 px-1.5 py-0.5 rounded-md whitespace-nowrap">
+                        <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" aria-hidden>
+                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clipRule="evenodd" />
+                        </svg>
+                        Waiting on parts
+                      </span>
+                    )
+                  )}
+                  {isWorkingOn && !isCompleted && !isWaitingOnParts && (
+                    canInteract ? (
+                      <button
+                        type="button"
+                        onClick={() => handleToggleWorkingOn(b.id)}
+                        className="flex-shrink-0 inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-amber-700 bg-amber-200 px-1.5 py-0.5 rounded-md whitespace-nowrap hover:bg-amber-300 transition-colors"
+                        title="Stop showing this bike as working on"
+                      >
+                        <span className="relative flex h-2 w-2">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-600 opacity-75" />
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-600" />
+                        </span>
+                        Working on
+                      </button>
+                    ) : (
+                      <span className="flex-shrink-0 inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-amber-700 bg-amber-200 px-1.5 py-0.5 rounded-md whitespace-nowrap">
+                        <span className="relative flex h-2 w-2">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-600 opacity-75" />
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-600" />
+                        </span>
+                        Working on
+                      </span>
+                    )
+                  )}
+                </div>
+                {subtitle && <p className="text-sm text-slate-500 truncate">{subtitle}</p>}
+
+                {!onJobUpdated && (
+                  <p className="text-xs text-slate-500 mt-1.5">
+                    {resolveEffectiveBikeType({
+                      bikeType: b.bikeType,
+                      make: dp.make,
+                      model: dp.model,
+                      bikeId: b.bikeId,
+                      bike: b.bike,
+                    }) === "E_BIKE"
+                      ? "E-bike"
+                      : "Standard bike"}
+                  </p>
+                )}
+
+                {onJobUpdated && !isEditing && (
+                  <div className="flex items-start justify-between gap-2 mt-1.5">
+                    <p className="text-xs text-slate-600 min-w-0 leading-snug">
+                      <span className="text-slate-400">Type:</span>{" "}
+                      {formatBikeTypeDisplayLineForJob(job, b)}
+                    </p>
+                    <div className="flex items-center flex-shrink-0 -mr-1">
+                      <button
+                        type="button"
+                        onClick={() => setEditingBikeIndex(i)}
+                        className="p-1 rounded-md text-slate-400 hover:text-indigo-600 hover:bg-slate-50 transition-colors"
+                        aria-label="Edit bike type"
+                        title="Edit bike type"
+                      >
+                        <PencilIcon />
+                      </button>
+                      {canInteract && (
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveBike(b.id)}
+                          className="text-xs text-slate-400 hover:text-red-600 px-1.5 py-1 rounded-md hover:bg-red-50 transition-colors"
+                          aria-label="Remove bike from job"
+                          title="Remove bike from job"
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {onJobUpdated && isEditing && (
+                  <div className="mt-2 space-y-2">
+                    <select
+                      value={jobBikeToFormValue(b)}
+                      onChange={(e) => handleBikeTypeChange(i, e.target.value)}
+                      className="w-full text-sm px-3 py-1.5 border border-slate-200 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none"
+                    >
+                      <option value="AUTO">Auto (from make/model)</option>
+                      <option value="REGULAR">Standard bike</option>
+                      <option value="E_BIKE">E-bike</option>
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => setEditingBikeIndex(null)}
+                      className="text-xs text-slate-500 hover:text-slate-800 underline"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )}
+
+                {canInteract && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {isCompleted ? (
+                      <button
+                        type="button"
+                        onClick={() => handleToggleComplete(b.id, true)}
+                        className="inline-flex items-center gap-1.5 self-start text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-emerald-100 text-emerald-700 hover:bg-emerald-200 transition-colors touch-manipulation min-h-[32px]"
+                        title="Undo done — mark this bike as not completed"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a5 5 0 010 10H9m-6-6l3-3m0 0l3 3m-3-3v12" />
+                        </svg>
+                        Undo done
+                      </button>
+                    ) : isWaitingOnParts ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => handleResumeWork(b.id)}
+                          className="inline-flex items-center gap-1.5 self-start text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-amber-100 text-amber-800 hover:bg-amber-200 transition-colors touch-manipulation min-h-[32px]"
+                          title="Parts arrived — resume working on this bike"
+                        >
+                          <WrenchIcon className="w-3.5 h-3.5" />
+                          Resume work
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => handleToggleComplete(b.id, false)}
+                            className="inline-flex items-center gap-1.5 self-start text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 transition-colors touch-manipulation min-h-[32px] hover:bg-emerald-50 hover:text-emerald-800 hover:border-emerald-200"
+                            title="Mark this bike as done"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20" aria-hidden>
+                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                            </svg>
+                            Mark done
+                          </button>
+                      </>
+                    ) : isWorkingOn ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleComplete(b.id, false)}
+                          className="inline-flex items-center gap-1.5 self-start text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition-colors touch-manipulation min-h-[32px] shadow-sm"
+                          title="Mark this bike as done"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20" aria-hidden>
+                            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                          </svg>
+                          Mark done
+                        </button>
+                        {stalePartsFlagWhileWorkingOn ? (
+                          <button
+                            type="button"
+                            onClick={() => handleClearWaitingOnPartsOnly(b.id)}
+                            className="inline-flex items-center gap-1.5 self-start text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-red-200 bg-white text-red-700 hover:bg-red-50 transition-colors touch-manipulation min-h-[32px]"
+                            title="Remove the parts hold on this bike (fixes stuck status after moving columns)"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20" aria-hidden>
+                              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clipRule="evenodd" />
+                            </svg>
+                            Clear parts hold
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleWaitForParts(b.id)}
+                            className="inline-flex items-center gap-1.5 self-start text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-red-50 hover:text-red-800 hover:border-red-200 transition-colors touch-manipulation min-h-[32px]"
+                            title="Mark this bike as waiting on parts (customer sees this status)"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20" aria-hidden>
+                              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clipRule="evenodd" />
+                            </svg>
+                            Need parts
+                          </button>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleWorkingOn(b.id)}
+                          className="inline-flex items-center gap-1.5 self-start text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-slate-100 text-slate-600 hover:bg-amber-100 hover:text-amber-800 transition-colors touch-manipulation min-h-[32px]"
+                          title="Mark as working on this bike"
+                        >
+                          <WrenchIcon className="w-3.5 h-3.5" />
+                          Work on this
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => handleWaitForParts(b.id)}
+                            className="inline-flex items-center gap-1.5 self-start text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 transition-colors touch-manipulation min-h-[32px] hover:bg-red-50 hover:text-red-800 hover:border-red-200"
+                            title="Mark this bike as waiting on parts (customer sees this status)"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20" aria-hidden>
+                              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clipRule="evenodd" />
+                            </svg>
+                            Need parts
+                          </button>
+                        <button
+                            type="button"
+                            onClick={() => handleToggleComplete(b.id, false)}
+                            className="inline-flex items-center gap-1.5 self-start text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 transition-colors touch-manipulation min-h-[32px] hover:bg-emerald-50 hover:text-emerald-800 hover:border-emerald-200"
+                            title="Mark this bike as done"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20" aria-hidden>
+                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                            </svg>
+                            Mark done
+                          </button>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {onJobUpdated && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          {availableToAdd.length > 0 && (
+            <select
+              value={addBikeSelectValue}
+              disabled={addingBike}
+              onChange={(e) => {
+                const id = e.target.value;
+                const bike = availableToAdd.find((b) => b.id === id);
+                if (bike) {
+                  setAddBikeSelectValue("");
+                  handleAddSavedBike(bike);
+                }
+              }}
+              className="text-sm rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-slate-600 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50 cursor-pointer"
+            >
+              <option value="" disabled>
+                {addingBike ? "Adding…" : "+ Add saved bike"}
+              </option>
+              {availableToAdd.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.nickname ? `${b.nickname} (${[b.make, b.model].filter(Boolean).join(" ")})` : [b.make, b.model].filter(Boolean).join(" ")}
+                </option>
+              ))}
+            </select>
+          )}
+          {!showAddNewBikeForm && (
+            <button
+              type="button"
+              disabled={addingBike}
+              onClick={() => setShowAddNewBikeForm(true)}
+              className="text-sm px-3 py-1.5 border border-slate-200 rounded-lg bg-white hover:bg-slate-50 font-medium text-slate-600 disabled:opacity-50"
+            >
+              + Add bike
+            </button>
+          )}
+        </div>
+      )}
+      {bikeActionError && (
+        <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900" role="alert">
+          {bikeActionError}
+        </p>
+      )}
+      {onJobUpdated && showAddNewBikeForm && (
+        <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50/50 p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium text-slate-600">New bike</span>
+            <button
+              type="button"
+              onClick={() => {
+                setShowAddNewBikeForm(false);
+                setNewBikeMake("");
+                setNewBikeModel("");
+                setNewBikeType("AUTO");
+              }}
+              className="text-xs text-slate-400 hover:text-slate-600"
+            >
+              Cancel
+            </button>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1">Make *</label>
+              <input
+                type="text"
+                value={newBikeMake}
+                onChange={(e) => setNewBikeMake(e.target.value)}
+                placeholder="e.g. Specialized"
+                className="w-full text-sm px-3 py-1.5 border border-slate-200 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1">Model</label>
+              <input
+                type="text"
+                value={newBikeModel}
+                onChange={(e) => setNewBikeModel(e.target.value)}
+                placeholder="e.g. Rockhopper"
+                className="w-full text-sm px-3 py-1.5 border border-slate-200 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1">Type</label>
+            <select
+              value={newBikeType}
+              onChange={(e) => setNewBikeType(e.target.value as BikeTypeForm)}
+              className="w-full text-sm px-3 py-1.5 border border-slate-200 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none"
+            >
+              <option value="AUTO">Auto (from make/model)</option>
+              <option value="REGULAR">Standard bike</option>
+              <option value="E_BIKE">E-bike</option>
+            </select>
+          </div>
+          <button
+            type="button"
+            disabled={!newBikeMake.trim() || addingBike}
+            onClick={handleAddNewBike}
+            className="text-sm font-medium px-4 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {addingBike ? "Adding…" : "Add bike"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+const STAGE_LABELS: Record<Stage, string> = {
+  PENDING_APPROVAL: "Pending approval",
+  BOOKED_IN: "Booked In",
+  RECEIVED: "Received",
+  WORKING_ON: "Working On",
+  WAITING_ON_CUSTOMER: "Waiting on Customer",
+  WAITING_ON_PARTS: "Waiting on Parts",
+  BIKE_READY: "Bike Ready",
+  COMPLETED: "Completed",
+  CANCELLED: "Cancelled",
+};
+
+const STAGE_COLORS: Record<Stage, string> = {
+  PENDING_APPROVAL: "bg-amber-600",
+  BOOKED_IN: "bg-slate-500",
+  RECEIVED: "bg-slate-600",
+  WORKING_ON: "bg-amber-600",
+  WAITING_ON_CUSTOMER: "bg-violet-600",
+  WAITING_ON_PARTS: "bg-yellow-600",
+  BIKE_READY: "bg-emerald-600",
+  COMPLETED: "bg-slate-500",
+  CANCELLED: "bg-red-500",
+};
+
+function formatDate(d: Date | string | null) {
+  if (!d) return "—";
+  const date = typeof d === "string" ? new Date(d) : d;
+  return date.toLocaleDateString("en-GB", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+function toDateTimeLocalValue(iso: string | Date | null | undefined): string {
+  if (!iso) return "";
+  const d = typeof iso === "string" ? new Date(iso) : iso;
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function toDateLocalValue(iso: string | Date | null | undefined): string {
+  if (!iso) return "";
+  const d = typeof iso === "string" ? new Date(iso) : iso;
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function localDateTimeToMillis(local: string): number | null {
+  const t = local.trim();
+  if (!t) return null;
+  const ms = new Date(t).getTime();
+  return Number.isNaN(ms) ? null : ms;
+}
+
+function jobDateToMillis(iso: string | null | undefined): number | null {
+  if (!iso) return null;
+  const ms = new Date(iso).getTime();
+  return Number.isNaN(ms) ? null : ms;
+}
+
+type JobDateField = "dropOffDate" | "pickupDate";
+type JobDateSavingField = JobDateField | "collectionWindow" | "collectionReturnWindow";
+
+
+function JobDetailsDateFields({
+  job,
+  onJobUpdated,
+  onDateSaved,
+}: {
+  job: Job;
+  onJobUpdated?: (job: Job) => void;
+  onDateSaved?: (field: JobDateSavingField, jobId: string) => void;
+}) {
+  const { timezone: shopTimezone } = useAppFeatures();
+  const isCollection = job.deliveryType === "COLLECTION_SERVICE";
+  const formatDateInputValue = useCallback(
+    (iso: string | Date | null | undefined) => {
+      if (!iso) return "";
+      return isCollection ? toCalendarDateInTimezone(iso, shopTimezone) : toDateTimeLocalValue(iso);
+    },
+    [isCollection, shopTimezone]
+  );
+  const [dropOff, setDropOff] = useState(() => formatDateInputValue(job.dropOffDate));
+  const [pickup, setPickup] = useState(() => formatDateInputValue(job.pickupDate));
+  const [windowStart, setWindowStart] = useState(() =>
+    decodeCollectionWindowForInput(job.collectionWindowStart, job.dropOffDate, shopTimezone)
+  );
+  const [windowEnd, setWindowEnd] = useState(() =>
+    decodeCollectionWindowForInput(job.collectionWindowEnd, job.dropOffDate, shopTimezone)
+  );
+  const [returnWindowStart, setReturnWindowStart] = useState(() =>
+    decodeCollectionWindowForInput(
+      job.collectionReturnWindowStart,
+      job.pickupDate,
+      shopTimezone
+    )
+  );
+  const [returnWindowEnd, setReturnWindowEnd] = useState(() =>
+    decodeCollectionWindowForInput(job.collectionReturnWindowEnd, job.pickupDate, shopTimezone)
+  );
+  const [savingFields, setSavingFields] = useState<Set<JobDateSavingField>>(() => new Set());
+  const pendingFieldsRef = useRef<Set<JobDateSavingField>>(new Set());
+  const dirtyFieldsRef = useRef<Set<JobDateSavingField>>(new Set());
+  const saveVersionsRef = useRef<Record<JobDateSavingField, number>>({
+    dropOffDate: 0,
+    pickupDate: 0,
+    collectionWindow: 0,
+    collectionReturnWindow: 0,
+  });
+  const latestDraftRef = useRef({
+    dropOff,
+    pickup,
+    windowStart,
+    windowEnd,
+    returnWindowStart,
+    returnWindowEnd,
+  });
+
+  useEffect(() => {
+    latestDraftRef.current = {
+      dropOff,
+      pickup,
+      windowStart,
+      windowEnd,
+      returnWindowStart,
+      returnWindowEnd,
+    };
+  }, [dropOff, pickup, windowStart, windowEnd, returnWindowStart, returnWindowEnd]);
+
+  useEffect(() => {
+    const blocked = (field: JobDateSavingField) =>
+      pendingFieldsRef.current.has(field) || dirtyFieldsRef.current.has(field);
+
+    if (!blocked("dropOffDate")) {
+      setDropOff(formatDateInputValue(job.dropOffDate));
+    }
+    if (!blocked("pickupDate")) {
+      setPickup(formatDateInputValue(job.pickupDate));
+    }
+    if (!blocked("collectionWindow")) {
+      setWindowStart(
+        decodeCollectionWindowForInput(
+          job.collectionWindowStart,
+          job.dropOffDate,
+          shopTimezone
+        )
+      );
+      setWindowEnd(
+        decodeCollectionWindowForInput(job.collectionWindowEnd, job.dropOffDate, shopTimezone)
+      );
+    }
+    if (!blocked("collectionReturnWindow")) {
+      setReturnWindowStart(
+        decodeCollectionWindowForInput(
+          job.collectionReturnWindowStart,
+          job.pickupDate,
+          shopTimezone
+        )
+      );
+      setReturnWindowEnd(
+        decodeCollectionWindowForInput(
+          job.collectionReturnWindowEnd,
+          job.pickupDate,
+          shopTimezone
+        )
+      );
+    }
+  }, [
+    job.id,
+    job.dropOffDate,
+    job.pickupDate,
+    job.collectionWindowStart,
+    job.collectionWindowEnd,
+    job.collectionReturnWindowStart,
+    job.collectionReturnWindowEnd,
+    job.deliveryType,
+    formatDateInputValue,
+    shopTimezone,
+  ]);
+
+  const firstLabel = isCollection ? "Collection pickup" : "Drop-off";
+  const secondLabel = isCollection ? "Collection return" : "Pickup";
+
+  const markDirty = (field: JobDateSavingField) => {
+    dirtyFieldsRef.current.add(field);
+  };
+
+  const setFieldSaving = (field: JobDateSavingField, saving: boolean) => {
+    if (saving) {
+      pendingFieldsRef.current.add(field);
+    } else {
+      pendingFieldsRef.current.delete(field);
+    }
+    setSavingFields((prev) => {
+      const next = new Set(prev);
+      if (saving) {
+        next.add(field);
+      } else {
+        next.delete(field);
+      }
+      return next;
+    });
+  };
+
+  const withPendingDrafts = (updated: Job, completedField: JobDateSavingField): Job => {
+    const draft = latestDraftRef.current;
+    const preserve = (field: JobDateSavingField) =>
+      field !== completedField &&
+      (pendingFieldsRef.current.has(field) || dirtyFieldsRef.current.has(field));
+    const next: Job = { ...updated };
+
+    if (preserve("dropOffDate")) {
+      const ms = localDateTimeToMillis(draft.dropOff);
+      next.dropOffDate = ms === null ? null : new Date(draft.dropOff).toISOString();
+    }
+    if (preserve("pickupDate")) {
+      const ms = localDateTimeToMillis(draft.pickup);
+      next.pickupDate = ms === null ? null : new Date(draft.pickup).toISOString();
+    }
+    if (preserve("collectionWindow")) {
+      next.collectionWindowStart = draft.windowStart || null;
+      next.collectionWindowEnd = draft.windowEnd || null;
+    }
+    if (preserve("collectionReturnWindow")) {
+      next.collectionReturnWindowStart = draft.returnWindowStart || null;
+      next.collectionReturnWindowEnd = draft.returnWindowEnd || null;
+    }
+
+    return next;
+  };
+
+  const persist = async (field: JobDateField, localVal: string) => {
+    if (!onJobUpdated) return;
+    const currentIso = field === "dropOffDate" ? job.dropOffDate : job.pickupDate;
+    const trimmed = localVal.trim();
+    const nextMs = localDateTimeToMillis(trimmed);
+    const currentMs = jobDateToMillis(currentIso ?? undefined);
+    if (isCollection) {
+      if (trimmed === toDateLocalValue(currentIso ?? undefined)) {
+        dirtyFieldsRef.current.delete(field);
+        return;
+      }
+    } else if (nextMs === currentMs) {
+      dirtyFieldsRef.current.delete(field);
+      return;
+    }
+
+    const version = saveVersionsRef.current[field] + 1;
+    saveVersionsRef.current[field] = version;
+    setFieldSaving(field, true);
+    const body =
+      nextMs === null
+        ? { [field]: null }
+        : { [field]: new Date(trimmed).toISOString() };
+    onJobUpdated({ ...job, ...body });
+
+    try {
+      const res = await fetch(`/api/jobs/${job.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        const updated = (await res.json()) as Job;
+        onJobUpdated(withPendingDrafts(updated, field));
+        onDateSaved?.(field, job.id);
+      }
+    } finally {
+      if (saveVersionsRef.current[field] === version) {
+        setFieldSaving(field, false);
+        if (latestDraftRef.current[field === "dropOffDate" ? "dropOff" : "pickup"] === localVal) {
+          dirtyFieldsRef.current.delete(field);
+        }
+      }
+    }
+  };
+
+  const persistWindow = async (
+    field: "collectionWindow" | "collectionReturnWindow",
+    start: string,
+    end: string,
+    body: {
+      collectionWindowStart?: string | null;
+      collectionWindowEnd?: string | null;
+      collectionReturnWindowStart?: string | null;
+      collectionReturnWindowEnd?: string | null;
+    },
+    matchesSaved: (draft: typeof latestDraftRef.current) => boolean
+  ) => {
+    if (!onJobUpdated) return;
+
+    const currentStart =
+      field === "collectionWindow"
+        ? job.collectionWindowStart ?? ""
+        : job.collectionReturnWindowStart ?? "";
+    const currentEnd =
+      field === "collectionWindow"
+        ? job.collectionWindowEnd ?? ""
+        : job.collectionReturnWindowEnd ?? "";
+    if (start === currentStart && end === currentEnd) {
+      dirtyFieldsRef.current.delete(field);
+      return;
+    }
+
+    const version = saveVersionsRef.current[field] + 1;
+    saveVersionsRef.current[field] = version;
+    setFieldSaving(field, true);
+    onJobUpdated({ ...job, ...body });
+
+    try {
+      const res = await fetch(`/api/jobs/${job.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        const updated = (await res.json()) as Job;
+        onJobUpdated(withPendingDrafts(updated, field));
+        onDateSaved?.(field, job.id);
+      }
+    } finally {
+      if (saveVersionsRef.current[field] === version) {
+        setFieldSaving(field, false);
+        if (matchesSaved(latestDraftRef.current)) {
+          dirtyFieldsRef.current.delete(field);
+        }
+      }
+    }
+  };
+
+  const persistPickupWindow = (start: string, end: string) => {
+    const encoded = encodeCollectionWindowPairForStorage(
+      start,
+      end,
+      dropOff || job.dropOffDate,
+      shopTimezone
+    );
+    return persistWindow(
+      "collectionWindow",
+      start,
+      end,
+      {
+        collectionWindowStart: encoded.start,
+        collectionWindowEnd: encoded.end,
+      },
+      (draft) => draft.windowStart === start && draft.windowEnd === end
+    );
+  };
+
+  const persistReturnWindow = (start: string, end: string) => {
+    const encoded = encodeCollectionWindowPairForStorage(
+      start,
+      end,
+      pickup || job.pickupDate,
+      shopTimezone
+    );
+    return persistWindow(
+      "collectionReturnWindow",
+      start,
+      end,
+      {
+        collectionReturnWindowStart: encoded.start,
+        collectionReturnWindowEnd: encoded.end,
+      },
+      (draft) => draft.returnWindowStart === start && draft.returnWindowEnd === end
+    );
+  };
+
+  const windowTimeInputClass =
+    "w-[110px] max-w-full min-w-0 px-2 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none disabled:opacity-60 box-border";
+
+  if (!onJobUpdated) {
+    const pickupWindowDisplay = isCollection
+      ? formatCollectionWindowRangeOrMissing(job.collectionWindowStart, job.collectionWindowEnd, {
+          shopTimeZone: shopTimezone,
+          referenceDate: job.dropOffDate,
+        })
+      : null;
+    const returnWindowDisplay = isCollection
+      ? formatCollectionWindowRangeOrMissing(
+          job.collectionReturnWindowStart,
+          job.collectionReturnWindowEnd,
+          { shopTimeZone: shopTimezone, referenceDate: job.pickupDate }
+        )
+      : null;
+    const missingSlotClass = "text-slate-400 italic";
+    return (
+      <div>
+        <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-2">Dates</h3>
+        <dl className="space-y-1 text-sm">
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+            <div>
+              <dt className="text-slate-500 inline">{firstLabel}:</dt>{" "}
+              <dd className="inline text-slate-900">
+                {job.dropOffDate ? (
+                  formatDate(job.dropOffDate)
+                ) : (
+                  <span className={missingSlotClass}>{NO_TIME_SLOT_SELECTED}</span>
+                )}
+              </dd>
+            </div>
+            {isCollection && job.dropOffDate && (
+              <dd className="inline-flex items-center gap-1 text-slate-600">
+                <span className="text-slate-400 text-xs">·</span>
+                <span
+                  className={
+                    pickupWindowDisplay === NO_TIME_SLOT_SELECTED ? missingSlotClass : undefined
+                  }
+                >
+                  {pickupWindowDisplay}
+                </span>
+              </dd>
+            )}
+          </div>
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+            <div>
+              <dt className="text-slate-500 inline">{secondLabel}:</dt>{" "}
+              <dd className="inline text-slate-900">
+                {job.pickupDate ? (
+                  formatDate(job.pickupDate)
+                ) : (
+                  <span className={missingSlotClass}>{NO_TIME_SLOT_SELECTED}</span>
+                )}
+              </dd>
+            </div>
+            {isCollection && job.pickupDate && (
+              <dd className="inline-flex items-center gap-1 text-slate-600">
+                <span className="text-slate-400 text-xs">·</span>
+                <span
+                  className={
+                    returnWindowDisplay === NO_TIME_SLOT_SELECTED ? missingSlotClass : undefined
+                  }
+                >
+                  {returnWindowDisplay}
+                </span>
+              </dd>
+            )}
+          </div>
+        </dl>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-2">Dates</h3>
+      {isCollection ? (
+        <div className="space-y-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="min-w-0 flex-1" style={{ minWidth: "180px" }}>
+                <label className="block text-xs font-medium text-slate-600 mb-1">{firstLabel}</label>
+                <input
+                  type="date"
+                  value={dropOff}
+                  onChange={(e) => {
+                    markDirty("dropOffDate");
+                    setDropOff(e.target.value);
+                  }}
+                  onBlur={() => persist("dropOffDate", dropOff)}
+                  aria-busy={savingFields.has("dropOffDate")}
+                  className="w-full max-w-full min-w-0 px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none disabled:opacity-60 box-border"
+                />
+              </div>
+              <div className="flex items-end gap-1 flex-shrink-0">
+                <div className="min-w-0">
+                  <label className="block text-[11px] text-slate-500 mb-1">Window from</label>
+                  <input
+                    type="time"
+                    value={windowStart}
+                    onChange={(e) => {
+                      markDirty("collectionWindow");
+                      setWindowStart(e.target.value);
+                    }}
+                    onBlur={() => persistPickupWindow(windowStart, windowEnd)}
+                    aria-busy={savingFields.has("collectionWindow")}
+                    className={windowTimeInputClass}
+                  />
+                </div>
+                <span className="text-slate-400 pb-2.5 text-sm">–</span>
+                <div className="min-w-0">
+                  <label className="block text-[11px] text-slate-500 mb-1">To</label>
+                  <input
+                    type="time"
+                    value={windowEnd}
+                    onChange={(e) => {
+                      markDirty("collectionWindow");
+                      setWindowEnd(e.target.value);
+                    }}
+                    onBlur={() => persistPickupWindow(windowStart, windowEnd)}
+                    aria-busy={savingFields.has("collectionWindow")}
+                    className={windowTimeInputClass}
+                  />
+                </div>
+              </div>
+            </div>
+            {!windowStart && !windowEnd && (
+              <p className="text-[11px] text-slate-400 italic mt-1">{NO_TIME_SLOT_SELECTED}</p>
+            )}
+          </div>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="min-w-0 flex-1" style={{ minWidth: "180px" }}>
+                <label className="block text-xs font-medium text-slate-600 mb-1">{secondLabel}</label>
+                <input
+                  type="date"
+                  value={pickup}
+                  onChange={(e) => {
+                    markDirty("pickupDate");
+                    setPickup(e.target.value);
+                  }}
+                  onBlur={() => persist("pickupDate", pickup)}
+                  aria-busy={savingFields.has("pickupDate")}
+                  className="w-full max-w-full min-w-0 px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none disabled:opacity-60 box-border"
+                />
+              </div>
+              <div className="flex items-end gap-1 flex-shrink-0">
+                <div className="min-w-0">
+                  <label className="block text-[11px] text-slate-500 mb-1">Window from</label>
+                  <input
+                    type="time"
+                    value={returnWindowStart}
+                    onChange={(e) => {
+                      markDirty("collectionReturnWindow");
+                      setReturnWindowStart(e.target.value);
+                    }}
+                    onBlur={() => persistReturnWindow(returnWindowStart, returnWindowEnd)}
+                    aria-busy={savingFields.has("collectionReturnWindow")}
+                    className={windowTimeInputClass}
+                  />
+                </div>
+                <span className="text-slate-400 pb-2.5 text-sm">–</span>
+                <div className="min-w-0">
+                  <label className="block text-[11px] text-slate-500 mb-1">To</label>
+                  <input
+                    type="time"
+                    value={returnWindowEnd}
+                    onChange={(e) => {
+                      markDirty("collectionReturnWindow");
+                      setReturnWindowEnd(e.target.value);
+                    }}
+                    onBlur={() => persistReturnWindow(returnWindowStart, returnWindowEnd)}
+                    aria-busy={savingFields.has("collectionReturnWindow")}
+                    className={windowTimeInputClass}
+                  />
+                </div>
+              </div>
+            </div>
+            {!returnWindowStart && !returnWindowEnd && (
+              <p className="text-[11px] text-slate-400 italic mt-1">{NO_TIME_SLOT_SELECTED}</p>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="min-w-0">
+            <label className="block text-xs font-medium text-slate-600 mb-1">{firstLabel}</label>
+            <input
+              type="datetime-local"
+              value={dropOff}
+              onChange={(e) => {
+                markDirty("dropOffDate");
+                setDropOff(e.target.value);
+              }}
+              onBlur={() => persist("dropOffDate", dropOff)}
+              aria-busy={savingFields.has("dropOffDate")}
+              className="w-full max-w-full min-w-0 px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none disabled:opacity-60 box-border"
+            />
+          </div>
+          <div className="min-w-0">
+            <label className="block text-xs font-medium text-slate-600 mb-1">{secondLabel}</label>
+            <input
+              type="datetime-local"
+              value={pickup}
+              onChange={(e) => {
+                markDirty("pickupDate");
+                setPickup(e.target.value);
+              }}
+              onBlur={() => persist("pickupDate", pickup)}
+              aria-busy={savingFields.has("pickupDate")}
+              className="w-full max-w-full min-w-0 px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none disabled:opacity-60 box-border"
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface JobDetailModalProps {
+  job: Job | null;
+  isOpen: boolean;
+  onClose: () => void;
+  onJobUpdated?: (job: Job) => void;
+  onDismissIntent?: () => void;
+  onJobDateSaved?: (
+    field: "dropOffDate" | "pickupDate" | "collectionWindow" | "collectionReturnWindow",
+    jobId: string
+  ) => void;
+  onJobDeleted?: (jobId: string) => void;
+}
+
+type Tab = "details" | "invoice" | "estimate" | "bike_specs" | "history";
+
+function PaidStatusBlock({ job }: { job: Job }) {
+  const [resending, setResending] = useState(false);
+  const [resendMessage, setResendMessage] = useState<string | null>(null);
+  const customerEmail = job.customer?.email?.trim();
+
+  const handleResendReceipt = async () => {
+    setResending(true);
+    setResendMessage(null);
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/payments/resend-receipt`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setResendMessage("Receipt sent! Check inbox and spam.");
+      } else {
+        const msg = [data.error ?? data.details, data.hint].filter(Boolean).join(" ");
+        setResendMessage(msg || "Failed to send");
+      }
+    } finally {
+      setResending(false);
+    }
+  };
+
+  return (
+    <div className="mt-4 space-y-2">
+      <div className="flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-emerald-700">
+        <svg className="h-5 w-5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+        </svg>
+        <span className="font-medium">Paid</span>
+      </div>
+      {customerEmail ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={handleResendReceipt}
+            disabled={resending}
+            className="text-sm text-slate-600 hover:text-slate-900 underline disabled:opacity-50"
+          >
+            {resending ? "Sending…" : "Resend receipt"}
+          </button>
+          <span className="text-xs text-slate-500">to {customerEmail}</span>
+          {resendMessage && (
+            <span className={`text-xs ${resendMessage === "Receipt sent!" ? "text-emerald-600" : "text-amber-600"}`}>
+              {resendMessage}
+            </span>
+          )}
+        </div>
+      ) : (
+        <p className="text-xs text-amber-600">
+          No customer email on this job. Add a customer with an email to send or resend the receipt.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function PartialPaymentStatusBlock() {
+  return (
+    <div className="mt-4 flex items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 text-amber-700">
+      <svg className="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+      <span className="font-medium">Partial payment</span>
+    </div>
+  );
+}
+
+function RecordCashButton({
+  jobId,
+  total,
+  onRecorded,
+}: {
+  jobId: string;
+  total: number;
+  onRecorded?: (job: Job) => void;
+}) {
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const formatted = total.toLocaleString("en-US", { style: "currency", currency: "USD" });
+
+  useEffect(() => {
+    if (!showConfirm) return;
+    const fn = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !recording) {
+        e.stopImmediatePropagation();
+        setShowConfirm(false);
+      }
+    };
+    document.addEventListener("keydown", fn, true);
+    return () => document.removeEventListener("keydown", fn, true);
+  }, [showConfirm, recording]);
+
+  const handleRecord = async () => {
+    setRecording(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/payments/record-cash`, { method: "POST" });
+      if (res.ok) {
+        const updatedJob = await fetch(`/api/jobs/${jobId}`).then((r) => r.json());
+        onRecorded?.(updatedJob);
+        setShowConfirm(false);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error ?? "Failed to record cash payment");
+      }
+    } finally {
+      setRecording(false);
+    }
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setShowConfirm(true)}
+        disabled={recording}
+        className="inline-flex items-center gap-2 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-800 hover:bg-emerald-100 disabled:opacity-50"
+      >
+        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" />
+        </svg>
+        {recording ? "Recording…" : "Record cash"}
+      </button>
+
+      {showConfirm && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm"
+          onClick={(e) => e.target === e.currentTarget && !recording && setShowConfirm(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="record-cash-modal-title"
+        >
+          <div
+            className="w-full max-w-sm rounded-xl border border-slate-200/80 bg-white p-6 shadow-soft-lg"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 mb-4">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-100">
+                <svg className="h-5 w-5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" />
+                </svg>
+              </div>
+              <div>
+                <h2 id="record-cash-modal-title" className="text-lg font-semibold text-slate-900">
+                  Record cash payment
+                </h2>
+                <p className="text-sm text-slate-600">
+                  {formatted} will be marked as paid. Move the card to Completed when the bike is actually picked up.
+                </p>
+              </div>
+            </div>
+            {error && (
+              <p className="mb-4 text-sm text-red-600" role="alert">
+                {error}
+              </p>
+            )}
+            <div className="flex gap-3 justify-end">
+              <button
+                type="button"
+                onClick={() => !recording && setShowConfirm(false)}
+                disabled={recording}
+                className="px-4 py-2 text-sm font-medium text-slate-600 hover:text-slate-900 rounded-lg border border-slate-200 hover:bg-slate-50 disabled:opacity-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleRecord}
+                disabled={recording}
+                className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50 transition-colors shadow-soft"
+              >
+                {recording ? "Recording…" : `Record ${formatted}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function ReprocessStripeButton({
+  jobId,
+  onReprocessed,
+}: {
+  jobId: string;
+  onReprocessed?: (job: Job) => void;
+}) {
+  const [showModal, setShowModal] = useState(false);
+  const [piId, setPiId] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!showModal) return;
+    setTimeout(() => inputRef.current?.focus(), 50);
+    const fn = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !loading) {
+        e.stopImmediatePropagation();
+        setShowModal(false);
+      }
+    };
+    document.addEventListener("keydown", fn, true);
+    return () => document.removeEventListener("keydown", fn, true);
+  }, [showModal, loading]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/payments/reprocess-stripe`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paymentIntentId: piId.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        const updatedJob = await fetch(`/api/jobs/${jobId}`).then((r) => r.json());
+        onReprocessed?.(updatedJob);
+        setShowModal(false);
+        setPiId("");
+      } else {
+        setError(data.error ?? "Failed to reprocess payment");
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => { setShowModal(true); setError(null); setPiId(""); }}
+        className="inline-flex items-center gap-1.5 self-start text-sm text-slate-400 hover:text-slate-600"
+      >
+        <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+        </svg>
+        Reprocess Stripe payment
+      </button>
+
+      {showModal && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm"
+          onClick={(e) => e.target === e.currentTarget && !loading && setShowModal(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="reprocess-stripe-modal-title"
+        >
+          <div
+            className="w-full max-w-sm rounded-xl border border-slate-200/80 bg-white p-6 shadow-soft-lg"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 mb-4">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-100">
+                <svg className="h-5 w-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+              </div>
+              <div>
+                <h2 id="reprocess-stripe-modal-title" className="text-lg font-semibold text-slate-900">
+                  Reprocess Stripe payment
+                </h2>
+                <p className="text-sm text-slate-500">
+                  Paste the Payment Intent ID from Stripe Dashboard to manually apply a succeeded payment.
+                </p>
+              </div>
+            </div>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <label htmlFor="pi-id-input" className="block text-sm font-medium text-slate-700 mb-1">
+                  Payment Intent ID
+                </label>
+                <input
+                  ref={inputRef}
+                  id="pi-id-input"
+                  type="text"
+                  value={piId}
+                  onChange={(e) => setPiId(e.target.value)}
+                  placeholder="pi_3ABC..."
+                  disabled={loading}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50"
+                />
+                <p className="mt-1 text-xs text-slate-400">
+                  Find this in Stripe Dashboard → Payments → click the payment → copy the ID starting with <span className="font-mono">pi_</span>
+                </p>
+              </div>
+              {error && (
+                <p className="text-sm text-red-600" role="alert">{error}</p>
+              )}
+              <div className="flex gap-3 justify-end">
+                <button
+                  type="button"
+                  onClick={() => !loading && setShowModal(false)}
+                  disabled={loading}
+                  className="px-4 py-2 text-sm font-medium text-slate-600 hover:text-slate-900 rounded-lg border border-slate-200 hover:bg-slate-50 disabled:opacity-50 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={loading || !piId.trim().startsWith("pi_")}
+                  className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50 transition-colors shadow-soft"
+                >
+                  {loading ? "Processing…" : "Apply payment"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function PayOnlineButton({ jobId, label }: { jobId: string; label: string }) {
+  const [opening, setOpening] = useState(false);
+  const [openError, setOpenError] = useState<string | null>(null);
+
+  const handleOpen = async () => {
+    setOpenError(null);
+    setOpening(true);
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/customer-links`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || typeof data.billUrl !== "string" || !data.billUrl) {
+        setOpenError(data.error ?? "Could not open payment page");
+        return;
+      }
+      window.open(data.billUrl, "_blank", "noopener,noreferrer");
+    } catch {
+      setOpenError("Could not open payment page");
+    } finally {
+      setOpening(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-1">
+      <button
+        type="button"
+        onClick={handleOpen}
+        disabled={opening}
+        className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+      >
+        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
+        </svg>
+        {opening ? "Opening…" : label}
+      </button>
+      {openError && (
+        <p className="text-xs text-red-600" role="alert">
+          {openError}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function CopyTrackingLinkButton({ jobId }: { jobId: string }) {
+  const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
+
+  const handleCopy = async () => {
+    setCopyError(null);
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/customer-links`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || typeof data.statusUrl !== "string" || !data.statusUrl) {
+        setCopyError(data.error ?? "Could not build tracking link");
+        return;
+      }
+      const url = data.statusUrl as string;
+      try {
+        await navigator.clipboard.writeText(url);
+      } catch {
+        const input = document.createElement("input");
+        input.value = url;
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand("copy");
+        document.body.removeChild(input);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopyError("Could not copy tracking link");
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-1">
+      <button
+        type="button"
+        onClick={handleCopy}
+        className="inline-flex items-center gap-2 self-start text-sm text-slate-500 hover:text-slate-700"
+      >
+        {copied ? (
+          <>
+            <svg className="h-4 w-4 text-emerald-600" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+            </svg>
+            Copied!
+          </>
+        ) : (
+          <>
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+            </svg>
+            Copy tracking link
+          </>
+        )}
+      </button>
+      {copyError && (
+        <p className="text-xs text-red-600" role="alert">
+          {copyError}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function CopyPaymentLinkButton({ jobId }: { jobId: string }) {
+  const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
+
+  const handleCopy = async () => {
+    setCopyError(null);
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/customer-links`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || typeof data.billUrl !== "string" || !data.billUrl) {
+        setCopyError(data.error ?? "Could not build payment link");
+        return;
+      }
+      const url = data.billUrl as string;
+      try {
+        await navigator.clipboard.writeText(url);
+      } catch {
+        const input = document.createElement("input");
+        input.value = url;
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand("copy");
+        document.body.removeChild(input);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopyError("Could not copy payment link");
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-1">
+      <button
+        type="button"
+        onClick={handleCopy}
+        className="inline-flex items-center gap-2 self-start text-sm text-slate-500 hover:text-slate-700"
+      >
+        {copied ? (
+          <>
+            <svg className="h-4 w-4 text-emerald-600" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+            </svg>
+            Copied!
+          </>
+        ) : (
+          <>
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+            </svg>
+            Copy payment link
+          </>
+        )}
+      </button>
+      {copyError && (
+        <p className="text-xs text-red-600" role="alert">
+          {copyError}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function RefundButton({
+  jobId,
+  totalPaid,
+  onRefunded,
+  suggestedAmount,
+}: {
+  jobId: string;
+  totalPaid: number;
+  onRefunded?: (job: Job) => void;
+  suggestedAmount?: number;
+}) {
+  const [showModal, setShowModal] = useState(false);
+  const [refundAmount, setRefundAmount] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (showModal && inputRef.current) {
+      setTimeout(() => inputRef.current?.focus(), 100);
+    }
+  }, [showModal]);
+
+  useEffect(() => {
+    if (!showModal) return;
+    const fn = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !loading) {
+        e.stopImmediatePropagation();
+        setShowModal(false);
+      }
+    };
+    document.addEventListener("keydown", fn, true);
+    return () => document.removeEventListener("keydown", fn, true);
+  }, [showModal, loading]);
+
+  const handleRefund = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const amount = parseFloat(refundAmount);
+    if (!amount || amount <= 0) {
+      setError("Enter a valid refund amount");
+      return;
+    }
+    if (amount > totalPaid) {
+      setError(`Amount exceeds total paid ($${totalPaid.toFixed(2)})`);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/payments/refund`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amount }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setSuccessMessage(data.message ?? "Refund processed");
+        const updatedJob = await fetch(`/api/jobs/${jobId}`).then((r) => r.json());
+        onRefunded?.(updatedJob);
+        setTimeout(() => {
+          setShowModal(false);
+          setSuccessMessage(null);
+          setRefundAmount("");
+        }, 4000);
+      } else {
+        setError(data.error ?? "Failed to process refund");
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const formatted = totalPaid.toLocaleString("en-US", { style: "currency", currency: "USD" });
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => {
+          setShowModal(true);
+          setError(null);
+          setSuccessMessage(null);
+          setRefundAmount(suggestedAmount ? suggestedAmount.toFixed(2) : "");
+        }}
+        className="inline-flex items-center gap-2 rounded-lg border border-orange-300 bg-orange-50 px-3 py-2 text-sm font-medium text-orange-800 hover:bg-orange-100 disabled:opacity-50 dark:border-orange-700 dark:bg-orange-900/30 dark:text-orange-300 dark:hover:bg-orange-900/50"
+      >
+        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+        </svg>
+        Issue refund
+      </button>
+
+      {showModal && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm"
+          onClick={(e) => e.target === e.currentTarget && !loading && setShowModal(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="refund-modal-title"
+        >
+          <div
+            className="w-full max-w-sm rounded-xl border border-slate-200/80 bg-white p-6 shadow-soft-lg dark:border-slate-700 dark:bg-slate-800"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 mb-4">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-orange-100 dark:bg-orange-900/40">
+                <svg className="h-5 w-5 text-orange-600 dark:text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+                </svg>
+              </div>
+              <div>
+                <h2 id="refund-modal-title" className="text-lg font-semibold text-slate-900 dark:text-white">
+                  Issue refund
+                </h2>
+                <p className="text-sm text-slate-500 dark:text-slate-400">
+                  Total paid: {formatted}
+                </p>
+              </div>
+            </div>
+
+            {successMessage ? (
+              <div className="rounded-lg bg-emerald-50 px-3 py-3 text-sm text-emerald-700 mb-4 dark:bg-emerald-900/30 dark:text-emerald-300">
+                <div className="flex items-start gap-2">
+                  <svg className="h-5 w-5 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                  </svg>
+                  <span>{successMessage}</span>
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={handleRefund}>
+                <div className="mb-4">
+                  <label htmlFor="refund-amount" className="block text-sm font-medium text-slate-700 mb-1 dark:text-slate-300">
+                    Refund amount
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm dark:text-slate-500">$</span>
+                    <input
+                      ref={inputRef}
+                      id="refund-amount"
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      max={totalPaid}
+                      value={refundAmount}
+                      onChange={(e) => setRefundAmount(e.target.value)}
+                      placeholder={totalPaid.toFixed(2)}
+                      className="w-full pl-7 pr-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:placeholder-slate-400"
+                      disabled={loading}
+                    />
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                    {suggestedAmount && suggestedAmount < totalPaid && (
+                      <button
+                        type="button"
+                        onClick={() => setRefundAmount(suggestedAmount.toFixed(2))}
+                        className="text-xs text-orange-600 hover:text-orange-800 underline dark:text-orange-400 dark:hover:text-orange-300"
+                      >
+                        Refund overpayment ({suggestedAmount.toLocaleString("en-US", { style: "currency", currency: "USD" })})
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setRefundAmount(totalPaid.toFixed(2))}
+                      className="text-xs text-orange-600 hover:text-orange-800 underline dark:text-orange-400 dark:hover:text-orange-300"
+                    >
+                      Refund full amount ({formatted})
+                    </button>
+                  </div>
+                </div>
+                {error && (
+                  <p className="mb-4 text-sm text-red-600" role="alert">
+                    {error}
+                  </p>
+                )}
+                <div className="flex gap-3 justify-end">
+                  <button
+                    type="button"
+                    onClick={() => !loading && setShowModal(false)}
+                    disabled={loading}
+                    className="px-4 py-2 text-sm font-medium text-slate-600 hover:text-slate-900 rounded-lg border border-slate-200 hover:bg-slate-50 disabled:opacity-50 transition-colors dark:border-slate-600 dark:text-slate-400 dark:hover:text-white dark:hover:bg-slate-700"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={loading || !refundAmount}
+                    className="rounded-lg bg-orange-600 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-700 disabled:opacity-50 transition-colors shadow-soft dark:bg-orange-700 dark:hover:bg-orange-600"
+                  >
+                    {loading ? "Processing…" : "Refund"}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+const CANCELLATION_REASONS = [
+  "Customer isn't ready",
+  "Customer ghosted us",
+  "Customer no longer needs the repair",
+  "Customer found another shop",
+  "Customer sold the bike",
+  "Wrong parts ordered",
+  "Bike picked up early / DIY",
+  "Other",
+] as const;
+
+/** Stages a cancelled job can be restored to — the active board columns. */
+const RESTORE_STAGES = [
+  "BOOKED_IN",
+  "RECEIVED",
+  "WORKING_ON",
+  "WAITING_ON_CUSTOMER",
+  "WAITING_ON_PARTS",
+  "BIKE_READY",
+] as const;
+
+type RestoreStage = (typeof RESTORE_STAGES)[number];
+
+function mergeCustomerBikesForModal(
+  liveBikes: Bike[] | undefined,
+  fetchedBikes: Bike[] | undefined
+): Bike[] | undefined {
+  const live = liveBikes ?? [];
+  const fetched = fetchedBikes ?? [];
+  if (live.length === 0) return fetched.length > 0 ? fetched : undefined;
+  // Board list payloads omit bike ids; prefer enriched GET /api/jobs/[id] rows for add-bike UI.
+  if (live.some((b) => !b.id) && fetched.some((b) => b.id)) {
+    return fetched;
+  }
+  return live;
+}
+
+function mergeFetchedJobWithLiveBoard(live: Job, fetched: Job): Job {
+  const merged = mergeJobPreservingInvoiceDetails(live, fetched);
+  const boardMerged = mergeBoardJob(live, merged);
+  const liveMs = Date.parse(live.updatedAt);
+  const fetchedMs = Date.parse(fetched.updatedAt);
+  // Profile bike edits (e.g. image) bump JobBike rows but not Job.updatedAt. A modal enrich
+  // GET started at open can finish after a board refresh and must not clobber fresher jobBikes.
+  if (Number.isFinite(liveMs) && Number.isFinite(fetchedMs) && fetchedMs <= liveMs) {
+    return {
+      ...boardMerged,
+      jobBikes: live.jobBikes ?? boardMerged.jobBikes,
+      customer: live.customer
+        ? {
+            ...(boardMerged.customer ?? {}),
+            ...live.customer,
+            bikes: mergeCustomerBikesForModal(
+              live.customer.bikes,
+              boardMerged.customer?.bikes
+            ),
+          }
+        : boardMerged.customer,
+    };
+  }
+  return boardMerged;
+}
+
+export function JobDetailModal({ job: jobProp, isOpen, onClose, onJobUpdated, onDismissIntent, onJobDateSaved, onJobDeleted }: JobDetailModalProps) {
+  const [activeTab, setActiveTab] = useState<Tab>("details");
+  const [cancelling, setCancelling] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [showCancelReason, setShowCancelReason] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
+  const [cancelReasonOther, setCancelReasonOther] = useState("");
+  const [cancelCustomerMessage, setCancelCustomerMessage] = useState("");
+  const [job, setJob] = useState<Job | null>(jobProp);
+  const [sendingReview, setSendingReview] = useState(false);
+  const [accepting, setAccepting] = useState(false);
+  const [archiving, setArchiving] = useState(false);
+  const [showRestore, setShowRestore] = useState(false);
+  const [restoreStage, setRestoreStage] = useState<RestoreStage>("BOOKED_IN");
+  const [restoring, setRestoring] = useState(false);
+  const [showRejectReason, setShowRejectReason] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
+  const [rejectSubmitting, setRejectSubmitting] = useState(false);
+  const [reviewBanner, setReviewBanner] = useState<{ ok: boolean; text: string } | null>(null);
+  const latestJobPropRef = useRef(jobProp);
+  latestJobPropRef.current = jobProp;
+  /** Ignore stale modal enrich GETs after invoice line edits or board stage moves. */
+  const jobEnrichGenRef = useRef(0);
+  const onJobUpdatedRef = useRef(onJobUpdated);
+  const prevJobPropStageRef = useRef(jobProp?.stage);
+
+  useEffect(() => {
+    onJobUpdatedRef.current = onJobUpdated;
+  }, [onJobUpdated]);
+
+  useEffect(() => {
+    if (!jobProp?.id) return;
+    if (prevJobPropStageRef.current !== jobProp.stage) {
+      if (prevJobPropStageRef.current !== undefined) {
+        jobEnrichGenRef.current += 1;
+      }
+      prevJobPropStageRef.current = jobProp.stage;
+    }
+  }, [jobProp?.id, jobProp?.stage]);
+
+  // Mirror parent job when it changes (e.g. kanban drag PATCH updates selectedJob — same id, new object)
+  useEffect(() => {
+    setJob((prev) => {
+      if (!jobProp) return jobProp;
+      if (!prev || prev.id !== jobProp.id) return jobProp;
+
+      const prevMs = Date.parse(prev.updatedAt);
+      const nextMs = Date.parse(jobProp.updatedAt);
+      if (Number.isFinite(prevMs) && Number.isFinite(nextMs) && nextMs < prevMs) {
+        return prev;
+      }
+
+      // Merge so lightweight board refreshes don't clobber invoice line relations.
+      return mergeJobPreservingInvoiceDetails(prev, jobProp);
+    });
+  }, [jobProp]);
+
+  // One GET per modal open (per job id) to enrich linked bike data. A slow response must not overwrite
+  // a newer job from the parent (e.g. board drag PATCH cleared waiting flags; GET started at open still has old rows).
+  useEffect(() => {
+    if (!isOpen || !jobProp?.id) return;
+    const openedJobId = jobProp.id;
+    const enrichGen = jobEnrichGenRef.current;
+
+    const applyFetchedJob = (
+      fetched: Job | null,
+      ac: AbortController,
+      enrichGeneration?: number
+    ) => {
+      if (!fetched || ac.signal.aborted) return;
+      if (
+        enrichGeneration !== undefined &&
+        enrichGeneration !== jobEnrichGenRef.current
+      ) {
+        return;
+      }
+      const live = latestJobPropRef.current;
+      if (!live || live.id !== openedJobId) return;
+      const fetchedMs = Date.parse(fetched.updatedAt);
+      const liveMs = Date.parse(live.updatedAt);
+      if (Number.isFinite(fetchedMs) && Number.isFinite(liveMs) && fetchedMs < liveMs) return;
+      const merged = mergeFetchedJobWithLiveBoard(live, fetched);
+      setJob(merged);
+      onJobUpdatedRef.current?.(merged);
+    };
+
+    const ac = new AbortController();
+    fetch(`/api/jobs/${openedJobId}`, { signal: ac.signal, cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((fetched: Job | null) => applyFetchedJob(fetched, ac, enrichGen))
+      .catch(() => {});
+
+    const onJobsRefresh = () => {
+      const refreshAc = new AbortController();
+      fetch(`/api/jobs/${openedJobId}`, { signal: refreshAc.signal, cache: "no-store" })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((fetched: Job | null) => applyFetchedJob(fetched, refreshAc))
+        .catch(() => {});
+    };
+    window.addEventListener(JOBS_REFRESH_EVENT, onJobsRefresh);
+
+    return () => {
+      ac.abort();
+      window.removeEventListener(JOBS_REFRESH_EVENT, onJobsRefresh);
+    };
+  }, [isOpen, jobProp?.id]);
+
+  const handleCancelJobClick = () => {
+    if (!job || job.stage === "CANCELLED") return;
+    setShowCancelReason(true);
+    setCancelReason("");
+    setCancelReasonOther("");
+    setCancelCustomerMessage("");
+  };
+
+  const getCancellationReasonValue = () => {
+    if (cancelReason === "Other") {
+      return cancelReasonOther.trim() || "Other";
+    }
+    return cancelReason;
+  };
+
+  const handleCancelReasonConfirm = async () => {
+    const value = getCancellationReasonValue();
+    if (!job || !value) return;
+    setCancelling(true);
+    try {
+      const res = await fetch(`/api/jobs/${job.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          stage: "CANCELLED",
+          cancellationReason: value,
+          customerCancellationMessage: cancelCustomerMessage.trim() || null,
+        }),
+      });
+      if (res.ok) {
+        const updatedJob = await res.json();
+        onJobUpdated?.(updatedJob);
+        setShowCancelReason(false);
+        setCancelReason("");
+        setCancelReasonOther("");
+        setCancelCustomerMessage("");
+      }
+    } finally {
+      setCancelling(false);
+    }
+  };
+
+  const handleCancelReasonClose = () => {
+    setShowCancelReason(false);
+    setCancelReason("");
+    setCancelReasonOther("");
+    setCancelCustomerMessage("");
+  };
+
+  const handleRestoreJobClick = () => {
+    if (!job || job.stage !== "CANCELLED") return;
+    // A job that was already received picks up where it left off; anything else
+    // goes back to the front of the board.
+    setRestoreStage(job.receivedAt ? "RECEIVED" : "BOOKED_IN");
+    setShowRestore(true);
+  };
+
+  const handleRestoreConfirm = async () => {
+    if (!job) return;
+    setRestoring(true);
+    try {
+      const res = await fetch(`/api/jobs/${job.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stage: restoreStage }),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setJob(updated);
+        onJobUpdated?.(updated);
+        setShowRestore(false);
+      }
+    } finally {
+      setRestoring(false);
+    }
+  };
+
+  const handleAcceptBooking = async () => {
+    if (!job) return;
+    setAccepting(true);
+    try {
+      const res = await fetch(`/api/jobs/${job.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stage: "BOOKED_IN" }),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setJob(updated);
+        onJobUpdated?.(updated);
+      }
+    } finally {
+      setAccepting(false);
+    }
+  };
+
+  const handleRejectBookingConfirm = async () => {
+    if (!job || !rejectReason.trim()) return;
+    setRejectSubmitting(true);
+    try {
+      const res = await fetch(`/api/jobs/${job.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          stage: "CANCELLED",
+          cancellationReason: rejectReason.trim(),
+          customerCancellationMessage: rejectReason.trim(),
+        }),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setJob(updated);
+        onJobUpdated?.(updated);
+        setShowRejectReason(false);
+        setRejectReason("");
+      }
+    } finally {
+      setRejectSubmitting(false);
+    }
+  };
+
+  const canConfirmCancellation =
+    cancelReason &&
+    (cancelReason !== "Other" || cancelReasonOther.trim().length > 0);
+
+  const handleDeleteJobClick = () => {
+    setDeleteError(null);
+    setShowDeleteConfirm(true);
+  };
+
+  const handleDeleteJobConfirm = async () => {
+    if (!job) return;
+    setDeleting(true);
+    try {
+      const res = await fetch(`/api/jobs/${job.id}`, { method: "DELETE" });
+      if (res.ok) {
+        onJobDeleted?.(job.id);
+        setShowDeleteConfirm(false);
+        onClose();
+      } else {
+        const err = (await res.json().catch(() => ({}))) as { error?: string };
+        setDeleteError(err.error ?? "This job couldn’t be deleted.");
+      }
+    } catch {
+      setDeleteError("This job couldn’t be deleted.");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleToggleArchive = async () => {
+    if (!job) return;
+    setArchiving(true);
+    try {
+      const nextArchived = !job.archivedAt;
+      const res = await fetch(`/api/jobs/${job.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ archived: nextArchived }),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setJob(updated);
+        onJobUpdated?.(updated);
+      }
+    } finally {
+      setArchiving(false);
+    }
+  };
+
+  const handleSendReviewRequest = async () => {
+    if (!job) return;
+    const email = job.customer?.email?.trim();
+    if (!email) return;
+    setSendingReview(true);
+    setReviewBanner(null);
+    try {
+      const customerName = job.customer
+        ? [job.customer.firstName, job.customer.lastName].filter(Boolean).join(" ")
+        : undefined;
+      const res = await fetch("/api/review-requests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jobId: job.id,
+          customerId: job.customer?.id,
+          email,
+          customerName,
+        }),
+      });
+      const data = await res.json().catch(() => ({})) as { error?: string };
+      if (!res.ok) {
+        setReviewBanner({ ok: false, text: data.error ?? "Failed to send review request." });
+      } else {
+        setReviewBanner({ ok: true, text: `Review request sent to ${email}.` });
+        setTimeout(() => setReviewBanner(null), 5000);
+      }
+    } catch {
+      setReviewBanner({ ok: false, text: "Something went wrong. Please try again." });
+    } finally {
+      setSendingReview(false);
+    }
+  };
+
+  const handleDismissClose = () => {
+    onDismissIntent?.();
+    onClose();
+  };
+
+  useEffect(() => {
+    if (job) {
+      setActiveTab("details");
+      setShowCancelReason(false);
+      setShowDeleteConfirm(false);
+      setCancelReason("");
+      setCancelReasonOther("");
+      setCancelCustomerMessage("");
+      setReviewBanner(null);
+      setShowRejectReason(false);
+      setRejectReason("");
+    }
+    // Only when switching jobs — same-id refreshes (invoice lines, refetch) must not reset tab or overlays.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job?.id]);
+
+  useEffect(() => {
+    if (!showDeleteConfirm) return;
+    const fn = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !deleting) {
+        e.stopImmediatePropagation();
+        setShowDeleteConfirm(false);
+      }
+    };
+    document.addEventListener("keydown", fn, true);
+    return () => document.removeEventListener("keydown", fn, true);
+  }, [showDeleteConfirm, deleting]);
+
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    if (isOpen) {
+      document.addEventListener("keydown", handleEscape);
+      document.body.style.overflow = "hidden";
+    }
+    return () => {
+      document.removeEventListener("keydown", handleEscape);
+      document.body.style.overflow = "";
+    };
+  }, [isOpen, onClose]);
+
+  if (!isOpen || !job) return null;
+
+  const address =
+    job.deliveryType === "COLLECTION_SERVICE"
+      ? job.collectionAddress || job.customer?.address
+      : job.customer?.address;
+  const mapsUrl = address
+    ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(address)}`
+    : null;
+  const smsConsentKnown =
+    job.customer?.smsConsent === true || job.customer?.smsConsent === false;
+
+  return (
+    <>
+    <div
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-slate-900/40 backdrop-blur-sm"
+      onPointerDown={(e) => {
+        if (e.target === e.currentTarget) onDismissIntent?.();
+      }}
+      onClick={handleDismissClose}
+    >
+      <div
+        className={`bg-white rounded-t-2xl sm:rounded-2xl shadow-soft-lg w-full max-w-lg sm:max-w-4xl max-h-[95vh] sm:max-h-[90vh] flex flex-col relative border border-slate-200/80 sm:border-t-0 ${
+          activeTab === "bike_specs" ? "h-[95vh] sm:h-[90vh]" : ""
+        }`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {showCancelReason && (
+          <div className="absolute inset-0 z-10 flex flex-col bg-white/95 rounded-xl p-6 overflow-hidden">
+            <h3 className="text-lg font-semibold text-slate-900 flex-shrink-0 mb-1">
+              Why is the job being cancelled?
+            </h3>
+            <p className="text-sm text-slate-500 mb-3 flex-shrink-0">
+              Internal record — the customer never sees this.
+            </p>
+            <div className="overflow-y-auto flex-1 min-h-0 space-y-2 -mx-1 px-1">
+              {CANCELLATION_REASONS.map((reason) => (
+                  <label
+                    key={reason}
+                    className="flex items-center gap-3 p-3 rounded-lg border border-slate-200 hover:bg-slate-50 cursor-pointer transition-colors has-[:checked]:border-amber-500 has-[:checked]:bg-amber-50 dark:has-[:checked]:border-amber-600 dark:has-[:checked]:bg-amber-900/30"
+                  >
+                    <input
+                      type="radio"
+                      name="cancelReason"
+                      value={reason}
+                      checked={cancelReason === reason}
+                      onChange={() => setCancelReason(reason)}
+                      className="w-4 h-4 accent-amber-600 border-slate-300 focus:ring-amber-500 dark:[color-scheme:dark]"
+                    />
+                    <span className="text-sm font-medium text-slate-900">{reason}</span>
+                  </label>
+                ))}
+            </div>
+            {cancelReason === "Other" && (
+                <textarea
+                  value={cancelReasonOther}
+                  onChange={(e) => setCancelReasonOther(e.target.value)}
+                  placeholder="Please specify"
+                  rows={3}
+                  className="mt-3 w-full px-3 py-2 border border-slate-300 rounded-lg text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent flex-shrink-0 resize-y"
+                  autoFocus
+                />
+            )}
+            <div className="flex-shrink-0 border-t border-slate-200 mt-4 pt-4">
+              <label
+                htmlFor="cancel-customer-message"
+                className="block text-sm font-medium text-slate-700"
+              >
+                Message to the customer{" "}
+                <span className="font-normal text-slate-400">(optional)</span>
+              </label>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Shown on their status page. Leave blank and they only see that the
+                job was cancelled.
+              </p>
+              <textarea
+                id="cancel-customer-message"
+                value={cancelCustomerMessage}
+                onChange={(e) => setCancelCustomerMessage(e.target.value)}
+                rows={2}
+                placeholder="e.g. We could not source the part in time — nothing has been charged."
+                className="mt-2 w-full px-3 py-2 border border-slate-300 rounded-lg text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent resize-y"
+              />
+            </div>
+            <div className="flex gap-2 justify-end flex-shrink-0 border-t border-slate-200 mt-4 pt-4">
+                <button
+                  onClick={handleCancelReasonClose}
+                  className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+                >
+                  Back
+                </button>
+                <button
+                  onClick={handleCancelReasonConfirm}
+                  disabled={cancelling || !canConfirmCancellation}
+                  className="px-4 py-2 text-sm font-medium text-amber-800 bg-amber-100 hover:bg-amber-200 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {cancelling ? "Cancelling…" : "Confirm cancellation"}
+                </button>
+            </div>
+          </div>
+        )}
+        {showRestore && (
+          <div className="absolute inset-0 z-10 flex flex-col bg-white/95 rounded-xl p-6 overflow-hidden">
+            <h3 className="text-lg font-semibold text-slate-900 flex-shrink-0 mb-1">
+              Restore this job?
+            </h3>
+            <p className="text-sm text-slate-500 mb-4 flex-shrink-0">
+              The cancellation reason is cleared and the job goes back on the Job
+              Board. The customer is not emailed or texted about the move.
+            </p>
+            <div className="overflow-y-auto flex-1 min-h-0 space-y-2 -mx-1 px-1">
+              {RESTORE_STAGES.map((stage) => (
+                <label
+                  key={stage}
+                  className="flex items-center gap-3 p-3 rounded-lg border border-slate-200 hover:bg-slate-50 cursor-pointer transition-colors has-[:checked]:border-emerald-500 has-[:checked]:bg-emerald-50 dark:has-[:checked]:border-emerald-600 dark:has-[:checked]:bg-emerald-900/30"
+                >
+                  <input
+                    type="radio"
+                    name="restoreStage"
+                    value={stage}
+                    checked={restoreStage === stage}
+                    onChange={() => setRestoreStage(stage)}
+                    className="w-4 h-4 accent-emerald-600 border-slate-300 focus:ring-emerald-500 dark:[color-scheme:dark]"
+                  />
+                  <span className="text-sm font-medium text-slate-900">
+                    {STAGE_LABELS[stage]}
+                  </span>
+                </label>
+              ))}
+            </div>
+            <div className="flex gap-2 justify-end flex-shrink-0 border-t border-slate-200 mt-4 pt-4">
+              <button
+                onClick={() => setShowRestore(false)}
+                disabled={restoring}
+                className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors disabled:opacity-50"
+              >
+                Back
+              </button>
+              <button
+                onClick={handleRestoreConfirm}
+                disabled={restoring}
+                className="px-4 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {restoring ? "Restoring…" : "Restore job"}
+              </button>
+            </div>
+          </div>
+        )}
+        {showRejectReason && (
+          <div className="absolute inset-0 z-10 flex flex-col bg-white/95 rounded-xl p-6 overflow-hidden">
+            <h3 className="text-lg font-semibold text-slate-900 flex-shrink-0 mb-1">
+              Reject Booking
+            </h3>
+            <p className="text-sm text-slate-500 mb-4 flex-shrink-0">
+              The customer will see this reason on the status page and by email.
+            </p>
+            <textarea
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              placeholder="Reason for rejection…"
+              rows={4}
+              autoFocus
+              className="w-full flex-1 min-h-0 px-3 py-2 border border-slate-300 rounded-lg text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent resize-none"
+            />
+            <div className="flex gap-2 justify-end flex-shrink-0 border-t border-slate-200 mt-4 pt-4">
+              <button
+                onClick={() => { setShowRejectReason(false); setRejectReason(""); }}
+                disabled={rejectSubmitting}
+                className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors disabled:opacity-50"
+              >
+                Back
+              </button>
+              <button
+                onClick={handleRejectBookingConfirm}
+                disabled={rejectSubmitting || !rejectReason.trim()}
+                className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {rejectSubmitting ? "Rejecting…" : "Reject booking"}
+              </button>
+            </div>
+          </div>
+        )}
+        <div className="flex items-center justify-between px-4 sm:px-6 py-4 border-b border-slate-200 flex-shrink-0">
+          <h2 className="text-lg sm:text-xl font-bold text-slate-900 truncate pr-2">
+            {getJobBikeDisplayTitle(job)}
+          </h2>
+          <button
+            onPointerDown={onDismissIntent}
+            onClick={handleDismissClose}
+            className="p-3 -mr-2 rounded-lg text-slate-500 hover:text-slate-700 hover:bg-slate-100 transition-colors touch-manipulation min-w-[44px] min-h-[44px] flex items-center justify-center flex-shrink-0"
+            aria-label="Close"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="flex overflow-x-auto border-b border-slate-200 flex-shrink-0">
+          <button
+            onClick={() => setActiveTab("details")}
+            className={`flex-1 sm:flex-none whitespace-nowrap px-2 sm:px-6 py-3 text-sm font-medium transition-colors touch-manipulation ${
+              activeTab === "details"
+                ? "text-blue-600 border-b-2 border-blue-600"
+                : "text-slate-500 hover:text-slate-700"
+            }`}
+          >
+            Details
+          </button>
+          <button
+            onClick={() => setActiveTab("invoice")}
+            className={`flex-1 sm:flex-none whitespace-nowrap px-2 sm:px-6 py-3 text-sm font-medium transition-colors touch-manipulation ${
+              activeTab === "invoice"
+                ? "text-blue-600 border-b-2 border-blue-600"
+                : "text-slate-500 hover:text-slate-700"
+            }`}
+          >
+            Invoice
+          </button>
+          <button
+            onClick={() => setActiveTab("estimate")}
+            className={`flex-1 sm:flex-none whitespace-nowrap px-2 sm:px-6 py-3 text-sm font-medium transition-colors touch-manipulation ${
+              activeTab === "estimate"
+                ? "text-blue-600 border-b-2 border-blue-600"
+                : "text-slate-500 hover:text-slate-700"
+            }`}
+          >
+            Estimate
+          </button>
+          <button
+            onClick={() => setActiveTab("bike_specs")}
+            className={`flex-1 sm:flex-none whitespace-nowrap px-2 sm:px-6 py-3 text-sm font-medium transition-colors touch-manipulation ${
+              activeTab === "bike_specs"
+                ? "text-blue-600 border-b-2 border-blue-600"
+                : "text-slate-500 hover:text-slate-700"
+            }`}
+          >
+            Parts info
+          </button>
+          <button
+            onClick={() => setActiveTab("history")}
+            className={`flex-1 sm:flex-none whitespace-nowrap px-2 sm:px-6 py-3 text-sm font-medium transition-colors touch-manipulation ${
+              activeTab === "history"
+                ? "text-blue-600 border-b-2 border-blue-600"
+                : "text-slate-500 hover:text-slate-700"
+            }`}
+          >
+            History
+          </button>
+        </div>
+
+        <div
+          className={`overflow-y-auto p-4 sm:p-6 flex-1 space-y-6 ${
+            activeTab === "bike_specs" ? "min-h-0" : ""
+          }`}
+        >
+          {activeTab === "bike_specs" ? (
+            <BikeSpecsTab job={job} />
+          ) : activeTab === "history" ? (
+            <HistoryTab job={job} />
+          ) : activeTab === "estimate" ? (
+            <EstimateTab
+              job={job}
+              onJobUpdated={(updated) => {
+                jobEnrichGenRef.current += 1;
+                setJob(updated);
+                onJobUpdated?.(updated);
+              }}
+            />
+          ) : activeTab === "invoice" ? (
+            <InvoiceTab
+              job={job}
+              onJobUpdated={(updated) => {
+                jobEnrichGenRef.current += 1;
+                setJob(updated);
+                onJobUpdated?.(updated);
+              }}
+            />
+          ) : (
+            <>
+          {job.stage === "PENDING_APPROVAL" && (
+            <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <svg className="w-4 h-4 text-amber-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <p className="text-sm font-bold text-amber-800">New Booking Request</p>
+              </div>
+              <p className="text-sm text-amber-700">
+                Review this request and accept or reject it. The customer will be notified by email and SMS.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={handleAcceptBooking}
+                  disabled={accepting}
+                  className="flex-1 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {accepting ? "Accepting…" : "Accept"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setRejectReason(""); setShowRejectReason(true); }}
+                  disabled={accepting}
+                  className="flex-1 rounded-lg border border-red-300 bg-red-50 px-4 py-2.5 text-sm font-semibold text-red-700 hover:bg-red-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Reject
+                </button>
+              </div>
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2">
+            <span
+              className={`text-xs font-medium px-2 py-1 rounded ${
+                STAGE_COLORS[job.stage as Stage]
+              } text-white`}
+            >
+              {STAGE_LABELS[job.stage as Stage]}
+            </span>
+            {job.paymentStatus === "PAID" ? (
+              <span className="text-xs font-medium px-2 py-1 rounded bg-emerald-100 text-emerald-800 whitespace-nowrap">
+                Paid
+              </span>
+            ) : job.paymentStatus === "PENDING" ? (
+              <span className="text-xs font-medium px-2 py-1 rounded bg-amber-100 text-amber-800 whitespace-nowrap">
+                Partially paid
+              </span>
+            ) : job.paymentStatus === "REFUNDED" ? (
+              <span className="text-xs font-medium px-2 py-1 rounded bg-orange-100 text-orange-800 whitespace-nowrap dark:bg-orange-900/40 dark:text-orange-300">
+                Refunded
+              </span>
+            ) : null}
+          </div>
+
+          {job.customer && (
+            <div>
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wide">
+                  Customer
+                </h3>
+                <Link
+                  href={`/customers?edit=${job.customer.id}`}
+                  className="text-sm font-medium text-indigo-600 hover:text-indigo-800 hover:underline shrink-0 touch-manipulation"
+                >
+                  Edit
+                </Link>
+              </div>
+              <p className="font-medium text-slate-900">
+                {job.customer.lastName
+                  ? `${job.customer.firstName} ${job.customer.lastName}`
+                  : job.customer.firstName}
+              </p>
+              {job.customer.email && (
+                <a
+                  href={`mailto:${job.customer.email}`}
+                  className="block text-sm text-slate-600 hover:text-slate-800"
+                >
+                  {job.customer.email}
+                </a>
+              )}
+              {job.customer.phone && (
+                <a
+                  href={phoneTelHref(job.customer.phone)}
+                  className="phone-link-touch block text-sm text-slate-600 hover:text-slate-800"
+                >
+                  {formatPhoneDisplay(job.customer.phone)}
+                </a>
+              )}
+              {job.customer.phone && (
+                <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs font-medium text-slate-600">SMS consent</span>
+                    <span
+                      className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${
+                        !smsConsentKnown
+                          ? "bg-slate-50 text-slate-500 border border-slate-200"
+                          : job.customer.smsConsent
+                          ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                          : "bg-slate-100 text-slate-600 border border-slate-200"
+                      }`}
+                    >
+                      {!smsConsentKnown
+                        ? "Checking..."
+                        : job.customer.smsConsent
+                          ? "Consented"
+                          : "Not consented"}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {!smsConsentKnown
+                      ? "Loading the customer's SMS preference."
+                      : job.customer.smsConsent
+                      ? `Customer opted in${
+                          job.customer.smsConsentSource
+                            ? ` via ${job.customer.smsConsentSource.replace(/_/g, " ").toLowerCase()}`
+                            : ""
+                        }${
+                          job.customer.smsConsentUpdatedAt
+                            ? ` on ${new Date(job.customer.smsConsentUpdatedAt).toLocaleDateString()}`
+                            : ""
+                        }.`
+                      : "Customer has not opted in to service-related SMS."}
+                  </p>
+                </div>
+              )}
+              {job.stage !== "CANCELLED" && (
+                <div className="mt-3">
+                  <CopyTrackingLinkButton jobId={job.id} />
+                </div>
+              )}
+              {job.customer.email && job.stage !== "CANCELLED" && (
+                <div className="mt-3">
+                  <button
+                    type="button"
+                    onClick={handleSendReviewRequest}
+                    disabled={sendingReview}
+                    className="inline-flex items-center gap-1.5 text-sm font-medium text-indigo-600 hover:text-indigo-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors touch-manipulation"
+                  >
+                    {sendingReview ? (
+                      <>
+                        <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        Sending…
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+                        </svg>
+                        Send review request
+                      </>
+                    )}
+                  </button>
+                  {reviewBanner && (
+                    <p className={`mt-2 text-xs ${reviewBanner.ok ? "text-emerald-600" : "text-red-600"}`}>
+                      {reviewBanner.text}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          <JobBikeSection
+            job={job}
+            onJobUpdated={(updated) => {
+              setJob(updated);
+              onJobUpdated?.(updated);
+            }}
+          />
+
+          <JobMechanicSection
+            job={job}
+            onJobUpdated={(updated) => {
+              setJob(updated);
+              onJobUpdated?.(updated);
+            }}
+          />
+
+          <JobDeliveryTypeSection
+            job={job}
+            onJobUpdated={(updated) => {
+              setJob(updated);
+              onJobUpdated?.(updated);
+            }}
+          />
+
+          <JobDetailsDateFields
+            job={job}
+            onJobUpdated={(updated) => {
+              setJob(updated);
+              onJobUpdated?.(updated);
+            }}
+            onDateSaved={onJobDateSaved}
+          />
+
+          {/* Services & Products – quick reference on Details tab (no pricing; see Invoice tab) */}
+          <div>
+            <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-2">Services & Products</h3>
+            {(job.jobServices?.length ?? 0) === 0 && (job.jobProducts?.length ?? 0) === 0 ? (
+              <p className="text-slate-500 text-sm">No services or products added</p>
+            ) : (
+              <div className="space-y-2">
+                {(job.jobServices ?? []).map((js) => (
+                  <div
+                    key={js.id}
+                    className="flex items-center justify-between gap-2 py-2 px-3 rounded-lg bg-slate-50 border border-slate-100 text-sm"
+                  >
+                    <span className="font-medium text-slate-900">
+                      {js.service?.name ?? js.customServiceName ?? "Unknown"}
+                      {js.quantity > 1 && (
+                        <span className="text-slate-500 font-normal"> × {js.quantity}</span>
+                      )}
+                    </span>
+                    {(job.jobBikes?.length ?? 0) > 1 && js.jobBikeId && (() => {
+                      const jb = (job.jobBikes ?? []).find((b) => b.id === js.jobBikeId);
+                      if (!jb) return null;
+                      const dp = getDisplayPartsForJobBikeRow(job, jb);
+                      return (
+                        <span className="shrink-0 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700">
+                          {dp.nickname?.trim() || [dp.make, dp.model].filter(Boolean).join(" ")}
+                        </span>
+                      );
+                    })()}
+                  </div>
+                ))}
+                {(job.jobProducts ?? []).map((jp) => (
+                  <div
+                    key={jp.id}
+                    className="flex items-center justify-between gap-2 py-2 px-3 rounded-lg bg-slate-50 border border-slate-100 text-sm"
+                  >
+                    <span className="font-medium text-slate-900">
+                      {jp.product?.name ?? "Unknown"}
+                      {jp.quantity > 1 && (
+                        <span className="text-slate-500 font-normal"> × {jp.quantity}</span>
+                      )}
+                    </span>
+                    {(job.jobBikes?.length ?? 0) > 1 && jp.jobBikeId && (() => {
+                      const jb = (job.jobBikes ?? []).find((b) => b.id === jp.jobBikeId);
+                      if (!jb) return null;
+                      const dp = getDisplayPartsForJobBikeRow(job, jb);
+                      return (
+                        <span className="shrink-0 rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-medium text-sky-700">
+                          {dp.nickname?.trim() || [dp.make, dp.model].filter(Boolean).join(" ")}
+                        </span>
+                      );
+                    })()}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {address && (
+            <div>
+              <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-2">Address</h3>
+              <p className="text-slate-700">{address}</p>
+              {mapsUrl && (
+                <a
+                  href={mapsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 mt-2 text-sm text-emerald-600 hover:text-emerald-800 font-medium"
+                >
+                  <span>Get directions</span>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"
+                    />
+                  </svg>
+                </a>
+              )}
+            </div>
+          )}
+
+          {(job.customerNotes ||
+            job.notes ||
+            (job.stage === "CANCELLED" &&
+              (job.cancellationReason || job.customerCancellationMessage))) && (
+            <div>
+              <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-2">Notes</h3>
+              <div className="space-y-3">
+                {job.stage === "CANCELLED" && job.cancellationReason && (
+                  <div>
+                    <p className="text-xs font-medium text-slate-500">Cancellation reason (internal)</p>
+                    <p className="text-sm text-slate-700 whitespace-pre-wrap">{job.cancellationReason}</p>
+                  </div>
+                )}
+                {job.stage === "CANCELLED" && job.customerCancellationMessage && (
+                  <div>
+                    <p className="text-xs font-medium text-slate-500">Message shown to the customer</p>
+                    <p className="text-sm text-slate-700 whitespace-pre-wrap">{job.customerCancellationMessage}</p>
+                  </div>
+                )}
+                {job.customerNotes && (
+                  <div>
+                    <p className="text-xs font-medium text-slate-500">Customer notes</p>
+                    <LinkifiedMessageBody
+                      text={job.customerNotes}
+                      className="text-sm text-slate-700 whitespace-pre-wrap"
+                      linkClassName="text-blue-600 hover:text-blue-700"
+                    />
+                  </div>
+                )}
+                {job.notes && (
+                  <div>
+                    <p className="text-xs font-medium text-slate-500">Job notes</p>
+                    <LinkifiedMessageBody
+                      text={job.notes}
+                      className="text-sm text-slate-700 whitespace-pre-wrap"
+                      linkClassName="text-blue-600 hover:text-blue-700"
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          <InternalNotesSection
+            job={job}
+            onJobUpdated={(updated) => {
+              setJob(updated);
+              onJobUpdated?.(updated);
+            }}
+          />
+
+          {job.customer && <CustomerChatSection customerId={job.customer.id} />}
+            </>
+          )}
+        </div>
+
+        <div className="flex-shrink-0 flex items-center justify-between gap-4 px-6 py-4 border-t border-slate-200 bg-slate-50">
+          <div className="flex gap-2">
+            <button
+              onClick={handleToggleArchive}
+              disabled={archiving}
+              className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg transition-colors disabled:opacity-50"
+            >
+              {archiving
+                ? job.archivedAt
+                  ? "Unarchiving…"
+                  : "Archiving…"
+                : job.archivedAt
+                  ? "Unarchive"
+                  : "Archive"}
+            </button>
+            {job.stage === "CANCELLED" ? (
+              <button
+                onClick={handleRestoreJobClick}
+                disabled={restoring}
+                className="px-4 py-2 text-sm font-medium text-emerald-800 bg-emerald-100 hover:bg-emerald-200 rounded-lg transition-colors disabled:opacity-50"
+              >
+                {restoring ? "Restoring…" : "Restore Job"}
+              </button>
+            ) : (
+              <button
+                onClick={handleCancelJobClick}
+                disabled={cancelling}
+                className="px-4 py-2 text-sm font-medium text-amber-800 bg-amber-100 hover:bg-amber-200 rounded-lg transition-colors disabled:opacity-50"
+              >
+                {cancelling ? "Cancelling…" : "Cancel Job"}
+              </button>
+            )}
+            <button
+              onClick={handleDeleteJobClick}
+              disabled={deleting}
+              className="px-4 py-2 text-sm font-medium text-red-800 bg-red-100 hover:bg-red-200 rounded-lg transition-colors disabled:opacity-50"
+            >
+              {deleting ? "Deleting…" : "Delete Job"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+    {showDeleteConfirm && (
+      <div
+        className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm"
+        onClick={(e) => e.target === e.currentTarget && !deleting && setShowDeleteConfirm(false)}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delete-job-modal-title"
+      >
+        <div
+          className="w-full max-w-sm rounded-xl border border-slate-200/80 bg-white p-6 shadow-soft-lg"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-center gap-3 mb-4">
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-100 flex-shrink-0">
+              <svg className="h-5 w-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+            </div>
+            <div>
+              <h2 id="delete-job-modal-title" className="text-lg font-semibold text-slate-900">
+                Delete job?
+              </h2>
+              <p className="text-sm text-slate-600 mt-0.5">
+                Permanently delete this job? This cannot be undone.
+              </p>
+              {deleteError && (
+                <p className="mt-2 text-sm text-red-700" role="alert">
+                  {deleteError}
+                </p>
+              )}
+            </div>
+          </div>
+          <div className="flex gap-3 justify-end">
+            <button
+              type="button"
+              onClick={() => !deleting && setShowDeleteConfirm(false)}
+              disabled={deleting}
+              className="px-4 py-2 text-sm font-medium text-slate-600 hover:text-slate-900 rounded-lg border border-slate-200 hover:bg-slate-50 disabled:opacity-50 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleDeleteJobConfirm}
+              disabled={deleting}
+              className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50 transition-colors shadow-soft"
+            >
+              {deleting ? "Deleting…" : "Delete Job"}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
+  );
+}
+
+type AnchoredDropdownStyle = {
+  top?: number;
+  bottom?: number;
+  left: number;
+  width: number;
+  maxHeight: number;
+  openUp: boolean;
+};
+
+function getAnchoredDropdownStyle(trigger: HTMLElement): AnchoredDropdownStyle {
+  const rect = trigger.getBoundingClientRect();
+  const gap = 4;
+  const preferredMax = 240;
+  const spaceBelow = window.innerHeight - rect.bottom - gap - 8;
+  const spaceAbove = rect.top - gap - 8;
+  const openUp = spaceBelow < 160 && spaceAbove > spaceBelow;
+  const maxHeight = Math.max(120, Math.min(preferredMax, openUp ? spaceAbove : spaceBelow));
+  return {
+    ...(openUp
+      ? { bottom: window.innerHeight - rect.top + gap }
+      : { top: rect.bottom + gap }),
+    left: rect.left,
+    width: rect.width,
+    maxHeight,
+    openUp,
+  };
+}
+
+function InvoiceTab({ job, onJobUpdated }: { job: Job; onJobUpdated?: (job: Job) => void }) {
+  const jobRef = useRef(job);
+  jobRef.current = job;
+
+  const commitJob = (next: Job) => {
+    jobRef.current = next;
+    onJobUpdated?.(next);
+  };
+  const [services, setServices] = useState<{ id: string; name: string; price: number | string }[]>([]);
+  const [products, setProducts] = useState<{ id: string; name: string; price: number | string }[]>([]);
+  const [searchedProducts, setSearchedProducts] = useState<{ id: string; name: string; price: number | string }[] | null>(null);
+  const [productsLoading, setProductsLoading] = useState(false);
+  const [updatingServicePrice, setUpdatingServicePrice] = useState<string | null>(null);
+  const [updatingServiceBike, setUpdatingServiceBike] = useState<string | null>(null);
+  const [updatingProductBike, setUpdatingProductBike] = useState<string | null>(null);
+  const [updatingProductPrice, setUpdatingProductPrice] = useState<string | null>(null);
+  const [servicesDropdownOpen, setServicesDropdownOpen] = useState(false);
+  const [productsDropdownOpen, setProductsDropdownOpen] = useState(false);
+  const [serviceSearch, setServiceSearch] = useState("");
+  const [miscServiceMode, setMiscServiceMode] = useState(false);
+  const [miscServiceDescription, setMiscServiceDescription] = useState("");
+  const [productSearch, setProductSearch] = useState("");
+  const [expandedServiceIds, setExpandedServiceIds] = useState<Set<string>>(new Set());
+  const [expandedProductIds, setExpandedProductIds] = useState<Set<string>>(new Set());
+  const [expandedBikeIds, setExpandedBikeIds] = useState<Set<string>>(() => {
+    const bikes = job.jobBikes ?? [];
+    const ids = new Set<string>();
+    if (bikes.length === 0) {
+      ids.add("__legacy__");
+    } else {
+      bikes.forEach((b) => ids.add(b.id));
+    }
+    ids.add("__unassigned__");
+    return ids;
+  });
+  const servicesDropdownRef = useRef<HTMLDivElement>(null);
+  const servicesPanelRef = useRef<HTMLDivElement>(null);
+  const productsDropdownRef = useRef<HTMLDivElement>(null);
+  const productsPanelRef = useRef<HTMLDivElement>(null);
+  const serviceSearchRef = useRef<HTMLInputElement>(null);
+  const miscServiceRef = useRef<HTMLTextAreaElement>(null);
+  const productSearchRef = useRef<HTMLInputElement>(null);
+  const [servicesPanelStyle, setServicesPanelStyle] = useState<AnchoredDropdownStyle | null>(null);
+  const [productsPanelStyle, setProductsPanelStyle] = useState<AnchoredDropdownStyle | null>(null);
+
+  const loadProducts = useCallback(async (query = "") => {
+    setProductsLoading(true);
+    try {
+      const params = new URLSearchParams({ ts: String(Date.now()) });
+      if (query.trim()) params.set("q", query.trim());
+      const res = await fetch(`/api/products?${params.toString()}`, { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      const nextProducts = (Array.isArray(data) ? data : []).map((p: { id: string; name: string; price: unknown }) => ({
+          id: p.id,
+          name: p.name,
+          price: typeof p.price === "string" ? parseFloat(p.price) : Number(p.price ?? 0),
+        }));
+      const trimmedQuery = query.trim();
+      setProducts((prev) => {
+        if (!trimmedQuery) return nextProducts;
+        const byId = new Map(prev.map((p) => [p.id, p]));
+        nextProducts.forEach((p) => byId.set(p.id, p));
+        return Array.from(byId.values());
+      });
+      setSearchedProducts(trimmedQuery ? nextProducts : null);
+    } catch {
+      // Keep the current list if a background refresh fails.
+    } finally {
+      setProductsLoading(false);
+    }
+  }, []);
+
+  const toggleServiceExpanded = (id: string) => {
+    setExpandedServiceIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleProductExpanded = (id: string) => {
+    setExpandedProductIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleBikeExpanded = (key: string) => {
+    setExpandedBikeIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    fetch("/api/services")
+      .then((res) => res.json())
+      .then((data) =>
+        setServices(
+          (Array.isArray(data) ? data : []).map((s: { id: string; name: string; price: unknown }) => ({
+            id: s.id,
+            name: s.name,
+            price: typeof s.price === "string" ? parseFloat(s.price) : Number(s.price ?? 0),
+          }))
+        )
+      );
+  }, []);
+
+  useEffect(() => {
+    void loadProducts();
+  }, [loadProducts]);
+
+  useEffect(() => {
+    if (!productsDropdownOpen) return;
+    const search = productSearch.trim();
+    if (!search) {
+      setSearchedProducts(null);
+      return;
+    }
+    setProductsLoading(true);
+    const timer = window.setTimeout(() => {
+      void loadProducts(search);
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [loadProducts, productSearch, productsDropdownOpen]);
+
+  useEffect(() => {
+    const refreshProducts = () => {
+      if (document.visibilityState === "visible") {
+        void loadProducts();
+      }
+    };
+
+    window.addEventListener("focus", refreshProducts);
+    document.addEventListener("visibilitychange", refreshProducts);
+    return () => {
+      window.removeEventListener("focus", refreshProducts);
+      document.removeEventListener("visibilitychange", refreshProducts);
+    };
+  }, [loadProducts]);
+
+  const jobServices: JobService[] = job.jobServices ?? [];
+  const jobProductsList: JobProduct[] = job.jobProducts ?? [];
+  const attachedProductIds = new Set(jobProductsList.map((jp) => jp.productId));
+  const attachedServiceIds = new Set(
+    jobServices.map((js) => js.serviceId).filter((id): id is string => Boolean(id))
+  );
+  const filteredServices = serviceSearch.trim()
+    ? services.filter((s) => s.name.toLowerCase().includes(serviceSearch.trim().toLowerCase()))
+    : services;
+  const filteredProducts = productSearch.trim()
+    ? searchedProducts ?? products.filter((p) => p.name.toLowerCase().includes(productSearch.trim().toLowerCase()))
+    : products;
+
+  const jobBikesList: JobBike[] = job.jobBikes ?? [];
+  const isMultiBike = jobBikesList.length > 1;
+  const invoiceCustomerBikes = job.customer?.bikes;
+
+  const canAddCatalogService = (serviceId: string) => {
+    if (!isMultiBike) {
+      return !attachedServiceIds.has(serviceId);
+    }
+    return true;
+  };
+
+  /** First job bike that does not already have this catalog service line. */
+  const defaultJobBikeIdForCatalogService = (serviceId: string): string | undefined => {
+    if (!isMultiBike) return undefined;
+    const bike = jobBikesList.find(
+      (b) => !jobServices.some((js) => js.serviceId === serviceId && js.jobBikeId === b.id)
+    );
+    return bike?.id;
+  };
+
+  const calcGroupSubtotal = (svcs: JobService[], prods: JobProduct[]) =>
+    svcs.reduce((s, js) => {
+      const p = typeof js.unitPrice === "string" ? parseFloat(js.unitPrice) : Number(js.unitPrice);
+      return s + p * (js.quantity || 1);
+    }, 0) +
+    prods.reduce((s, jp) => {
+      const p = typeof jp.unitPrice === "string" ? parseFloat(jp.unitPrice) : Number(jp.unitPrice);
+      return s + p * (jp.quantity || 1);
+    }, 0);
+
+  const bikeGroups: Array<{
+    key: string;
+    bike: JobBike | null;
+    services: JobService[];
+    products: JobProduct[];
+    subtotal: number;
+  }> = (() => {
+    if (jobBikesList.length === 0) {
+      const legacyBike: JobBike = {
+        id: "__legacy__",
+        jobId: job.id,
+        make: job.bikeMake,
+        model: job.bikeModel,
+        bikeType: null,
+        nickname: null,
+        imageUrl: null,
+        bikeId: null,
+        sortOrder: 0,
+        completedAt: null,
+        waitingOnPartsAt: null,
+      };
+      return [{ key: "__legacy__", bike: legacyBike, services: jobServices, products: jobProductsList, subtotal: calcGroupSubtotal(jobServices, jobProductsList) }];
+    } else if (!isMultiBike) {
+      const bike = jobBikesList[0];
+      return [{ key: bike.id, bike, services: jobServices, products: jobProductsList, subtotal: calcGroupSubtotal(jobServices, jobProductsList) }];
+    } else {
+      const groups: Array<{ key: string; bike: JobBike | null; services: JobService[]; products: JobProduct[]; subtotal: number }> = jobBikesList.map((bike) => {
+        const svcs = jobServices.filter((js) => js.jobBikeId === bike.id);
+        const prods = jobProductsList.filter((jp) => jp.jobBikeId === bike.id);
+        return { key: bike.id, bike, services: svcs, products: prods, subtotal: calcGroupSubtotal(svcs, prods) };
+      });
+      const unassignedSvcs = jobServices.filter((js) => !js.jobBikeId);
+      const unassignedProds = jobProductsList.filter((jp) => !jp.jobBikeId);
+      if (unassignedSvcs.length > 0 || unassignedProds.length > 0) {
+        groups.push({ key: "__unassigned__", bike: null, services: unassignedSvcs, products: unassignedProds, subtotal: calcGroupSubtotal(unassignedSvcs, unassignedProds) });
+      }
+      return groups;
+    }
+  })();
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      const target = e.target as Node;
+      const inServicesTrigger = servicesDropdownRef.current?.contains(target);
+      const inServicesPanel = servicesPanelRef.current?.contains(target);
+      if (servicesDropdownOpen && !inServicesTrigger && !inServicesPanel) {
+        setServicesDropdownOpen(false);
+        setServiceSearch("");
+        setMiscServiceMode(false);
+        setMiscServiceDescription("");
+      }
+      const inProductsTrigger = productsDropdownRef.current?.contains(target);
+      const inProductsPanel = productsPanelRef.current?.contains(target);
+      if (productsDropdownOpen && !inProductsTrigger && !inProductsPanel) {
+        setProductsDropdownOpen(false);
+        setProductSearch("");
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [productsDropdownOpen, servicesDropdownOpen]);
+
+  useEffect(() => {
+    if (!servicesDropdownOpen) {
+      setServicesPanelStyle(null);
+      setMiscServiceMode(false);
+      setMiscServiceDescription("");
+      return;
+    }
+
+    const updatePosition = () => {
+      const trigger = servicesDropdownRef.current;
+      if (!trigger) return;
+      setServicesPanelStyle(getAnchoredDropdownStyle(trigger));
+    };
+
+    updatePosition();
+    const timer = window.setTimeout(() => {
+      if (miscServiceMode) miscServiceRef.current?.focus();
+      else serviceSearchRef.current?.focus();
+    }, 50);
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopImmediatePropagation();
+        if (miscServiceMode) {
+          setMiscServiceMode(false);
+          setMiscServiceDescription("");
+          return;
+        }
+        setServicesDropdownOpen(false);
+        setServiceSearch("");
+      }
+    };
+    window.addEventListener("resize", updatePosition);
+    document.addEventListener("scroll", updatePosition, true);
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("resize", updatePosition);
+      document.removeEventListener("scroll", updatePosition, true);
+      document.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [servicesDropdownOpen, miscServiceMode]);
+
+  useEffect(() => {
+    if (!productsDropdownOpen) {
+      setProductsPanelStyle(null);
+      return;
+    }
+
+    const updatePosition = () => {
+      const trigger = productsDropdownRef.current;
+      if (!trigger) return;
+      setProductsPanelStyle(getAnchoredDropdownStyle(trigger));
+    };
+
+    updatePosition();
+    const timer = window.setTimeout(() => productSearchRef.current?.focus(), 50);
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopImmediatePropagation();
+        setProductsDropdownOpen(false);
+        setProductSearch("");
+      }
+    };
+    window.addEventListener("resize", updatePosition);
+    document.addEventListener("scroll", updatePosition, true);
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("resize", updatePosition);
+      document.removeEventListener("scroll", updatePosition, true);
+      document.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [productsDropdownOpen]);
+
+  const handleAddService = (serviceId: string) => {
+    setServicesDropdownOpen(false);
+    setServiceSearch("");
+    const jobBikeId = defaultJobBikeIdForCatalogService(serviceId);
+    const catalog = services.find((s) => s.id === serviceId);
+    const placeholderId = `temp-svc-${Date.now()}`;
+    const optimisticLine: JobService = {
+      id: placeholderId,
+      jobId: job.id,
+      serviceId,
+      service: catalog
+        ? {
+            id: catalog.id,
+            name: catalog.name,
+            description: null,
+            price: catalog.price,
+            createdAt: "",
+            updatedAt: "",
+          }
+        : null,
+      quantity: 1,
+      unitPrice: catalog?.price ?? 0,
+      notes: null,
+      jobBikeId: jobBikeId ?? null,
+    };
+    commitJob(applyJobServiceLineAdd(jobRef.current, optimisticLine));
+    void (async () => {
+      try {
+        const res = await fetch(`/api/jobs/${job.id}/services`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ serviceId, ...(jobBikeId ? { jobBikeId } : {}) }),
+        });
+        if (res.ok) {
+          const line = (await res.json()) as JobService;
+          commitJob(applyJobServiceLineReplace(jobRef.current, placeholderId, line));
+        } else {
+          commitJob(applyJobServiceLineRemove(jobRef.current, placeholderId));
+        }
+      } catch {
+        commitJob(applyJobServiceLineRemove(jobRef.current, placeholderId));
+      }
+    })();
+  };
+
+  const handleAddCustomService = (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setServicesDropdownOpen(false);
+    setServiceSearch("");
+    setMiscServiceMode(false);
+    setMiscServiceDescription("");
+    const placeholderId = `temp-svc-${Date.now()}`;
+    const optimisticLine: JobService = {
+      id: placeholderId,
+      jobId: job.id,
+      serviceId: null,
+      service: null,
+      customServiceName: trimmed,
+      quantity: 1,
+      unitPrice: 0,
+      notes: null,
+      jobBikeId: null,
+    };
+    commitJob(applyJobServiceLineAdd(jobRef.current, optimisticLine));
+    void (async () => {
+      try {
+        const res = await fetch(`/api/jobs/${job.id}/services`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            customServiceName: trimmed,
+            unitPrice: 0,
+          }),
+        });
+        if (res.ok) {
+          const line = (await res.json()) as JobService;
+          commitJob(applyJobServiceLineReplace(jobRef.current, placeholderId, line));
+        } else {
+          commitJob(applyJobServiceLineRemove(jobRef.current, placeholderId));
+        }
+      } catch {
+        commitJob(applyJobServiceLineRemove(jobRef.current, placeholderId));
+      }
+    })();
+  };
+
+  const handleRemoveService = (jobServiceId: string) => {
+    const snapshot = jobRef.current;
+    commitJob(applyJobServiceLineRemove(jobRef.current, jobServiceId));
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/api/jobs/${job.id}/services?jobServiceId=${encodeURIComponent(jobServiceId)}`,
+          { method: "DELETE" }
+        );
+        if (!res.ok) {
+          commitJob(snapshot);
+        }
+      } catch {
+        commitJob(snapshot);
+      }
+    })();
+  };
+
+  const adjustServiceQuantity = (jobServiceId: string, quantity: number) => {
+    if (quantity < 1) return;
+    const line = jobServices.find((js) => js.id === jobServiceId);
+    if (!line) return;
+    const snapshot = jobRef.current;
+    commitJob(applyJobServiceLineUpdate(jobRef.current, { ...line, quantity }));
+    void (async () => {
+      try {
+        const res = await fetch(`/api/jobs/${job.id}/services`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jobServiceId, quantity }),
+        });
+        if (res.ok) {
+          commitJob(
+            applyJobServiceLineUpdate(jobRef.current, (await res.json()) as JobService)
+          );
+        } else {
+          commitJob(snapshot);
+        }
+      } catch {
+        commitJob(snapshot);
+      }
+    })();
+  };
+
+  const updateServiceUnitPrice = async (jobServiceId: string, unitPrice: number) => {
+    setUpdatingServicePrice(jobServiceId);
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/services`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobServiceId, unitPrice }),
+      });
+      if (res.ok) {
+        const updatedLine = (await res.json()) as JobService;
+        onJobUpdated?.(applyJobServiceLineUpdate(job, updatedLine));
+      }
+    } finally {
+      setUpdatingServicePrice(null);
+    }
+  };
+
+  const adjustProductQuantity = (jobProductId: string, quantity: number) => {
+    if (quantity < 1) return;
+    const line = jobProductsList.find((jp) => jp.id === jobProductId);
+    if (!line) return;
+    const snapshot = jobRef.current;
+    commitJob(applyJobProductLineUpdate(jobRef.current, { ...line, quantity }));
+    void (async () => {
+      try {
+        const res = await fetch(`/api/jobs/${job.id}/products`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jobProductId, quantity }),
+        });
+        if (res.ok) {
+          commitJob(
+            applyJobProductLineUpdate(jobRef.current, (await res.json()) as JobProduct)
+          );
+        } else {
+          commitJob(snapshot);
+        }
+      } catch {
+        commitJob(snapshot);
+      }
+    })();
+  };
+
+  const updateProductUnitPrice = async (jobProductId: string, unitPrice: number) => {
+    setUpdatingProductPrice(jobProductId);
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/products`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobProductId, unitPrice }),
+      });
+      if (res.ok) {
+        const updatedLine = (await res.json()) as JobProduct;
+        onJobUpdated?.(applyJobProductLineUpdate(job, updatedLine));
+      }
+    } finally {
+      setUpdatingProductPrice(null);
+    }
+  };
+
+  const assignServiceBike = async (jobServiceId: string, jobBikeId: string | null) => {
+    setUpdatingServiceBike(jobServiceId);
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/services`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobServiceId, jobBikeId }),
+      });
+      if (res.ok) {
+        const updatedLine = (await res.json()) as JobService;
+        onJobUpdated?.(applyJobServiceLineUpdate(job, updatedLine));
+      }
+    } finally {
+      setUpdatingServiceBike(null);
+    }
+  };
+
+  const applyServiceToAllBikes = async (jobServiceId: string) => {
+    setUpdatingServiceBike(jobServiceId);
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/services`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobServiceId, applyToAllBikes: true }),
+      });
+      if (res.ok) {
+        const updatedJob = await fetch(`/api/jobs/${job.id}`).then((r) => r.json());
+        onJobUpdated?.(updatedJob);
+      }
+    } finally {
+      setUpdatingServiceBike(null);
+    }
+  };
+
+  const assignProductBike = async (jobProductId: string, jobBikeId: string | null) => {
+    setUpdatingProductBike(jobProductId);
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/products`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobProductId, jobBikeId }),
+      });
+      if (res.ok) {
+        const updatedLine = (await res.json()) as JobProduct;
+        onJobUpdated?.(applyJobProductLineUpdate(job, updatedLine));
+      }
+    } finally {
+      setUpdatingProductBike(null);
+    }
+  };
+
+  const handleAddProduct = (productId: string) => {
+    setProductsDropdownOpen(false);
+    setProductSearch("");
+    const catalog = products.find((p) => p.id === productId);
+    const placeholderId = `temp-prod-${Date.now()}`;
+    const optimisticLine: JobProduct = {
+      id: placeholderId,
+      jobId: job.id,
+      productId,
+      product: catalog
+        ? {
+            id: catalog.id,
+            name: catalog.name,
+            description: null,
+            price: catalog.price,
+          }
+        : { id: productId, name: "Product", description: null, price: 0 },
+      quantity: 1,
+      unitPrice: catalog?.price ?? 0,
+      notes: null,
+      jobBikeId: null,
+    };
+    commitJob(applyJobProductLineAdd(jobRef.current, optimisticLine));
+    void (async () => {
+      try {
+        const res = await fetch(`/api/jobs/${job.id}/products`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ productId }),
+        });
+        if (res.ok) {
+          const line = (await res.json()) as JobProduct;
+          commitJob(applyJobProductLineReplace(jobRef.current, placeholderId, line));
+        } else {
+          commitJob(applyJobProductLineRemove(jobRef.current, placeholderId));
+        }
+      } catch {
+        commitJob(applyJobProductLineRemove(jobRef.current, placeholderId));
+      }
+    })();
+  };
+
+  const handleRemoveProduct = (jobProductId: string) => {
+    const snapshot = jobRef.current;
+    commitJob(applyJobProductLineRemove(jobRef.current, jobProductId));
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/api/jobs/${job.id}/products?jobProductId=${encodeURIComponent(jobProductId)}`,
+          { method: "DELETE" }
+        );
+        if (!res.ok) {
+          commitJob(snapshot);
+        }
+      } catch {
+        commitJob(snapshot);
+      }
+    })();
+  };
+
+  const totals = computeJobTotalsFromApi({ ...job, jobServices, jobProducts: jobProductsList });
+  const total = totals.total;
+
+  const grossPaid =
+    typeof job.totalPaid === "number"
+      ? job.totalPaid
+      : 0;
+  const paymentSummary = getJobPaymentSummary({
+    currentStatus: job.paymentStatus,
+    subtotal: total,
+    totalPaid: grossPaid,
+  });
+  const remaining = paymentSummary.remaining;
+
+  return (
+    <div>
+      <div className="space-y-3 mb-3">
+        {bikeGroups.map((group) => {
+          const isBikeOpen = expandedBikeIds.has(group.key);
+          const itemCount = group.services.length + group.products.length;
+
+          let bikeLabel = "Not assigned to a bike";
+          let bikeImageUrl: string | null = null;
+          let bikeTypeLabel = "";
+          let bikeSubLabel = "";
+          if (group.bike) {
+            const dp = getDisplayPartsForJobBikeRow(job, group.bike);
+            const bikeMakeModel = [dp.make, dp.model].filter(Boolean).join(" ");
+            bikeLabel = dp.nickname?.trim() ? dp.nickname : bikeMakeModel;
+            bikeSubLabel = dp.nickname?.trim() ? bikeMakeModel : "";
+            bikeImageUrl = dp.imageUrl ?? resolveBikeImageUrl({ ...group.bike, make: dp.make, model: dp.model }, invoiceCustomerBikes);
+            const eff = resolveEffectiveBikeType({
+              bikeType: group.bike.bikeType,
+              make: dp.make,
+              model: dp.model,
+              bikeId: group.bike.bikeId,
+              bike: group.bike.bike,
+            });
+            bikeTypeLabel = eff === "E_BIKE" ? "E-bike" : "Standard";
+          }
+
+          return (
+            <div key={group.key} className="border border-slate-200 rounded-xl overflow-hidden">
+              <button
+                type="button"
+                onClick={() => toggleBikeExpanded(group.key)}
+                className="w-full flex items-center justify-between gap-3 px-3 py-2.5 bg-slate-50 hover:bg-slate-100 transition-colors text-left"
+              >
+                <div className="flex items-center gap-2.5 flex-1 min-w-0">
+                  <span
+                    className={`text-slate-400 transition-transform flex-shrink-0 ${isBikeOpen ? "rotate-90" : ""}`}
+                    aria-hidden
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </span>
+                  {group.bike && (
+                    bikeImageUrl ? (
+                      <Image src={bikeImageUrl} unoptimized={isPrivateFileUrl(bikeImageUrl)} alt="" width={32} height={32} className="w-8 h-8 object-cover rounded border border-slate-200 flex-shrink-0" />
+                    ) : (
+                      <div className="w-8 h-8 rounded bg-slate-200 flex items-center justify-center flex-shrink-0">
+                        <BikePlaceholderIcon className="w-4 h-4 text-slate-500" />
+                      </div>
+                    )
+                  )}
+                  <div className="min-w-0">
+                    <span className="font-semibold text-slate-900 text-sm truncate block">{bikeLabel}</span>
+                    {(bikeSubLabel || bikeTypeLabel) && (
+                      <span className="text-xs text-slate-500 truncate block">
+                        {bikeSubLabel ? `${bikeSubLabel} · ` : ""}{bikeTypeLabel}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <span className="text-xs text-slate-400 tabular-nums">
+                    {itemCount} {itemCount === 1 ? "item" : "items"}
+                  </span>
+                  <Price amount={group.subtotal} variant="inline" />
+                </div>
+              </button>
+
+              <div
+                className="grid transition-[grid-template-rows] duration-300 ease-out"
+                style={{ gridTemplateRows: isBikeOpen ? "1fr" : "0fr" }}
+              >
+                <div className="min-h-0 overflow-hidden">
+                  {itemCount === 0 ? (
+                    <div className="px-3 py-3">
+                      <p className="text-slate-400 text-sm">No services or products assigned to this bike yet.</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-px bg-slate-100 border-t border-slate-200">
+                      {group.services.map((js) => {
+                        const price = typeof js.unitPrice === "string" ? parseFloat(js.unitPrice) : Number(js.unitPrice);
+                        const qty = js.quantity || 1;
+                        const lineTotal = price * qty;
+                        const isExpanded = expandedServiceIds.has(js.id);
+                        const isSystemLine = Boolean(js.service?.isSystem);
+                        const serviceLabel =
+                          js.service?.name ?? js.customServiceName ?? "Unknown service";
+                        return (
+                          <div
+                            key={`service-${js.id}`}
+                            className="bg-white overflow-hidden"
+                          >
+                            <div
+                              className="flex justify-between items-center py-2 px-3 group cursor-pointer hover:bg-slate-50"
+                              onClick={() => toggleServiceExpanded(js.id)}
+                            >
+                              <div className="flex items-center gap-2 flex-1 min-w-0">
+                                <span
+                                  className={`text-slate-400 transition-transform flex-shrink-0 ${isExpanded ? "rotate-90" : ""}`}
+                                  aria-hidden
+                                >
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                                  </svg>
+                                </span>
+                                <span className="shrink-0 rounded bg-violet-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-violet-800">
+                                  Service
+                                </span>
+                                <p className="font-medium text-slate-900 min-w-0 truncate">
+                                  <ServiceName name={serviceLabel} />
+                                  {qty > 1 && (
+                                    <span className="text-slate-500 font-normal"> × {qty}</span>
+                                  )}
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-2 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+                                {!isSystemLine && (
+                                  <div className="flex items-center rounded-md border border-slate-200 bg-white">
+                                    <button
+                                      type="button"
+                                      aria-label="Decrease quantity"
+                                      disabled={qty <= 1}
+                                      onClick={() => adjustServiceQuantity(js.id, qty - 1)}
+                                      className="px-2 py-1 text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:hover:bg-transparent rounded-l-md text-sm leading-none"
+                                    >
+                                      −
+                                    </button>
+                                    <span className="min-w-[1.75rem] text-center text-sm tabular-nums text-slate-800 px-0.5">
+                                      {qty}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      aria-label="Increase quantity"
+                                      onClick={() => adjustServiceQuantity(js.id, qty + 1)}
+                                      className="px-2 py-1 text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:hover:bg-transparent rounded-r-md text-sm leading-none"
+                                    >
+                                      +
+                                    </button>
+                                  </div>
+                                )}
+                                <Price amount={lineTotal} variant="inline" />
+                                <button
+                                  onClick={() => handleRemoveService(js.id)}
+                                  className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+                                  aria-label="Remove service"
+                                >
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                  </svg>
+                                </button>
+                              </div>
+                            </div>
+                            <div
+                              className="grid transition-[grid-template-rows] duration-300 ease-out"
+                              style={{ gridTemplateRows: isExpanded ? "1fr" : "0fr" }}
+                            >
+                              <div className="min-h-0 overflow-hidden">
+                                <div className="px-3 pb-3 pt-0 border-t border-slate-100 bg-slate-50/50">
+                                  {js.service?.description && (
+                                    <p className="text-xs text-slate-600 mt-2 whitespace-pre-line">{js.service.description}</p>
+                                  )}
+                                  <dl className="mt-2 text-xs text-slate-500 space-y-1">
+                                    <div className="flex justify-between items-center gap-4">
+                                      <dt className="shrink-0">Unit price</dt>
+                                      <dd className="min-w-0 flex justify-end">
+                                        {isSystemLine ? (
+                                          <Price amount={price} variant="inline" />
+                                        ) : (
+                                          <input
+                                            key={`unit-${js.id}-${price}`}
+                                            type="number"
+                                            min={0}
+                                            step={0.01}
+                                            disabled={updatingServicePrice === js.id}
+                                            defaultValue={Number.isFinite(price) ? String(price) : "0"}
+                                            onClick={(e) => e.stopPropagation()}
+                                            onBlur={(e) => {
+                                              const raw = e.target.value.trim();
+                                              const next = parseFloat(raw);
+                                              if (!Number.isFinite(next) || next < 0) return;
+                                              const rounded = Math.round(next * 100) / 100;
+                                              const current = Math.round(price * 100) / 100;
+                                              if (rounded === current) return;
+                                              void updateServiceUnitPrice(js.id, rounded);
+                                            }}
+                                            className="w-28 max-w-full rounded border border-slate-200 bg-white px-2 py-1 text-right text-sm tabular-nums text-slate-800 disabled:opacity-50"
+                                            aria-label="Unit price"
+                                          />
+                                        )}
+                                      </dd>
+                                    </div>
+                                    <div className="flex justify-between gap-4">
+                                      <dt>Quantity</dt>
+                                      <dd>{js.quantity}</dd>
+                                    </div>
+                                    {js.notes && (
+                                      <div>
+                                        <dt className="text-slate-500">Notes</dt>
+                                        <dd className="text-slate-600 mt-0.5">{js.notes}</dd>
+                                      </div>
+                                    )}
+                                  </dl>
+                                  {isMultiBike && (
+                                    <div className="mt-3 pt-2 border-t border-slate-100">
+                                      <p className="text-xs text-slate-500 mb-1.5">Reassign bike</p>
+                                      <div className="flex flex-wrap gap-1.5">
+                                        <button
+                                          type="button"
+                                          disabled={updatingServiceBike === js.id}
+                                          onClick={() => applyServiceToAllBikes(js.id)}
+                                          className={`rounded-full px-2.5 py-0.5 text-xs font-medium border transition-colors ${
+                                            !js.jobBikeId
+                                              ? "bg-slate-700 text-white border-slate-700"
+                                              : "bg-white text-slate-600 border-slate-200 hover:border-slate-400"
+                                          }`}
+                                        >
+                                          All bikes
+                                        </button>
+                                        {(job.jobBikes ?? []).map((b) => {
+                                          const dp = getDisplayPartsForJobBikeRow(job, b);
+                                          const label = dp.nickname?.trim() || [dp.make, dp.model].filter(Boolean).join(" ");
+                                          const isSelected = js.jobBikeId === b.id;
+                                          return (
+                                            <button
+                                              key={b.id}
+                                              type="button"
+                                              disabled={updatingServiceBike === js.id}
+                                              onClick={() => assignServiceBike(js.id, isSelected ? null : b.id)}
+                                              className={`rounded-full px-2.5 py-0.5 text-xs font-medium border transition-colors ${
+                                                isSelected
+                                                  ? "bg-violet-600 text-white border-violet-600"
+                                                  : "bg-white text-slate-600 border-slate-200 hover:border-violet-400"
+                                              }`}
+                                            >
+                                              {label}
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {group.products.map((jp) => {
+                        const price = typeof jp.unitPrice === "string" ? parseFloat(jp.unitPrice) : Number(jp.unitPrice);
+                        const qty = jp.quantity || 1;
+                        const lineTotal = price * qty;
+                        const isExpanded = expandedProductIds.has(jp.id);
+                        return (
+                          <div
+                            key={`product-${jp.id}`}
+                            className="bg-white overflow-hidden"
+                          >
+                            <div
+                              className="flex justify-between items-center py-2 px-3 group cursor-pointer hover:bg-slate-50"
+                              onClick={() => toggleProductExpanded(jp.id)}
+                            >
+                              <div className="flex items-center gap-2 flex-1 min-w-0">
+                                <span
+                                  className={`text-slate-400 transition-transform flex-shrink-0 ${isExpanded ? "rotate-90" : ""}`}
+                                  aria-hidden
+                                >
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                                  </svg>
+                                </span>
+                                <span className="shrink-0 rounded bg-sky-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-800">
+                                  Product
+                                </span>
+                                <p className="font-medium text-slate-900 min-w-0 truncate">
+                                  {jp.product?.name ?? "Unknown product"}
+                                  {qty > 1 && (
+                                    <span className="text-slate-500 font-normal"> × {qty}</span>
+                                  )}
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-2 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+                                <div className="flex items-center rounded-md border border-slate-200 bg-white">
+                                  <button
+                                    type="button"
+                                    aria-label="Decrease quantity"
+                                    disabled={qty <= 1}
+                                    onClick={() => adjustProductQuantity(jp.id, qty - 1)}
+                                    className="px-2 py-1 text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:hover:bg-transparent rounded-l-md text-sm leading-none"
+                                  >
+                                    −
+                                  </button>
+                                  <span className="min-w-[1.75rem] text-center text-sm tabular-nums text-slate-800 px-0.5">
+                                    {qty}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    aria-label="Increase quantity"
+                                    onClick={() => adjustProductQuantity(jp.id, qty + 1)}
+                                    className="px-2 py-1 text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:hover:bg-transparent rounded-r-md text-sm leading-none"
+                                  >
+                                    +
+                                  </button>
+                                </div>
+                                <Price amount={lineTotal} variant="inline" />
+                                <button
+                                  onClick={() => handleRemoveProduct(jp.id)}
+                                  className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded opacity-0 group-hover:opacity-100 transition-opacity"
+                                  aria-label="Remove product"
+                                >
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                  </svg>
+                                </button>
+                              </div>
+                            </div>
+                            <div
+                              className="grid transition-[grid-template-rows] duration-300 ease-out"
+                              style={{ gridTemplateRows: isExpanded ? "1fr" : "0fr" }}
+                            >
+                              <div className="min-h-0 overflow-hidden">
+                                <div className="px-3 pb-3 pt-0 border-t border-slate-100 bg-slate-50/50">
+                                  {jp.product?.description && (
+                                    <p className="text-xs text-slate-600 mt-2 whitespace-pre-line">{jp.product.description}</p>
+                                  )}
+                                  <dl className="mt-2 text-xs text-slate-500 space-y-1">
+                                    <div className="flex justify-between items-center gap-4">
+                                      <dt className="shrink-0">Unit price</dt>
+                                      <dd className="min-w-0 flex justify-end">
+                                        <input
+                                          key={`unit-${jp.id}-${price}`}
+                                          type="number"
+                                          min={0}
+                                          step={0.01}
+                                          disabled={updatingProductPrice === jp.id}
+                                          defaultValue={Number.isFinite(price) ? String(price) : "0"}
+                                          onClick={(e) => e.stopPropagation()}
+                                          onBlur={(e) => {
+                                            const raw = e.target.value.trim();
+                                            const next = parseFloat(raw);
+                                            if (!Number.isFinite(next) || next < 0) return;
+                                            const rounded = Math.round(next * 100) / 100;
+                                            const current = Math.round(price * 100) / 100;
+                                            if (rounded === current) return;
+                                            void updateProductUnitPrice(jp.id, rounded);
+                                          }}
+                                          className="w-28 max-w-full rounded border border-slate-200 bg-white px-2 py-1 text-right text-sm tabular-nums text-slate-800 disabled:opacity-50"
+                                          aria-label="Unit price"
+                                        />
+                                      </dd>
+                                    </div>
+                                    <div className="flex justify-between gap-4">
+                                      <dt>Quantity</dt>
+                                      <dd>{qty}</dd>
+                                    </div>
+                                    {jp.notes && (
+                                      <div>
+                                        <dt className="text-slate-500">Notes</dt>
+                                        <dd className="text-slate-600 mt-0.5">{jp.notes}</dd>
+                                      </div>
+                                    )}
+                                  </dl>
+                                  {isMultiBike && (
+                                    <div className="mt-3 pt-2 border-t border-slate-100">
+                                      <p className="text-xs text-slate-500 mb-1.5">Reassign bike</p>
+                                      <div className="flex flex-wrap gap-1.5">
+                                        <button
+                                          type="button"
+                                          disabled={updatingProductBike === jp.id}
+                                          onClick={() => assignProductBike(jp.id, null)}
+                                          className={`rounded-full px-2.5 py-0.5 text-xs font-medium border transition-colors ${
+                                            !jp.jobBikeId
+                                              ? "bg-slate-700 text-white border-slate-700"
+                                              : "bg-white text-slate-600 border-slate-200 hover:border-slate-400"
+                                          }`}
+                                        >
+                                          All bikes
+                                        </button>
+                                        {(job.jobBikes ?? []).map((b) => {
+                                          const dp = getDisplayPartsForJobBikeRow(job, b);
+                                          const label = dp.nickname?.trim() || [dp.make, dp.model].filter(Boolean).join(" ");
+                                          const isSelected = jp.jobBikeId === b.id;
+                                          return (
+                                            <button
+                                              key={b.id}
+                                              type="button"
+                                              disabled={updatingProductBike === jp.id}
+                                              onClick={() => assignProductBike(jp.id, isSelected ? null : b.id)}
+                                              className={`rounded-full px-2.5 py-0.5 text-xs font-medium border transition-colors ${
+                                                isSelected
+                                                  ? "bg-sky-600 text-white border-sky-600"
+                                                  : "bg-white text-slate-600 border-slate-200 hover:border-sky-400"
+                                              }`}
+                                            >
+                                              {label}
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="flex flex-col sm:flex-row flex-wrap gap-2 pt-1 pb-1 border-t border-slate-100">
+          <div ref={servicesDropdownRef} className="relative flex-1 min-w-[140px] max-w-sm">
+            <button
+              type="button"
+              onClick={() => {
+                setProductsDropdownOpen(false);
+                setProductSearch("");
+                setServicesDropdownOpen((o) => {
+                  if (o) {
+                    setServiceSearch("");
+                    setMiscServiceMode(false);
+                    setMiscServiceDescription("");
+                  }
+                  return !o;
+                });
+              }}
+              className="w-full text-left text-sm px-3 py-2 border border-slate-300 rounded-lg bg-white hover:bg-slate-50 truncate"
+            >
+              + Add service
+            </button>
+          </div>
+          {servicesDropdownOpen &&
+            servicesPanelStyle &&
+            createPortal(
+              <div
+                ref={servicesPanelRef}
+                className={`fixed z-[80] bg-white border border-slate-200 rounded-lg shadow-lg flex ${
+                  servicesPanelStyle.openUp ? "flex-col-reverse" : "flex-col"
+                }`}
+                style={{
+                  top: servicesPanelStyle.top,
+                  bottom: servicesPanelStyle.bottom,
+                  left: servicesPanelStyle.left,
+                  width: servicesPanelStyle.width,
+                  maxHeight: servicesPanelStyle.maxHeight,
+                }}
+              >
+                {miscServiceMode ? (
+                  <div className="p-3 flex flex-col gap-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-medium text-slate-900">Misc service</p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMiscServiceMode(false);
+                          setMiscServiceDescription("");
+                        }}
+                        className="text-xs font-medium text-slate-500 hover:text-slate-700"
+                      >
+                        Back
+                      </button>
+                    </div>
+                    <p className="text-xs text-slate-500">
+                      Describe what you did on this job only. This is not added to your Services list.
+                    </p>
+                    <textarea
+                      ref={miscServiceRef}
+                      value={miscServiceDescription}
+                      onChange={(e) => setMiscServiceDescription(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          void handleAddCustomService(miscServiceDescription);
+                        }
+                      }}
+                      rows={3}
+                      placeholder="e.g. Adjusted derailleur + replaced cable"
+                      className="w-full px-2 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 resize-y min-h-[72px]"
+                    />
+                    <button
+                      type="button"
+                      disabled={!miscServiceDescription.trim()}
+                      onClick={() => handleAddCustomService(miscServiceDescription)}
+                      className="w-full px-3 py-2 text-sm font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      Add to job
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <div className={`p-2 flex-shrink-0 ${servicesPanelStyle.openUp ? "border-t" : "border-b"} border-slate-100`}>
+                      <input
+                        ref={serviceSearchRef}
+                        type="text"
+                        value={serviceSearch}
+                        onChange={(e) => setServiceSearch(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Tab" || e.key === "Enter") {
+                            const trimmed = serviceSearch.trim();
+                            if (trimmed && filteredServices.length === 0) {
+                              e.preventDefault();
+                              void handleAddCustomService(trimmed);
+                            }
+                          }
+                        }}
+                        placeholder="Search services…"
+                        className="w-full px-2 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                      />
+                    </div>
+                    <div className="overflow-y-auto min-h-0 flex-1">
+                      {filteredServices.map((s) => {
+                        const canAdd = canAddCatalogService(s.id);
+                        const isAttached = attachedServiceIds.has(s.id);
+                        return (
+                          <button
+                            key={s.id}
+                            type="button"
+                            onClick={() => {
+                              if (canAdd) handleAddService(s.id);
+                            }}
+                            disabled={!canAdd}
+                            className="w-full px-3 py-2 text-left text-sm flex flex-col items-start min-w-0 hover:bg-slate-50 disabled:hover:bg-white disabled:cursor-not-allowed"
+                          >
+                            <span className={`font-medium truncate w-full ${!canAdd ? "text-slate-400" : "text-slate-900"}`}>
+                              <ServiceName name={s.name} />
+                            </span>
+                            <span className="text-slate-500 text-xs">
+                              ${Number(s.price).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              {!canAdd
+                                ? " · Already added"
+                                : isAttached && isMultiBike
+                                  ? " · Add to another bike"
+                                  : ""}
+                            </span>
+                          </button>
+                        );
+                      })}
+                      {serviceSearch.trim() && filteredServices.length === 0 && (
+                        <p className="px-3 py-2 text-sm text-slate-400">No matching catalog services.</p>
+                      )}
+                      {!serviceSearch.trim() && filteredServices.length === 0 && (
+                        <p className="px-3 py-2 text-sm text-slate-400">No catalog services yet.</p>
+                      )}
+                    </div>
+                    <div className={`flex-shrink-0 ${servicesPanelStyle.openUp ? "border-b" : "border-t"} border-slate-100`}>
+                      {serviceSearch.trim() ? (
+                        <button
+                          type="button"
+                          onClick={() => handleAddCustomService(serviceSearch)}
+                          className="w-full px-3 py-2.5 text-left text-sm flex items-center gap-2 min-w-0 hover:bg-violet-50 text-violet-700"
+                        >
+                          <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                          </svg>
+                          <span className="truncate">
+                            Add Misc: &ldquo;<ServiceName name={serviceSearch.trim()} />&rdquo;
+                          </span>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMiscServiceMode(true);
+                            setMiscServiceDescription("");
+                          }}
+                          className="w-full px-3 py-2.5 text-left text-sm flex flex-col items-start gap-0.5 hover:bg-violet-50"
+                        >
+                          <span className="font-medium text-violet-700">Misc…</span>
+                          <span className="text-xs text-slate-500">
+                            Free-text for this job only — not saved to Services
+                          </span>
+                        </button>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>,
+              document.body
+            )}
+          <div ref={productsDropdownRef} className="relative flex-1 min-w-[140px] max-w-sm">
+            <button
+              type="button"
+              onClick={() => {
+                void loadProducts();
+                setServicesDropdownOpen(false);
+                setServiceSearch("");
+                setProductsDropdownOpen((o) => {
+                  if (o) setProductSearch("");
+                  return !o;
+                });
+              }}
+              className="w-full text-left text-sm px-3 py-2 border border-slate-300 rounded-lg bg-white hover:bg-slate-50 truncate"
+            >
+              + Add product
+            </button>
+          </div>
+          {productsDropdownOpen &&
+            productsPanelStyle &&
+            createPortal(
+              <div
+                ref={productsPanelRef}
+                className={`fixed z-[80] bg-white border border-slate-200 rounded-lg shadow-lg flex ${
+                  productsPanelStyle.openUp ? "flex-col-reverse" : "flex-col"
+                }`}
+                style={{
+                  top: productsPanelStyle.top,
+                  bottom: productsPanelStyle.bottom,
+                  left: productsPanelStyle.left,
+                  width: productsPanelStyle.width,
+                  maxHeight: productsPanelStyle.maxHeight,
+                }}
+              >
+                <div className={`p-2 flex-shrink-0 ${productsPanelStyle.openUp ? "border-t" : "border-b"} border-slate-100`}>
+                  <input
+                    ref={productSearchRef}
+                    type="text"
+                    value={productSearch}
+                    onChange={(e) => setProductSearch(e.target.value)}
+                    placeholder="Search products…"
+                    className="w-full px-2 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+                <div className="overflow-y-auto min-h-0 flex-1">
+                  {productsLoading && products.length === 0 ? (
+                    <p className="px-3 py-2 text-sm text-slate-400">Loading products…</p>
+                  ) : filteredProducts.length === 0 ? (
+                    <p className="px-3 py-2 text-sm text-slate-400">No matching products</p>
+                  ) : (
+                    filteredProducts.map((p) => {
+                      const isAttached = attachedProductIds.has(p.id);
+                      const canAddProduct = isMultiBike || !isAttached;
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => {
+                            if (canAddProduct) handleAddProduct(p.id);
+                          }}
+                          disabled={!canAddProduct}
+                          className="w-full px-3 py-2 text-left text-sm hover:bg-slate-50 disabled:hover:bg-white disabled:cursor-not-allowed flex flex-col items-start min-w-0"
+                        >
+                          <span className={`font-medium truncate w-full ${!canAddProduct ? "text-slate-400" : "text-slate-900"}`}>
+                            {p.name}
+                          </span>
+                          <span className="text-slate-500 text-xs">
+                            ${Number(p.price).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            {!canAddProduct ? " · Already added" : isAttached ? " · Add another" : ""}
+                          </span>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </div>,
+              document.body
+            )}
+        </div>
+      <InvoicePricingRows job={job} totals={totals} onJobUpdated={commitJob} />
+      <div className="flex justify-between items-center pt-3 mt-3 border-t border-slate-200">
+        <span className="font-bold text-slate-900">Total</span>
+        <Price amount={total} variant="total" />
+      </div>
+      <div className="mt-2 space-y-1.5 text-sm">
+        <div className="flex items-center justify-between gap-3">
+          <span className="font-medium text-slate-600">Paid</span>
+          <Price amount={paymentSummary.totalPaid} variant="inline" />
+        </div>
+        {paymentSummary.totalPaid > total && total > 0 && (
+          <div className="flex items-center justify-between gap-3 rounded-md bg-orange-50 px-2 py-1.5 -mx-1 dark:bg-orange-900/20">
+            <span className="font-medium text-orange-700 text-xs dark:text-orange-400">Overpaid by</span>
+            <Price
+              amount={paymentSummary.totalPaid - total}
+              variant="inline"
+              className="text-orange-700 font-bold dark:text-orange-400"
+            />
+          </div>
+        )}
+        <div className="flex items-center justify-between gap-3 pt-2 mt-2 border-t border-slate-200">
+          <span className="font-semibold text-slate-900">Remaining</span>
+          <Price
+            amount={remaining}
+            variant="inline"
+            className={remaining > 0 ? "text-amber-700 font-bold" : ""}
+          />
+        </div>
+      </div>
+      {paymentSummary.isPaidInFull ? (
+        <div>
+          <PaidStatusBlock job={job} />
+          <div className="mt-3 flex flex-wrap gap-2">
+            <RefundButton
+              jobId={job.id}
+              totalPaid={paymentSummary.totalPaid}
+              onRefunded={onJobUpdated}
+              suggestedAmount={paymentSummary.totalPaid > total ? paymentSummary.totalPaid - total : undefined}
+            />
+          </div>
+        </div>
+      ) : paymentSummary.paymentStatus === "REFUNDED" ? (
+        <div className="mt-4 flex items-center gap-2 rounded-lg bg-orange-50 px-3 py-2 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300">
+          <svg className="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+          </svg>
+          <span className="font-medium">Refunded</span>
+        </div>
+      ) : (
+        <div className="mt-4 flex flex-col gap-2">
+          {paymentSummary.totalPaid > 0 && <PartialPaymentStatusBlock />}
+          <div className="flex flex-wrap gap-2">
+            <PayOnlineButton
+              jobId={job.id}
+              label={paymentSummary.totalPaid > 0 ? "Pay remaining balance" : "Pay online"}
+            />
+            <span className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-600">
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
+              </svg>
+              Use mobile app for Tap to Pay
+            </span>
+            <RecordCashButton jobId={job.id} onRecorded={onJobUpdated} total={remaining} />
+          </div>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            <CopyPaymentLinkButton jobId={job.id} />
+            <ReprocessStripeButton jobId={job.id} onReprocessed={onJobUpdated} />
+            {paymentSummary.totalPaid > 0 && (
+              <RefundButton jobId={job.id} totalPaid={paymentSummary.totalPaid} onRefunded={onJobUpdated} />
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,222 @@
+/**
+ * Turning a public booking request into a job.
+ *
+ * Two callers need this and must not drift apart: `/api/widget/book`, when a
+ * submission is accepted straight away, and the booking review screen, when
+ * staff release a booking the spam scorer held back. A released false positive
+ * has to end up as exactly the job it would have been had it never been held,
+ * which is only reliably true if both paths run the same code.
+ */
+import type { Prisma } from "@prisma/client";
+import { Stage } from "@prisma/client";
+import { buildSmsConsentOptInUpdate } from "@/lib/sms-consent";
+import { syncCollectionJobService } from "@/lib/collection-fee";
+import { resolveProfileBikeForJobBike } from "@/lib/resolve-profile-bike";
+import { jobTaxFieldsForShop } from "@/lib/sales-tax";
+
+export type BookingJobBike = {
+  make: string;
+  model?: string | null;
+  /** Model year if given; otherwise the saved bike's, so the bike can be looked up. */
+  year?: number | null;
+  bikeType?: "REGULAR" | "E_BIKE" | null;
+};
+
+export type BookingJobInput = {
+  shopId: string;
+  /** Existing customer to reuse, when the booking form identified one. */
+  customerId?: string | null;
+  firstName: string;
+  lastName: string;
+  email: string;
+  /** Already normalized to E.164 where possible. */
+  phone: string | null;
+  address?: string | null;
+  smsConsent?: boolean;
+  deliveryType: "DROP_OFF_AT_SHOP" | "COLLECTION_SERVICE";
+  dropOffDate: Date | null;
+  pickupDate: Date | null;
+  collectionAddress?: string | null;
+  collectionWindowStart?: string | null;
+  collectionWindowEnd?: string | null;
+  customerNotes?: string | null;
+  serviceIds: string[];
+  bikes: BookingJobBike[];
+  collectionServiceEnabled: boolean;
+  /**
+   * Where the job lands on the board. Defaults to `PENDING_APPROVAL`, which is
+   * right for a public booking nobody has looked at yet. Staff creating a job
+   * from a conversation have already reviewed it, so they pass `BOOKED_IN` and
+   * skip an approval step that would only ask them to confirm their own work.
+   */
+  stage?: Stage;
+  /**
+   * The chat thread staff built this job out of, when that is where it came
+   * from. Recorded so a job card can answer "why is this here?" months later.
+   */
+  createdFromConversationId?: string | null;
+};
+
+type TransactionClient = Prisma.TransactionClient;
+
+/**
+ * Create the job, its bikes and its services inside an existing transaction.
+ *
+ * Returns the job with the relations the notification emails read, or null in
+ * the (not expected) case where it cannot be read back.
+ */
+export async function createBookingJob(
+  tx: TransactionClient,
+  input: BookingJobInput
+) {
+  const { shopId } = input;
+  const emailNormalized = input.email.trim().toLowerCase();
+  // A blank surname is "not given", not "set to empty" — a booking form left
+  // untouched and a chat contact that never had one both arrive as "", and
+  // storing that turns an absent surname into a present empty one.
+  const lastName = input.lastName?.trim() || null;
+
+  let customer = null;
+
+  if (input.customerId) {
+    customer = await tx.customer.findFirst({
+      where: { id: input.customerId, shopId },
+    });
+  }
+
+  if (!customer) {
+    customer = await tx.customer.findFirst({
+      where: {
+        shopId,
+        email: { equals: emailNormalized, mode: "insensitive" },
+      },
+    });
+  }
+
+  const consentUpdate = buildSmsConsentOptInUpdate(
+    Boolean(input.smsConsent),
+    "BOOKING_FORM"
+  );
+
+  if (!customer) {
+    customer = await tx.customer.create({
+      data: {
+        shopId,
+        firstName: input.firstName,
+        lastName,
+        email: input.email.trim(),
+        phone: input.phone,
+        ...consentUpdate,
+        address: input.address ?? null,
+      },
+    });
+  } else {
+    await tx.customer.update({
+      where: { id: customer.id },
+      data: {
+        firstName: input.firstName,
+        lastName,
+        phone: input.phone,
+        ...consentUpdate,
+        address: input.address ?? customer.address,
+      },
+    });
+  }
+
+  // Job-level summary fields: the first bike when there is only one, otherwise
+  // a count, since the individual bikes live on JobBike rows.
+  const bikeMakeSummary =
+    input.bikes.length === 1 ? input.bikes[0].make.trim() : "Multiple";
+  const bikeModelSummary =
+    input.bikes.length === 1
+      ? (input.bikes[0].model?.trim() ?? "")
+      : `${input.bikes.length} bikes`;
+
+  const newJob = await tx.job.create({
+    data: {
+      shopId,
+      ...(await jobTaxFieldsForShop(shopId, tx)),
+      stage: input.stage ?? Stage.PENDING_APPROVAL,
+      bikeMake: bikeMakeSummary,
+      bikeModel: bikeModelSummary,
+      customerId: customer.id,
+      deliveryType: input.deliveryType,
+      dropOffDate: input.dropOffDate,
+      pickupDate: input.pickupDate,
+      collectionAddress: input.collectionAddress ?? null,
+      collectionWindowStart: input.collectionWindowStart ?? null,
+      collectionWindowEnd: input.collectionWindowEnd ?? null,
+      customerNotes: input.customerNotes ?? null,
+      createdFromConversationId: input.createdFromConversationId ?? null,
+    },
+  });
+
+  // Find-or-create the customer's Bike record per submitted bike, then attach a
+  // JobBike to this job. One profile bike per bike on the job: two
+  // same-make/model bikes are two bikes.
+  const claimedBikeIds = new Set<string>();
+  for (let i = 0; i < input.bikes.length; i++) {
+    const b = input.bikes[i];
+    const makeNormalized = b.make.trim();
+    const modelNormalized = b.model?.trim() || null;
+
+    const bikeId = await resolveProfileBikeForJobBike({
+      tx,
+      shopId,
+      customerId: customer.id,
+      bike: { ...b, make: makeNormalized, model: modelNormalized },
+      claimedBikeIds,
+    });
+    claimedBikeIds.add(bikeId);
+
+    let bike = await tx.bike.findUniqueOrThrow({ where: { id: bikeId } });
+    if (b.year != null && bike.year == null) {
+      // A year given here fills in a saved bike that has none — never
+      // overwriting one already on file.
+      bike = await tx.bike.update({ where: { id: bike.id }, data: { year: b.year } });
+    }
+
+    await tx.jobBike.create({
+      data: {
+        shopId,
+        jobId: newJob.id,
+        make: makeNormalized,
+        model: modelNormalized,
+        // The job's year, or the saved bike's: without one the catalog
+        // lookup can't run.
+        year: b.year ?? bike.year ?? null,
+        sortOrder: i,
+        bikeType: b.bikeType ?? null,
+        bikeId: bike.id,
+      },
+    });
+  }
+
+  if (input.serviceIds.length > 0) {
+    const services = await tx.service.findMany({
+      where: { shopId, id: { in: input.serviceIds }, isSystem: false },
+    });
+    await tx.jobService.createMany({
+      data: services.map((s) => ({
+        shopId,
+        jobId: newJob.id,
+        serviceId: s.id,
+        quantity: 1,
+        unitPrice: s.price,
+      })),
+    });
+  }
+
+  if (input.collectionServiceEnabled) {
+    await syncCollectionJobService(tx, newJob.id);
+  }
+
+  return tx.job.findUnique({
+    where: { id: newJob.id },
+    include: {
+      customer: true,
+      jobBikes: { orderBy: { sortOrder: "asc" } },
+      jobServices: { include: { service: true } },
+    },
+  });
+}

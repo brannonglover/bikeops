@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bike Ops | Bike Repair Software for Bicycle Shops</title>
+    <meta
+      name="description"
+      content="Bike Ops is bike repair software for bicycle shops—online bookings, mechanic assignment, repair boards, customer messaging, payments, and review follow-ups."
+    />
+    <link rel="canonical" href="https://bikeops.co/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Bike Ops" />
+    <meta property="og:title" content="Bike Ops | Bike Repair Software for Bicycle Shops" />
+    <meta
+      property="og:description"
+      content="Manage bicycle repair orders, mechanic rosters, online bookings, customer messaging, payments, and review follow-ups in one shop workspace."
+    />
+    <meta property="og:url" content="https://bikeops.co/" />
+    <meta property="og:image" content="https://bikeops.co/screenshots/ipad-job-board.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Bike Ops | Bike Repair Software for Bicycle Shops" />
+    <link rel="icon" href="/favicon.ico" />
+    <link rel="icon" href="/favicon-32x32.png" sizes="32x32" type="image/png" />
+    <link rel="icon" href="/favicon-192x192.png" sizes="192x192" type="image/png" />
+    <link rel="icon" href="/favicon-512x512.png" sizes="512x512" type="image/png" />
+    <link rel="apple-touch-icon" href="/favicon-180x180.png" sizes="180x180" />
+    <link rel="stylesheet" href="/styles.css" />
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=AW-16578987654"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+
+      gtag('config', 'AW-16578987654');
+    </script>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "Organization",
+            "@id": "https://bikeops.co/#organization",
+            "name": "Bike Ops",
+            "url": "https://bikeops.co/",
+            "logo": "https://bikeops.co/bike-ops-logo.png",
+            "telephone": "+1-470-876-1489"
+          },
+          {
+            "@type": "SoftwareApplication",
+            "@id": "https://bikeops.co/#software",
+            "name": "Bike Ops",
+            "applicationCategory": "BusinessApplication",
+            "operatingSystem": "Web, iOS, iPadOS",
+            "url": "https://bikeops.co/",
+            "description": "Bike repair software for bicycle shops that need online repair bookings, mechanic assignment, job tracking, customer updates, payments, and reviews.",
+            "offers": {
+              "@type": "Offer",
+              "price": "39.99",
+              "priceCurrency": "USD",
+              "availability": "https://schema.org/InStock"
+            },
+            "publisher": {
+              "@id": "https://bikeops.co/#organization"
+            }
+          }
+        ]
+      }
+    </script>
+    <script>
+      var POSTHOG_PROJECT_KEY = "phc_vKDFFaTih87w8hxDjhefDEiTtJBNdBqkKcB7Hc5SToT4";
+      var POSTHOG_API_HOST = "https://us.i.posthog.com";
+      var POSTHOG_SITE = "bikeopsco";
+      var POSTHOG_OPT_OUT_COOKIE = "bikeops_posthog_opt_out";
+      var OPT_OUT_COOKIE_MAX_AGE = 60 * 60 * 24 * 365 * 2; // 2 years
+
+      function getCookieDomain() {
+        var host = window.location.hostname;
+        if (host === "localhost" || host === "127.0.0.1") return "";
+        var parts = host.split(".");
+        return parts.length >= 2
+          ? "." + parts.slice(-2).join(".")
+          : "." + host;
+      }
+
+      function setOptOutCookie(value) {
+        var domain = getCookieDomain();
+        var domainAttr = domain ? "; domain=" + domain : "";
+        if (value) {
+          document.cookie = POSTHOG_OPT_OUT_COOKIE + "=1; path=/; max-age=" + OPT_OUT_COOKIE_MAX_AGE + "; SameSite=Lax" + domainAttr;
+        } else {
+          document.cookie = POSTHOG_OPT_OUT_COOKIE + "=; path=/; max-age=0; SameSite=Lax" + domainAttr;
+        }
+      }
+
+      function readOptOutCookie() {
+        return document.cookie.split("; ").some(function (c) { return c === POSTHOG_OPT_OUT_COOKIE + "=1"; });
+      }
+
+      function isLocalDev() {
+        var host = window.location.hostname;
+        return host === "localhost" || host === "127.0.0.1";
+      }
+
+      function hasPostHogOptedOut() {
+        if (isLocalDev()) {
+          return true;
+        }
+
+        var params = new URLSearchParams(window.location.search);
+        var optOut = params.get("posthog_opt_out");
+
+        try {
+          if (optOut === "1" || optOut === "true") {
+            setOptOutCookie(true);
+          } else if (optOut === "0" || optOut === "false") {
+            setOptOutCookie(false);
+          }
+
+          return readOptOutCookie();
+        } catch (error) {
+          return optOut === "1" || optOut === "true";
+        }
+      }
+
+      if (
+        POSTHOG_PROJECT_KEY &&
+        POSTHOG_PROJECT_KEY !== "phc_REPLACE_WITH_POSTHOG_PROJECT_KEY" &&
+        !hasPostHogOptedOut()
+      ) {
+        !function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]),t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host.replace(".i.posthog.com","-assets.i.posthog.com")+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e},u.people.toString=function(){return u.toString(1)+".people (stub)"},o="init capture register register_once register_for_session unregister unregister_for_session getFeatureFlag getFeatureFlagPayload isFeatureEnabled reloadFeatureFlags updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures on onFeatureFlags onSessionId getSurveys getActiveMatchingSurveys renderSurvey canRenderSurvey getNextSurveyStep identify setPersonProperties group resetGroups setPersonPropertiesForFlags resetPersonPropertiesForFlags setGroupPropertiesForFlags resetGroupPropertiesForFlags reset get_distinct_id getGroups get_session_id get_session_replay_url alias set_config startSessionRecording stopSessionRecording sessionRecordingStarted captureException loadToolbar get_property getSessionProperty createPersonProfile opt_in_capturing opt_out_capturing has_opted_in_capturing has_opted_out_capturing clear_opt_in_out_capturing debug".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);
+        posthog.init(POSTHOG_PROJECT_KEY, {
+          api_host: POSTHOG_API_HOST,
+          defaults: "2026-01-30",
+          capture_pageview: false,
+        });
+        posthog.register({ site: POSTHOG_SITE });
+        posthog.capture("$pageview", {
+          site: POSTHOG_SITE,
+          $current_url: window.location.href,
+        });
+      }
+    </script>
+    <!-- Meta Pixel Code -->
+    <script>
+      !function(f,b,e,v,n,t,s)
+      {if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+      n.callMethod.apply(n,arguments):n.queue.push(arguments)};
+      if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
+      n.queue=[];t=b.createElement(e);t.async=!0;
+      t.src=v;s=b.getElementsByTagName(e)[0];
+      s.parentNode.insertBefore(t,s)}(window, document,'script',
+      'https://connect.facebook.net/en_US/fbevents.js');
+      fbq('init', '1504925341119503');
+      fbq('track', 'PageView');
+    </script>
+    <!-- End Meta Pixel Code -->
+  </head>
+  <body>
+    <noscript><img height="1" width="1" style="display:none" src="https://www.facebook.com/tr?id=1504925341119503&ev=PageView&noscript=1" /></noscript>
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="Bike Ops home">
+        <img src="/bike-ops-logo.png" alt="Bike Ops" />
+      </a>
+      <nav aria-label="Primary navigation">
+        <a href="/" aria-current="page">Home</a>
+        <a href="/tour">Tour</a>
+        <a href="/blog">Blog</a>
+        <a href="/docs">Documentation</a>
+        <a href="https://app.bikeops.co/login">Sign in</a>
+        <a class="button button-small" href="https://app.bikeops.co/signup">Start free</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero hero-visual">
+        <div class="hero-backdrop" aria-hidden="true">
+          <img
+            class="hero-slide active"
+            src="/screenshots/seo-hero/job-board.png"
+            alt=""
+            width="2221"
+            height="1392"
+            fetchpriority="high"
+            decoding="async"
+          />
+          <img
+            class="hero-slide"
+            src="/screenshots/seo-hero/job-detail.png"
+            alt=""
+            width="2221"
+            height="1392"
+            loading="lazy"
+            decoding="async"
+          />
+          <img
+            class="hero-slide"
+            src="/screenshots/seo-hero/services.png"
+            alt=""
+            width="2221"
+            height="1392"
+            loading="lazy"
+            decoding="async"
+          />
+          <img
+            class="hero-slide"
+            src="/screenshots/seo-hero/customers.png"
+            alt=""
+            width="2221"
+            height="1392"
+            loading="lazy"
+            decoding="async"
+          />
+          <img
+            class="hero-slide"
+            src="/screenshots/seo-hero/mechanics.png"
+            alt=""
+            width="2221"
+            height="1392"
+            loading="lazy"
+            decoding="async"
+          />
+        </div>
+        <div class="hero-inner">
+          <img class="hero-logo-mark" src="/bike-ops-logo.png" alt="Bike Ops" />
+          <h1>Keep repairs, customers, and payments moving.</h1>
+          <p class="hero-copy">
+            Online booking, a live repair board, and customer updates — built for bike shops.
+          </p>
+          <div class="hero-actions">
+            <a class="button" href="https://app.bikeops.co/signup">Start free trial</a>
+            <a class="button button-secondary" href="/tour">See the product</a>
+          </div>
+        </div>
+      </section>
+
+      <section class="section product-strip" aria-label="Product workflow summary">
+        <div>
+          <span class="stat">01</span>
+          <strong>Customers book online</strong>
+          <p>Collect contact info, bike details, services, preferred drop-off, and pickup notes.</p>
+        </div>
+        <div>
+          <span class="stat">02</span>
+          <strong>Assign and schedule work</strong>
+          <p>Turn requests into jobs, assign a mechanic, manage capacity, and keep the repair queue organized.</p>
+        </div>
+        <div>
+          <span class="stat">03</span>
+          <strong>Customers stay updated</strong>
+          <p>Send email, SMS, payment links, status pages, reminders, and review requests.</p>
+        </div>
+      </section>
+
+      <section class="cta">
+        <h2>Start with a fresh shop workspace.</h2>
+        <p>14-day free trial, then $39.99/mo. Create your shop and start organizing repair work online.</p>
+        <a class="button" href="https://app.bikeops.co/signup">Create your shop</a>
+      </section>
+    </main>
+
+    <footer>
+      <div class="footer-brand">Bike Ops</div>
+      <nav aria-label="Footer">
+        <div class="footer-col">
+          <a href="/" aria-current="page">Home</a>
+          <a href="/blog">Blog</a>
+        </div>
+        <div class="footer-col">
+          <a href="/docs">Documentation</a>
+          <a href="/support">Support</a>
+          <a href="/releases">Releases</a>
+        </div>
+        <div class="footer-col">
+          <a href="/terms">Terms</a>
+          <a href="/privacy">Privacy</a>
+          <a href="https://app.bikeops.co/login">Sign in</a>
+        </div>
+      </nav>
+    </footer>
+
+    <script>
+      (function () {
+        var slides = document.querySelectorAll('.hero-slide');
+        if (slides.length < 2) return;
+
+        var current = 0;
+        var interval = 5000;
+
+        function next() {
+          slides[current].classList.remove('active');
+          current = (current + 1) % slides.length;
+          slides[current].classList.add('active');
+        }
+
+        var timer = setInterval(next, interval);
+
+        document.addEventListener('visibilitychange', function () {
+          if (document.hidden) {
+            clearInterval(timer);
+          } else {
+            timer = setInterval(next, interval);
+          }
+        });
+      })();
+    </script>
+
+    <script>
+      (function () {
+        function capture(eventName, properties) {
+          if (!window.posthog || typeof window.posthog.capture !== "function") {
+            return;
+          }
+
+          window.posthog.capture(eventName, Object.assign({ site: "bikeopsco" }, properties || {}));
+        }
+
+        function closestAnchor(target) {
+          if (!target || typeof target.closest !== "function") {
+            return null;
+          }
+
+          return target.closest("a");
+        }
+
+        function getSection(element) {
+          var section = element.closest("section");
+
+          return section ? section.id || section.className || "unknown" : "unknown";
+        }
+
+        document.addEventListener("click", function (event) {
+          var anchor = closestAnchor(event.target);
+          var preview = event.target.closest ? event.target.closest(".device-frame, .preview-shell") : null;
+
+          if (anchor) {
+            var href = anchor.getAttribute("href") || "";
+            var text = (anchor.textContent || anchor.getAttribute("aria-label") || "").trim();
+            var isAppLink = href.indexOf("https://app.bikeops.co") === 0;
+            var isSignup = href.indexOf("/signup") !== -1;
+            var isLogin = href.indexOf("/login") !== -1;
+
+            capture("marketing_link_clicked", {
+              href: href,
+              label: text,
+              section: getSection(anchor),
+              is_app_link: isAppLink,
+              destination: isSignup ? "signup" : isLogin ? "login" : href.charAt(0) === "#" ? "section" : "other",
+            });
+
+            if (isSignup || isLogin) {
+              capture("marketing_cta_clicked", {
+                href: href,
+                label: text,
+                section: getSection(anchor),
+                destination: isSignup ? "signup" : "login",
+              });
+            }
+          }
+
+          if (preview) {
+            capture("marketing_preview_clicked", {
+              section: getSection(preview),
+              preview_type: preview.classList.contains("device-frame") ? "device_screenshot" : "web_showcase",
+            });
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>

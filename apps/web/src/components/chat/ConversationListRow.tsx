@@ -1,0 +1,225 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import type { Conversation } from "@/lib/types";
+import { isCustomerTypingRecently } from "@/lib/chat-typing";
+import { hasUnreadCustomerMessage } from "@/lib/chat-unread";
+
+const ACTION_WIDTH = 72;
+
+function CustomerName({ conv }: { conv: Conversation }) {
+  const name = conv.customer.lastName
+    ? `${conv.customer.firstName} ${conv.customer.lastName}`
+    : conv.customer.firstName;
+  const jobLabel = conv.job ? ` · ${conv.job.bikeMake} ${conv.job.bikeModel}` : "";
+  return (
+    <span className="flex items-center gap-1.5 truncate">
+      <span className="truncate">
+        {name}
+        {jobLabel}
+      </span>
+      {/* Name is the phone number until staff fill the contact in. Clears once
+          the thread has been opened, not only once the contact is named. */}
+      {conv.customer.provisional && !conv.customer.provisionalSeenAt && (
+        <span className="flex-shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
+          New
+        </span>
+      )}
+    </span>
+  );
+}
+
+function LastMessagePreview({ conv }: { conv: Conversation }) {
+  if (isCustomerTypingRecently(conv.customerTypingAt)) {
+    return (
+      <span className="text-emerald-600 text-sm truncate block italic">
+        Typing…
+      </span>
+    );
+  }
+  const last = conv.messages?.[0];
+  if (!last) return <span className="text-slate-400 text-sm">No messages yet</span>;
+  const text = last.body?.trim();
+  const hasAttachment = last.attachments?.length ? last.attachments.length > 0 : false;
+  const preview = text || (hasAttachment ? "Image" : "");
+  return (
+    <span className="text-slate-500 text-sm truncate block">
+      {preview || "—"}
+    </span>
+  );
+}
+
+export function ConversationListRow({
+  conv,
+  selected,
+  onSelect,
+  onArchive,
+  onContextMenu,
+  swipeOpenId,
+  onSwipeOpenChange,
+}: {
+  conv: Conversation;
+  selected: boolean;
+  onSelect: () => void;
+  onArchive: () => void;
+  onContextMenu: (e: React.MouseEvent) => void;
+  swipeOpenId: string | null;
+  onSwipeOpenChange: (id: string | null) => void;
+}) {
+  const isOpen = swipeOpenId === conv.id;
+  const [dragOffset, setDragOffset] = useState(0);
+  const dragOffsetRef = useRef(0);
+  const touchStartX = useRef(0);
+  const touchStartOffset = useRef(0);
+  const rowRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    dragOffsetRef.current = dragOffset;
+  }, [dragOffset]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setDragOffset(0);
+      dragOffsetRef.current = 0;
+    } else {
+      setDragOffset(-ACTION_WIDTH);
+      dragOffsetRef.current = -ACTION_WIDTH;
+    }
+  }, [isOpen]);
+
+  const commitOffset = (next: number) => {
+    const clamped = Math.max(-ACTION_WIDTH, Math.min(0, next));
+    dragOffsetRef.current = clamped;
+    setDragOffset(clamped);
+  };
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length !== 1) return;
+    touchStartX.current = e.touches[0].clientX;
+    if (swipeOpenId && swipeOpenId !== conv.id) {
+      onSwipeOpenChange(null);
+    }
+    touchStartOffset.current =
+      swipeOpenId === conv.id ? -ACTION_WIDTH : dragOffsetRef.current;
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (e.touches.length !== 1) return;
+    const dx = e.touches[0].clientX - touchStartX.current;
+    const next = touchStartOffset.current + dx;
+    if (Math.abs(dx) > 8) {
+      e.preventDefault();
+    }
+    commitOffset(next);
+  };
+
+  const handleTouchEnd = () => {
+    const o = dragOffsetRef.current;
+    if (o < -ACTION_WIDTH / 2) {
+      onSwipeOpenChange(conv.id);
+      commitOffset(-ACTION_WIDTH);
+    } else {
+      onSwipeOpenChange(null);
+      commitOffset(0);
+    }
+  };
+
+  useEffect(() => {
+    const el = rowRef.current;
+    if (!el) return;
+    const move = (e: TouchEvent) => {
+      if (e.touches.length !== 1) return;
+      const dx = e.touches[0].clientX - touchStartX.current;
+      if (Math.abs(dx) > 8) {
+        e.preventDefault();
+      }
+    };
+    el.addEventListener("touchmove", move, { passive: false });
+    return () => el.removeEventListener("touchmove", move);
+  }, []);
+
+  const handleRowClick = () => {
+    if (isOpen || dragOffsetRef.current < -12) {
+      onSwipeOpenChange(null);
+      commitOffset(0);
+      return;
+    }
+    onSelect();
+  };
+
+  const showUnread = hasUnreadCustomerMessage(conv);
+  const lastMsg = conv.messages?.[0];
+  const showAttachment = !!(lastMsg?.attachments?.length);
+
+  return (
+    <li className="relative md:static">
+      <div
+        className="md:hidden absolute inset-y-0 right-0 z-0 flex w-[72px] flex-shrink-0 items-center justify-center bg-slate-300/90"
+        aria-hidden
+      >
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onArchive();
+            onSwipeOpenChange(null);
+            commitOffset(0);
+          }}
+          className="flex h-full w-full flex-col items-center justify-center gap-0.5 text-slate-800"
+          aria-label="Archive conversation"
+        >
+          <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"
+            />
+          </svg>
+          <span className="text-[10px] font-medium leading-none">Archive</span>
+        </button>
+      </div>
+
+      <div
+        ref={rowRef}
+        className="relative z-[1] bg-slate-50 transition-[transform] duration-200 ease-out md:transition-none"
+        style={{ transform: `translateX(${dragOffset}px)` }}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onTouchCancel={handleTouchEnd}
+      >
+        <button
+          type="button"
+          onClick={handleRowClick}
+          onContextMenu={onContextMenu}
+          className={`relative w-full text-left p-3 hover:bg-slate-100 transition-colors ${
+            selected ? "bg-slate-200" : ""
+          }`}
+        >
+          {showUnread && (
+            <span
+              className={`pointer-events-none absolute top-2 right-2 h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ${
+                selected ? "ring-slate-200" : "ring-slate-50"
+              }`}
+              aria-hidden
+            />
+          )}
+          {showAttachment && (
+            <span
+              className={`pointer-events-none absolute ${showUnread ? "top-2 right-6" : "top-2 right-2"} text-slate-400`}
+              aria-label="Has attachment"
+            >
+              <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
+              </svg>
+            </span>
+          )}
+          <span className="sr-only">{showUnread ? "Unread message. " : ""}</span>
+          <CustomerName conv={conv} />
+          <LastMessagePreview conv={conv} />
+        </button>
+      </div>
+    </li>
+  );
+}

@@ -1,0 +1,578 @@
+import { NextRequest, NextResponse } from "next/server";
+import { Stage } from "@prisma/client";
+import { prisma } from "@/lib/db";
+import { z } from "zod";
+import {
+  sendBookingRequestNotification,
+  sendBookingReceivedEmail,
+  sendWaitlistReceivedEmail,
+  sendWaitlistRequestNotification,
+} from "@/lib/email";
+import { sendPushToAllStaff } from "@/lib/push";
+import { publishJobEvent } from "@/lib/realtime/publish-job-event";
+import { coerceCustomerPhone } from "@/lib/phone";
+import { checkCollectionEligibility } from "@/lib/collection-radius";
+import { getAppFeatures } from "@/lib/app-settings";
+import { addWidgetCorsHeaders } from "@/lib/widget-cors";
+import { buildSmsConsentOptInUpdate } from "@/lib/sms-consent";
+import { getShopForHost } from "@/lib/shop";
+import { getCustomerStatusUrl } from "@/lib/job-customer-access";
+import { normalizeJobCollectionWindowsForStorage } from "@/lib/normalize-job-collection-windows";
+import {
+  TURNSTILE_BOOKING_ACTION,
+  getRequestClientIp,
+  verifyTurnstileToken,
+} from "@/lib/turnstile";
+import { assessBookingForSpam } from "@/lib/booking-spam";
+import { createBookingJob } from "@/lib/create-booking-job";
+import { requestHost } from "@/lib/request-host";
+
+export const dynamic = "force-dynamic";
+
+type WaitlistTxnResult = {
+  entry: {
+    id: string;
+    email: string;
+    phone: string;
+    deliveryType: string;
+    customerNotes: string | null;
+    bikes: { make: string; model: string | null }[];
+  };
+  customer: {
+    firstName: string;
+    lastName: string | null;
+    email: string | null;
+    phone: string | null;
+  };
+};
+
+function getSubmittedCalendarDate(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const match = trimmed.match(/^(\d{4}-\d{2}-\d{2})/);
+  return match ? match[1] : null;
+}
+
+function findClosedBookingDate(
+  closedDates: { date: string; reason?: string }[],
+  data: { dropOffDate?: string | null; pickupDate?: string | null },
+): { date: string; reason?: string } | null {
+  const blocked = new Map(closedDates.map((item) => [item.date, item]));
+  const submittedDates = [
+    getSubmittedCalendarDate(data.dropOffDate),
+    getSubmittedCalendarDate(data.pickupDate),
+  ].filter(Boolean) as string[];
+
+  for (const date of submittedDates) {
+    const closed = blocked.get(date);
+    if (closed) return closed;
+  }
+
+  return null;
+}
+
+const bikeItemSchema = z.object({
+  make: z.string().min(1, "Bike make is required"),
+  model: z.string().min(1).optional().nullable(),
+  bikeType: z.enum(["REGULAR", "E_BIKE"]).optional(),
+});
+
+const bookSchema = z
+  .object({
+    // Customer
+    customerId: z.string().optional().nullable(),
+    firstName: z.string().min(1, "First name is required"),
+    lastName: z.string().min(1, "Last name is required"),
+    email: z.string().email("Valid email is required"),
+    phone: z.string().min(1, "Phone is required"),
+    smsConsent: z.boolean().optional().default(false),
+    address: z.string().optional().nullable(),
+    // Bikes — new array format (preferred)
+    bikes: z.array(bikeItemSchema).min(1, "At least one bike is required").optional(),
+    // Legacy single-bike fields (kept for backward compatibility)
+    bikeMake: z.string().optional(),
+    bikeModel: z.string().optional(),
+    bikeType: z.enum(["REGULAR", "E_BIKE"]).optional(),
+    // Job
+    deliveryType: z.enum(["DROP_OFF_AT_SHOP", "COLLECTION_SERVICE"]).default("DROP_OFF_AT_SHOP"),
+    dropOffDate: z.string().optional().nullable(),
+    pickupDate: z.string().optional().nullable(),
+    collectionAddress: z.string().optional().nullable(),
+    collectionWindowStart: z.string().optional().nullable(),
+    collectionWindowEnd: z.string().optional().nullable(),
+    customerNotes: z.string().optional().nullable(),
+    serviceIds: z.array(z.string()).optional().default([]),
+    turnstileToken: z.string().min(1, "Verification is required"),
+  })
+  .superRefine((data, ctx) => {
+    const hasBikesArray = data.bikes && data.bikes.length > 0;
+    const hasLegacyBike = data.bikeMake && data.bikeModel;
+    if (!hasBikesArray && !hasLegacyBike) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "At least one bike is required",
+        path: ["bikes"],
+      });
+    }
+  });
+
+export async function OPTIONS(request: NextRequest) {
+  const origin = request.headers.get("origin");
+  const res = new NextResponse(null, { status: 204 });
+  return addWidgetCorsHeaders(res, origin, {
+    methods: "POST, OPTIONS",
+    allowHeaders: "Content-Type, Authorization",
+  });
+}
+
+export async function POST(request: NextRequest) {
+  const origin = request.headers.get("origin");
+
+  try {
+    const hostHeader =
+      requestHost(request.headers);
+    const shop = await getShopForHost(hostHeader);
+    if (!shop) {
+      const res = NextResponse.json({ error: "Shop not found" }, { status: 404 });
+      return addWidgetCorsHeaders(res, origin, {
+        methods: "POST, OPTIONS",
+        allowHeaders: "Content-Type, Authorization",
+      });
+    }
+
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      const res = NextResponse.json(
+        { error: "Invalid JSON in request body" },
+        { status: 400 }
+      );
+      return addWidgetCorsHeaders(res, origin, {
+        methods: "POST, OPTIONS",
+        allowHeaders: "Content-Type, Authorization",
+      });
+    }
+
+    const data = bookSchema.parse(body);
+
+    const clientIp = getRequestClientIp(request);
+    const turnstile = await verifyTurnstileToken(
+      data.turnstileToken,
+      clientIp,
+      TURNSTILE_BOOKING_ACTION
+    );
+    if (!turnstile.ok) {
+      const res = NextResponse.json({ error: turnstile.error }, { status: 403 });
+      return addWidgetCorsHeaders(res, origin, {
+        methods: "POST, OPTIONS",
+        allowHeaders: "Content-Type, Authorization",
+      });
+    }
+
+    const features = await getAppFeatures(shop.id);
+    const dropOffDate = data.dropOffDate ? new Date(data.dropOffDate) : null;
+    const pickupDate = data.pickupDate ? new Date(data.pickupDate) : null;
+    const collectionWindows = await normalizeJobCollectionWindowsForStorage(
+      shop.id,
+      {
+        collectionWindowStart: data.collectionWindowStart,
+        collectionWindowEnd: data.collectionWindowEnd,
+      },
+      { dropOffDate, pickupDate }
+    );
+    const closedDate = findClosedBookingDate(features.closedDates, data);
+
+    if (closedDate) {
+      const message = closedDate.reason
+        ? `The shop is closed on ${closedDate.date} (${closedDate.reason}). Please choose another date.`
+        : `The shop is closed on ${closedDate.date}. Please choose another date.`;
+      const res = NextResponse.json({ error: message }, { status: 400 });
+      return addWidgetCorsHeaders(res, origin, {
+        methods: "POST, OPTIONS",
+        allowHeaders: "Content-Type, Authorization",
+      });
+    }
+
+    if (data.deliveryType === "COLLECTION_SERVICE") {
+      if (!features.collectionServiceEnabled) {
+        const res = NextResponse.json(
+          { error: "Collection service is currently unavailable." },
+          { status: 400 }
+        );
+        return addWidgetCorsHeaders(res, origin, {
+          methods: "POST, OPTIONS",
+          allowHeaders: "Content-Type, Authorization",
+        });
+      }
+      const addr = (data.collectionAddress ?? "").trim();
+      const eligibility = await checkCollectionEligibility(addr, features.collectionRadiusMiles);
+      if (eligibility.ok && eligibility.enabled && !eligibility.eligible) {
+        const res = NextResponse.json(
+          { error: `Collection is only available within ${eligibility.radiusMiles} miles of the shop.` },
+          { status: 400 }
+        );
+        return addWidgetCorsHeaders(res, origin, {
+          methods: "POST, OPTIONS",
+          allowHeaders: "Content-Type, Authorization",
+        });
+      }
+      if (!eligibility.ok && eligibility.enabled) {
+        const res = NextResponse.json(
+          { error: eligibility.error },
+          { status: 400 }
+        );
+        return addWidgetCorsHeaders(res, origin, {
+          methods: "POST, OPTIONS",
+          allowHeaders: "Content-Type, Authorization",
+        });
+      }
+    }
+
+    // Normalize to a bikes array (support both new array format and legacy single-bike fields)
+    const bikesInput =
+      data.bikes && data.bikes.length > 0
+        ? data.bikes
+        : [{ make: data.bikeMake!.trim(), model: data.bikeModel!.trim(), bikeType: data.bikeType }];
+
+    const emailNormalized = data.email.trim().toLowerCase();
+    const phoneStored = coerceCustomerPhone(data.phone);
+
+    // Turnstile proves a browser submitted the form; it says nothing about what
+    // was typed into it. Content that looks machine-generated is parked for a
+    // human to look at instead of becoming a job: no Customer row, no staff
+    // notification, no confirmation email to an address we have no reason to
+    // trust, and no capacity consumed against maxActiveBikes.
+    const spam = assessBookingForSpam({
+      firstName: data.firstName,
+      lastName: data.lastName,
+      email: data.email,
+      phone: data.phone,
+      address: data.address,
+      customerNotes: data.customerNotes,
+      bikes: bikesInput,
+    });
+
+    if (spam.quarantine) {
+      await prisma.waitlistEntry.create({
+        data: {
+          shopId: shop.id,
+          status: "HELD_FOR_REVIEW",
+          firstName: data.firstName,
+          lastName: data.lastName,
+          email: data.email.trim(),
+          phone: phoneStored ?? data.phone.trim(),
+          address: data.address ?? null,
+          deliveryType: data.deliveryType as "DROP_OFF_AT_SHOP" | "COLLECTION_SERVICE",
+          dropOffDate: data.dropOffDate ? new Date(data.dropOffDate) : null,
+          pickupDate: data.pickupDate ? new Date(data.pickupDate) : null,
+          collectionAddress: data.collectionAddress ?? null,
+          collectionWindowStart: collectionWindows.collectionWindowStart ?? null,
+          collectionWindowEnd: collectionWindows.collectionWindowEnd ?? null,
+          customerNotes: data.customerNotes ?? null,
+          serviceIds: data.serviceIds ?? [],
+          spamScore: spam.score,
+          spamSignals: spam.signals,
+          submittedIp: clientIp,
+          submittedUserAgent: request.headers.get("user-agent"),
+          bikes: {
+            create: bikesInput.map((b, i) => ({
+              shopId: shop.id,
+              make: b.make.trim(),
+              model: b.model?.trim() || null,
+              bikeType: b.bikeType ?? null,
+              sortOrder: i,
+            })),
+          },
+        },
+      });
+
+      console.warn(
+        `[Widget book] Held booking for review (score ${spam.score}): ${spam.signals
+          .map((s) => s.code)
+          .join(", ")}`
+      );
+
+      // Deliberately indistinguishable from a normal submission. Telling the
+      // sender it was flagged just tells them which field to change next, and a
+      // wrongly-held real customer should not be made to think booking failed.
+      const res = NextResponse.json({
+        status: "PENDING_REVIEW",
+        message:
+          "Thanks — we’ve received your request. We’ll confirm your booking by email shortly.",
+      });
+      return addWidgetCorsHeaders(res, origin, {
+        methods: "POST, OPTIONS",
+        allowHeaders: "Content-Type, Authorization",
+      });
+    }
+
+    const maxActiveBikes = features.maxActiveBikes ?? 5;
+    const bookingsEnabled = features.bookingsEnabled ?? true;
+    const incomingBikesCount = bikesInput.length;
+    const activeBikesCount =
+      maxActiveBikes > 0
+        ? await prisma.jobBike.count({
+            where: {
+              shopId: shop.id,
+              job: {
+                archivedAt: null,
+                stage: { in: [Stage.RECEIVED, Stage.WORKING_ON] },
+              },
+            },
+          })
+        : 0;
+
+    const shouldWaitlist =
+      !bookingsEnabled ||
+      (maxActiveBikes > 0 && activeBikesCount + incomingBikesCount > maxActiveBikes);
+
+    if (shouldWaitlist) {
+      let waitlist: WaitlistTxnResult;
+      try {
+        waitlist = await prisma.$transaction(async (tx) => {
+          let customer = null;
+
+          if (data.customerId) {
+            customer = await tx.customer.findFirst({
+              where: { id: data.customerId, shopId: shop.id },
+            });
+          }
+
+          if (!customer) {
+            customer = await tx.customer.findFirst({
+              where: {
+                shopId: shop.id,
+                email: { equals: emailNormalized, mode: "insensitive" },
+              },
+            });
+          }
+
+          if (!customer) {
+            customer = await tx.customer.create({
+              data: {
+                shopId: shop.id,
+                firstName: data.firstName,
+                lastName: data.lastName ?? null,
+                email: data.email.trim(),
+                phone: phoneStored,
+                ...buildSmsConsentOptInUpdate(Boolean(data.smsConsent), "BOOKING_FORM"),
+                address: data.address ?? null,
+              },
+            });
+          } else {
+            await tx.customer.update({
+              where: { id: customer.id },
+              data: {
+                firstName: data.firstName,
+                lastName: data.lastName ?? null,
+                phone: phoneStored,
+                ...buildSmsConsentOptInUpdate(Boolean(data.smsConsent), "BOOKING_FORM"),
+                address: data.address ?? customer.address,
+              },
+            });
+          }
+
+          const entry = await tx.waitlistEntry.create({
+            data: {
+              shopId: shop.id,
+              customerId: customer.id,
+              firstName: data.firstName,
+              lastName: data.lastName,
+              email: data.email.trim(),
+              phone: phoneStored ?? data.phone.trim(),
+              address: data.address ?? null,
+              deliveryType: data.deliveryType as "DROP_OFF_AT_SHOP" | "COLLECTION_SERVICE",
+              dropOffDate: data.dropOffDate ? new Date(data.dropOffDate) : null,
+              pickupDate: data.pickupDate ? new Date(data.pickupDate) : null,
+              collectionAddress: data.collectionAddress ?? null,
+              collectionWindowStart: collectionWindows.collectionWindowStart ?? null,
+              collectionWindowEnd: collectionWindows.collectionWindowEnd ?? null,
+              customerNotes: data.customerNotes ?? null,
+              serviceIds: data.serviceIds ?? [],
+              bikes: {
+                create: bikesInput.map((b, i) => ({
+                  shopId: shop.id,
+                  make: b.make.trim(),
+                  model: b.model?.trim() || null,
+                  bikeType: b.bikeType ?? null,
+                  sortOrder: i,
+                })),
+              },
+            },
+            include: { bikes: { orderBy: { sortOrder: "asc" } } },
+          });
+
+          return { entry, customer };
+        });
+      } catch (e) {
+        console.error("[Widget book] Failed to create waitlist entry:", e);
+        const res = NextResponse.json(
+          {
+            error:
+              "We’re currently at capacity and can’t accept new bookings right now. Please try again in a few minutes.",
+          },
+          { status: 503 }
+        );
+        return addWidgetCorsHeaders(res, origin, {
+          methods: "POST, OPTIONS",
+          allowHeaders: "Content-Type, Authorization",
+        });
+      }
+
+      const services =
+        data.serviceIds && data.serviceIds.length > 0
+          ? await prisma.service.findMany({
+              where: { shopId: shop.id, id: { in: data.serviceIds }, isSystem: false },
+              select: { name: true },
+            })
+          : [];
+      const servicesList = services.map((s) => s.name).join(", ") || "None specified";
+      const bikeSummary =
+        waitlist.entry.bikes.length === 1
+          ? `${waitlist.entry.bikes[0].make}${waitlist.entry.bikes[0].model ? ` ${waitlist.entry.bikes[0].model}` : ""}`
+          : `${waitlist.entry.bikes.length} bikes`;
+
+      const customerName = waitlist.customer.lastName
+        ? `${waitlist.customer.firstName} ${waitlist.customer.lastName}`
+        : waitlist.customer.firstName;
+
+      sendWaitlistRequestNotification({
+        shopId: shop.id,
+        id: waitlist.entry.id,
+        customerName,
+        email: waitlist.customer.email ?? waitlist.entry.email,
+        phone: waitlist.customer.phone ?? waitlist.entry.phone,
+        bikeSummary,
+        deliveryType: waitlist.entry.deliveryType,
+        customerNotes: waitlist.entry.customerNotes ?? null,
+        servicesList,
+      })
+        .then((result) => {
+          if (!result.ok) console.error("[Widget book] Waitlist staff email failed:", result.error);
+        })
+        .catch((e) => console.error("[Widget book] Waitlist staff email threw:", e));
+
+      sendPushToAllStaff(shop.id, {
+        title: "New Waitlist Request",
+        body: `${customerName} — ${bikeSummary}`,
+        data: { type: "waitlist_request", waitlistId: waitlist.entry.id },
+      }).catch((e) => console.error("[Widget book] Waitlist staff push failed:", e));
+
+      sendWaitlistReceivedEmail({
+        shopId: shop.id,
+        customerName,
+        recipient: waitlist.entry.email,
+      })
+        .then((result) => {
+          if (!result.ok) console.error("[Widget book] Waitlist customer email failed:", result.error);
+        })
+        .catch((e) => console.error("[Widget book] Waitlist customer email threw:", e));
+
+      const message =
+        maxActiveBikes > 0
+          ? `We’re currently at capacity (${activeBikesCount}/${maxActiveBikes} bikes). You’ve been added to the waitlist and we’ll reach out as soon as a spot opens up.`
+          : "We’re currently not accepting new bookings. You’ve been added to the waitlist and we’ll reach out as soon as a spot opens up.";
+
+      const res = NextResponse.json({
+        status: "WAITLISTED",
+        waitlistId: waitlist.entry.id,
+        message,
+      });
+      return addWidgetCorsHeaders(res, origin, {
+        methods: "POST, OPTIONS",
+        allowHeaders: "Content-Type, Authorization",
+      });
+    }
+
+    const job = await prisma.$transaction(
+      (tx) =>
+        createBookingJob(tx, {
+          shopId: shop.id,
+          customerId: data.customerId,
+          firstName: data.firstName,
+          lastName: data.lastName,
+          email: data.email,
+          phone: phoneStored,
+          address: data.address,
+          smsConsent: data.smsConsent,
+          deliveryType: data.deliveryType as "DROP_OFF_AT_SHOP" | "COLLECTION_SERVICE",
+          dropOffDate: data.dropOffDate ? new Date(data.dropOffDate) : null,
+          pickupDate: data.pickupDate ? new Date(data.pickupDate) : null,
+          collectionAddress: data.collectionAddress,
+          collectionWindowStart: collectionWindows.collectionWindowStart,
+          collectionWindowEnd: collectionWindows.collectionWindowEnd,
+          customerNotes: data.customerNotes,
+          serviceIds: data.serviceIds ?? [],
+          bikes: bikesInput,
+          collectionServiceEnabled: features.collectionServiceEnabled,
+        }),
+      { timeout: 15000 }
+    );
+
+    if (!job) {
+      const res = NextResponse.json(
+        { error: "Failed to create booking" },
+        { status: 500 }
+      );
+      return addWidgetCorsHeaders(res, origin, {
+        methods: "POST, OPTIONS",
+        allowHeaders: "Content-Type, Authorization",
+      });
+    }
+
+    // Notify shop owner of new booking request (email + push)
+    sendBookingRequestNotification(job).then((result) => {
+      if (!result.ok) console.error("[Widget book] Staff email failed:", result.error);
+    }).catch((e) => console.error("[Widget book] Staff email threw:", e));
+
+    sendPushToAllStaff(job.shopId, {
+      title: "New Booking Request",
+      body: `${job.customer?.firstName ?? "Unknown"} ${job.customer?.lastName ?? ""} — ${job.bikeMake} ${job.bikeModel}`.trim(),
+      data: { type: "booking_request", jobId: job.id },
+    }).catch((e) => console.error("[Widget book] Staff push failed:", e));
+
+    // Send booking received confirmation to customer
+    sendBookingReceivedEmail(job).then((result) => {
+      if (!result.ok) console.error("[Widget book] Customer email failed:", result.error);
+    }).catch((e) => console.error("[Widget book] Customer email threw:", e));
+
+    // Wake any staff board that is currently open.
+    await publishJobEvent("job:created", { jobId: job.id, shopId: job.shopId });
+
+    const res = NextResponse.json({
+      id: job.id,
+      statusUrl: getCustomerStatusUrl(job.id, shop.id, shop.subdomain),
+    });
+    return addWidgetCorsHeaders(res, origin, {
+      methods: "POST, OPTIONS",
+      allowHeaders: "Content-Type, Authorization",
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      const flattened = error.flatten();
+      const fieldErrors = Object.entries(flattened.fieldErrors ?? {})
+        .flatMap(([field, msgs]) =>
+          (Array.isArray(msgs) ? msgs : [msgs])
+            .filter(Boolean)
+            .map((m) => `${field}: ${m}`)
+        );
+      const message = fieldErrors.length ? fieldErrors.join("; ") : "Invalid input";
+      const res = NextResponse.json({ error: message }, { status: 400 });
+      return addWidgetCorsHeaders(res, origin, {
+        methods: "POST, OPTIONS",
+        allowHeaders: "Content-Type, Authorization",
+      });
+    }
+    console.error("POST /api/widget/book error:", error);
+    const res = NextResponse.json(
+      { error: "Failed to create booking" },
+      { status: 500 }
+    );
+    return addWidgetCorsHeaders(res, origin, {
+      methods: "POST, OPTIONS",
+      allowHeaders: "Content-Type, Authorization",
+    });
+  }
+}

@@ -1,0 +1,95 @@
+import { NextRequest, NextResponse } from "next/server";
+import { Resend } from "resend";
+import { prisma } from "@/lib/db";
+import { getAppUrl, getResendApiKey } from "@/lib/env";
+import { buildCustomerMagicLinkUrl } from "@/lib/customer-magic-link";
+import { sendChatMagicLinkEmail } from "@/lib/email";
+import { z } from "zod";
+import { getAppFeatures } from "@/lib/app-settings";
+import { requireStaffShop } from "@/lib/api-auth";
+import { requestOrigin } from "@/lib/request-host";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+const EXPIRY_MINUTES = 15;
+const schema = z.object({ customerId: z.string().min(1) });
+
+/**
+ * Staff-only: Send a magic link email to a customer so they can access chat.
+ */
+export async function POST(request: NextRequest) {
+  try {
+    // Outside the staff middleware (it lives under /api/chat), so the check
+    // is here: only this shop's staff may email its customers a sign-in link,
+    // and the link's host is the one just verified to be theirs.
+    const auth = await requireStaffShop(request);
+    if (!auth.ok) return auth.response;
+    const shop = auth.shop;
+
+    const features = await getAppFeatures(shop.id);
+    if (!features.chatEnabled) {
+      return NextResponse.json({ error: "Chat is disabled" }, { status: 404 });
+    }
+    const body = await request.json();
+    const { customerId } = schema.parse(body);
+
+    const customer = await prisma.customer.findFirst({
+      where: { id: customerId, shopId: shop.id },
+    });
+
+    if (!customer) {
+      return NextResponse.json({ error: "Customer not found" }, { status: 404 });
+    }
+
+    const email = customer.email?.trim();
+    if (!email) {
+      return NextResponse.json(
+        { error: "Customer has no email address" },
+        { status: 400 }
+      );
+    }
+
+    const { randomBytes } = await import("crypto");
+    const token = randomBytes(24).toString("base64url");
+    const expiresAt = new Date();
+    expiresAt.setMinutes(expiresAt.getMinutes() + EXPIRY_MINUTES);
+
+    await prisma.magicLinkToken.create({
+      data: { shopId: shop.id, token, customerId: customer.id, expiresAt },
+    });
+
+    const baseUrl = requestOrigin(request.headers) ?? getAppUrl();
+    const magicLinkUrl = buildCustomerMagicLinkUrl(baseUrl, token, "chat");
+
+    const apiKey = getResendApiKey();
+    const resend = apiKey ? new Resend(apiKey) : null;
+    if (!resend) {
+      return NextResponse.json(
+        { error: "Email not configured. Add RESEND_API_KEY or BIKEOPS_RESEND_API_KEY to Vercel." },
+        { status: 500 }
+      );
+    }
+    const { ok, error } = await sendChatMagicLinkEmail(email, magicLinkUrl, resend, shop.id);
+
+    if (!ok) {
+      return NextResponse.json(
+        { error: error ?? "Failed to send invite email" },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      message: `Sign-in link sent to ${email}`,
+    });
+  } catch (e) {
+    if (e instanceof z.ZodError) {
+      return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+    }
+    console.error("Chat send-invite error:", e);
+    return NextResponse.json(
+      { error: "Something went wrong" },
+      { status: 500 }
+    );
+  }
+}

@@ -1,0 +1,933 @@
+"use client";
+
+import Image from "next/image";
+import { isPrivateFileUrl } from "@/lib/image-src";
+import Link from "next/link";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { useSearchParams } from "next/navigation";
+import type { ChatMessage } from "@/lib/types";
+import { mergeChatMessagesWithServer } from "@/lib/chat-messages";
+import { useCustomerChatNotifications } from "@/hooks/useCustomerChatNotifications";
+import { useChatEventSource } from "@/hooks/useChatEventSource";
+import type { CustomerConversationMessagesPayload } from "@/lib/chat/customer-conversation-messages";
+import { ChatMessageBubble } from "@/components/chat/ChatMessageBubble";
+import { jobAccessApiSuffix, readJobAccessParam, withJobAccessQuery } from "@/lib/job-access-url";
+import { isChatVideoFile, uploadChatVideoFile } from "@/lib/chat-video-upload";
+import { CustomerCardSkeleton } from "@/components/ui/Skeleton";
+
+const POLL_INTERVAL_MS = 3000;
+
+function isChatInviteUrl(): boolean {
+  if (typeof window === "undefined") return false;
+  return new URLSearchParams(window.location.search).get("src") === "chat";
+}
+
+async function redirectAfterAccountSignIn(): Promise<void> {
+  try {
+    const res = await fetch("/api/chat/my-jobs", { credentials: "include" });
+    if (res.ok) {
+      const jobs = (await res.json()) as { id: string }[];
+      if (Array.isArray(jobs) && jobs.length > 0) {
+        window.location.replace(`/status/${jobs[0].id}`);
+        return;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  window.location.replace("/book");
+}
+
+export default function CustomerChatPage() {
+  const searchParams = useSearchParams();
+  const jobAccess = readJobAccessParam(searchParams);
+  const [status, setStatus] = useState<"loading" | "login" | "inviteConsent" | "chat" | "disabled">("loading");
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginSending, setLoginSending] = useState(false);
+  const [loginMessage, setLoginMessage] = useState<string | null>(null);
+  const [replyHint, setReplyHint] = useState<{
+    smsReplyAvailable: boolean;
+    shopSmsNumber: string | null;
+    webChatUrl: string | null;
+    statusUrl: string | null;
+    customerHasApp: boolean;
+  } | null>(null);
+  const [inviteToken, setInviteToken] = useState<string | null>(null);
+  const [inviteSmsConsent, setInviteSmsConsent] = useState(false);
+  const [inviteAccepting, setInviteAccepting] = useState(false);
+  const [inviteMessage, setInviteMessage] = useState<string | null>(null);
+  const [customerName, setCustomerName] = useState("");
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [staffLastReadAt, setStaffLastReadAt] = useState<string | null>(null);
+  const [inputText, setInputText] = useState("");
+  const [pendingImages, setPendingImages] = useState<{ id: string; url: string; filename: string; mimeType?: string }[]>([]);
+  const [sending, setSending] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const messagesScrollRef = useRef<HTMLDivElement>(null);
+  const editingCountRef = useRef(0);
+  const [showScrollDown, setShowScrollDown] = useState(false);
+  const isAtBottomRef = useRef(true);
+  const typingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const sendingRef = useRef(false);
+  const hasPendingOptimisticRef = useRef(false);
+  const deliveryTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const latestMessage = messages[messages.length - 1] ?? null;
+  const latestMessageKey = latestMessage
+    ? `${messages.length}:${latestMessage.id}:${latestMessage.createdAt}:${latestMessage.editedAt ?? ""}`
+    : "empty";
+
+  useEffect(() => {
+    sendingRef.current = sending;
+  }, [sending]);
+
+  useEffect(() => {
+    hasPendingOptimisticRef.current = messages.some((m) => m.id.startsWith("temp-"));
+  }, [messages]);
+
+  useEffect(() => {
+    return () => {
+      for (const t of Object.values(deliveryTimeoutsRef.current)) clearTimeout(t);
+      deliveryTimeoutsRef.current = {};
+    };
+  }, []);
+
+  const sendTyping = useCallback((active: boolean) => {
+    fetch("/api/chat/conversation/typing", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ active }),
+    }).catch(() => {});
+  }, []);
+
+  const stopTypingPing = useCallback(() => {
+    if (typingIntervalRef.current) {
+      clearInterval(typingIntervalRef.current);
+      typingIntervalRef.current = null;
+    }
+    sendTyping(false);
+  }, [sendTyping]);
+
+  const startTypingPing = useCallback(() => {
+    if (typingIntervalRef.current) return;
+    sendTyping(true);
+    typingIntervalRef.current = setInterval(() => sendTyping(true), 2000);
+  }, [sendTyping]);
+
+  useEffect(() => {
+    return () => stopTypingPing();
+  }, [stopTypingPing]);
+
+  const clearClientDeliveryStateLater = useCallback((messageId: string, delayMs = 2000) => {
+    const existing = deliveryTimeoutsRef.current[messageId];
+    if (existing) clearTimeout(existing);
+    deliveryTimeoutsRef.current[messageId] = setTimeout(() => {
+      setMessages((prev) =>
+        prev.map((m) => (m.id === messageId ? { ...m, clientDeliveryState: undefined } : m))
+      );
+      delete deliveryTimeoutsRef.current[messageId];
+    }, delayMs);
+  }, []);
+
+  const mergeServerMessages = useCallback((serverMessages: ChatMessage[]) => {
+    setMessages((prev) => mergeChatMessagesWithServer(prev, serverMessages));
+  }, []);
+
+  const applyMessagesPayload = useCallback(
+    (data: CustomerConversationMessagesPayload) => {
+      mergeServerMessages(data.messages);
+      setStaffLastReadAt(data.staffLastReadAt ?? null);
+    },
+    [mergeServerMessages]
+  );
+
+  const fetchMessages = useCallback(async () => {
+    const res = await fetch("/api/chat/conversation/messages", { credentials: "include" });
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        applyMessagesPayload({ messages: data, staffLastReadAt: null });
+      } else {
+        applyMessagesPayload(data as CustomerConversationMessagesPayload);
+      }
+    }
+  }, [applyMessagesPayload]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function init() {
+      try {
+        const res = await fetch("/api/widget/features", { cache: "no-store" });
+        if (res.ok) {
+          const data = (await res.json()) as { chatEnabled?: unknown };
+          if (data && data.chatEnabled === false) {
+            if (!cancelled) setStatus("disabled");
+            return;
+          }
+        }
+      } catch {
+        // ignore
+      }
+
+      const params = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
+      const error = params.get("error");
+      if (error === "expired") {
+        setLoginMessage("That sign-in link has expired. Please request a new one below.");
+      } else if (error === "invalid") {
+        setLoginMessage("Invalid sign-in link. Please request a new one below.");
+      }
+
+      const hash = typeof window !== "undefined" ? window.location.hash : "";
+      if (hash.startsWith("#token=")) {
+        const token = decodeURIComponent(hash.slice("#token=".length));
+        if (!cancelled) {
+          setInviteToken(token);
+          setInviteSmsConsent(false);
+          setInviteMessage(null);
+          setStatus("inviteConsent");
+        }
+        return;
+      }
+
+      const jobId = params.get("jobId")?.trim() || null;
+      const jobAccess = readJobAccessParam(params);
+
+      async function loadReplyHint(activeJobId: string, access: string | null) {
+        if (!access) return;
+        try {
+          const hintRes = await fetch(
+            `/api/chat/reminder-hint?jobId=${encodeURIComponent(activeJobId)}${jobAccessApiSuffix(access)}`,
+            { cache: "no-store" }
+          );
+          if (hintRes.ok && !cancelled) {
+            setReplyHint(await hintRes.json());
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      try {
+        let res = await fetch("/api/chat/me", { credentials: "include" });
+        if (!res.ok && jobId && jobAccess) {
+          const establish = await fetch("/api/chat/establish-job-access", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ jobId, access: jobAccess }),
+          });
+          if (establish.ok) {
+            res = await fetch("/api/chat/me", { credentials: "include" });
+          }
+        }
+
+        if (!cancelled) {
+          if (res.ok) {
+            const data = await res.json();
+            setCustomerName(data.lastName ? `${data.firstName} ${data.lastName}` : data.firstName);
+            setStatus("chat");
+          } else {
+            if (jobId) await loadReplyHint(jobId, jobAccess);
+            setStatus("login");
+          }
+        }
+      } catch {
+        if (!cancelled) {
+          if (jobId) await loadReplyHint(jobId, jobAccess);
+          setStatus("login");
+        }
+      }
+    }
+
+    void init();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleInviteAccept = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inviteToken) {
+      setStatus("login");
+      return;
+    }
+    setInviteAccepting(true);
+    setInviteMessage(null);
+    try {
+      const res = await fetch("/api/chat/verify", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: inviteToken, smsConsent: inviteSmsConsent }),
+      });
+      if (typeof window !== "undefined") {
+        window.history.replaceState(null, "", window.location.pathname + window.location.search);
+      }
+      if (res.ok) {
+        const me = await fetch("/api/chat/me", { credentials: "include" });
+        if (me.ok) {
+          const data = await me.json();
+          setCustomerName(data.lastName ? `${data.firstName} ${data.lastName}` : data.firstName);
+          setInviteToken(null);
+          if (isChatInviteUrl()) {
+            setStatus("chat");
+          } else {
+            await redirectAfterAccountSignIn();
+          }
+          return;
+        }
+      }
+      const err = await res.json().catch(() => ({}));
+      const code = typeof err.error === "string" ? err.error : "invalid";
+      setLoginMessage(
+        code === "expired"
+          ? "That sign-in link has expired. Please request a new one below."
+          : "That sign-in link is invalid or was already used. Please request a new one below."
+      );
+      setStatus("login");
+    } catch {
+      setInviteMessage("Something went wrong. Please try again.");
+    } finally {
+      setInviteAccepting(false);
+    }
+  };
+
+  useEffect(() => {
+    if (status === "chat") {
+      fetchMessages();
+    }
+  }, [status, fetchMessages]);
+
+  useChatEventSource<CustomerConversationMessagesPayload>({
+    url: status === "chat" ? "/api/chat/conversation/messages/stream" : null,
+    enabled: status === "chat",
+    onUpdate: (data) => {
+      if (sendingRef.current) return;
+      if (hasPendingOptimisticRef.current) return;
+      applyMessagesPayload(data);
+    },
+    fallbackPoll: fetchMessages,
+    fallbackIntervalMs: POLL_INTERVAL_MS,
+  });
+
+  useCustomerChatNotifications(messages, status === "chat");
+
+  useEffect(() => {
+    if (editingCountRef.current > 0) return;
+    if (!isAtBottomRef.current) return;
+    const el = messagesScrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [latestMessageKey]);
+
+  const handleMessagesScroll = useCallback(() => {
+    const el = messagesScrollRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    isAtBottomRef.current = atBottom;
+    setShowScrollDown(!atBottom);
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    const el = messagesScrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  }, []);
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!loginEmail.trim()) return;
+    setLoginSending(true);
+    setLoginMessage(null);
+    try {
+      const res = await fetch("/api/chat/request-login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: loginEmail.trim() }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setLoginMessage(data.message ?? "Check your inbox for a sign-in link.");
+      } else {
+        setLoginMessage(data.error ?? "Something went wrong. Please try again.");
+      }
+    } catch {
+      setLoginMessage("Something went wrong. Please try again.");
+    } finally {
+      setLoginSending(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    await fetch("/api/chat/logout", { method: "POST", credentials: "include" });
+    setStatus("login");
+    setMessages([]);
+    setLoginMessage(null);
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    try {
+      if (isChatVideoFile(file)) {
+        const att = await uploadChatVideoFile(file, { credentials: "include" });
+        setPendingImages((prev) => [
+          ...prev,
+          {
+            id: att.id,
+            url: att.url,
+            filename: att.filename,
+            mimeType: att.mimeType,
+          },
+        ]);
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/chat/upload", {
+        method: "POST",
+        body: formData,
+        credentials: "include",
+      });
+      if (res.ok) {
+        const att = await res.json();
+        setPendingImages((prev) => [
+          ...prev,
+          {
+            id: att.id,
+            url: att.url,
+            filename: att.filename,
+            mimeType: att.mimeType,
+          },
+        ]);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        alert(typeof data.error === "string" ? data.error : "Failed to upload");
+      }
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Failed to upload media");
+    }
+  };
+
+  const handleBubbleEditingChange = useCallback((isEditing: boolean) => {
+    editingCountRef.current += isEditing ? 1 : -1;
+  }, []);
+
+  const patchCustomerMessage = useCallback(async (messageId: string, body: string | null) => {
+    const res = await fetch(`/api/chat/conversation/messages/${messageId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ body }),
+    });
+    if (res.ok) {
+      const updated = await res.json();
+      setMessages((prev) => prev.map((m) => (m.id === messageId ? updated : m)));
+      return true;
+    }
+    const err = await res.json().catch(() => ({}));
+    alert(typeof err.error === "string" ? err.error : "Failed to update message");
+    return false;
+  }, []);
+
+  const deleteCustomerMessage = useCallback(async (messageId: string) => {
+    const res = await fetch(`/api/chat/conversation/messages/${messageId}`, {
+      method: "DELETE",
+      credentials: "include",
+    });
+    if (res.ok) {
+      setMessages((prev) => prev.filter((m) => m.id !== messageId));
+      return true;
+    }
+    const err = await res.json().catch(() => ({}));
+    alert(typeof err.error === "string" ? err.error : "Failed to delete message");
+    return false;
+  }, []);
+
+  const toggleReaction = useCallback(
+    async (messageId: string, emoji: string) => {
+      const msg = messages.find((m) => m.id === messageId);
+      const myReaction = (msg?.reactions ?? []).find(
+        (r) => r.reactorType === "CUSTOMER"
+      );
+      try {
+        // Optimistically update so the UI doesn't wait on network/DB latency.
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (m.id !== messageId) return m;
+            const existing = (m.reactions ?? []).find((r) => r.reactorType === "CUSTOMER") ?? null;
+            const withoutMine = (m.reactions ?? []).filter((r) => r.reactorType !== "CUSTOMER");
+            if (existing?.emoji === emoji) {
+              return { ...m, reactions: withoutMine };
+            }
+            const optimistic = {
+              id: existing?.id ?? `temp-reaction-${messageId}-customer`,
+              messageId,
+              emoji,
+              reactorType: "CUSTOMER" as const,
+              createdAt: existing?.createdAt ?? new Date().toISOString(),
+            };
+            return { ...m, reactions: [...withoutMine, optimistic] };
+          })
+        );
+
+        if (myReaction?.emoji === emoji) {
+          const res = await fetch(
+            `/api/chat/conversation/messages/${messageId}/reactions`,
+            { method: "DELETE", credentials: "include" }
+          );
+          if (!res.ok) {
+            fetchMessages();
+          }
+        } else {
+          const res = await fetch(
+            `/api/chat/conversation/messages/${messageId}/reactions`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "include",
+              body: JSON.stringify({ emoji }),
+            }
+          );
+          if (res.ok) {
+            const reaction = await res.json().catch(() => null);
+            if (reaction && typeof reaction === "object") {
+              setMessages((prev) =>
+                prev.map((m) => {
+                  if (m.id !== messageId) return m;
+                  const withoutMine = (m.reactions ?? []).filter((r) => r.reactorType !== "CUSTOMER");
+                  return { ...m, reactions: [...withoutMine, reaction] };
+                })
+              );
+            }
+          } else {
+            fetchMessages();
+          }
+        }
+      } catch {
+        fetchMessages();
+      }
+    },
+    [messages, fetchMessages]
+  );
+
+  const removeCustomerAttachment = useCallback(
+    async (messageId: string, attachmentId: string) => {
+      const res = await fetch(
+        `/api/chat/conversation/messages/${messageId}/attachments/${attachmentId}`,
+        { method: "DELETE", credentials: "include" }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        if (data.messageDeleted) {
+          setMessages((prev) => prev.filter((m) => m.id !== messageId));
+        } else {
+          setMessages((prev) =>
+            prev.map((m) => (m.id === messageId ? data.message : m))
+          );
+        }
+        return true;
+      }
+      const err = await res.json().catch(() => ({}));
+      alert(typeof err.error === "string" ? err.error : "Failed to remove image");
+      return false;
+    },
+    []
+  );
+
+  const handleSend = async () => {
+    const textToSend = inputText.trim();
+    const imagesToSend = [...pendingImages];
+    const hasText = textToSend.length > 0;
+    const hasImages = imagesToSend.length > 0;
+    if (!hasText && !hasImages) return;
+
+    stopTypingPing();
+
+    // Optimistically append the message immediately so the UI feels instant
+    const tempId = `temp-${Date.now()}`;
+    const optimisticMsg: ChatMessage = {
+      id: tempId,
+      conversationId: "",
+      sender: "CUSTOMER",
+      body: textToSend || null,
+      clientDeliveryState: "SENDING",
+      attachments: imagesToSend.map((img) => ({
+        id: img.id,
+        url: img.url,
+        filename: img.filename,
+        mimeType: img.mimeType ?? "",
+        createdAt: new Date().toISOString(),
+      })),
+      reactions: [],
+      createdAt: new Date().toISOString(),
+    };
+
+    hasPendingOptimisticRef.current = true;
+    sendingRef.current = true;
+    setMessages((prev) => [...prev, optimisticMsg]);
+    setInputText("");
+    setPendingImages([]);
+    if (composerTextareaRef.current) {
+      composerTextareaRef.current.style.height = "auto";
+    }
+    setSending(true);
+
+    try {
+      const res = await fetch("/api/chat/conversation/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          body: textToSend || null,
+          attachmentIds: imagesToSend.map((p) => p.id),
+        }),
+      });
+      if (res.ok) {
+        const newMsg = (await res.json()) as ChatMessage;
+        const deliveredMsg: ChatMessage = { ...newMsg, clientDeliveryState: "DELIVERED" };
+        // Replace the optimistic placeholder with the confirmed server message
+        setMessages((prev) => prev.map((m) => (m.id === tempId ? deliveredMsg : m)));
+        hasPendingOptimisticRef.current = false;
+        clearClientDeliveryStateLater(deliveredMsg.id);
+      } else {
+        // Roll back the optimistic message on failure
+        hasPendingOptimisticRef.current = false;
+        setMessages((prev) => prev.filter((m) => m.id !== tempId));
+      }
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
+    }
+  };
+
+  if (status === "disabled") {
+    return (
+      <div className="w-full max-w-md mx-auto rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h1 className="text-lg font-bold text-slate-900">Chat unavailable</h1>
+        <p className="mt-2 text-sm text-slate-600">
+          Chat is currently disabled for this shop. Please contact us by phone or email instead.
+        </p>
+      </div>
+    );
+  }
+
+  if (status === "loading") {
+    return (
+      <div className="flex flex-1 items-center justify-center p-8">
+        <CustomerCardSkeleton label="Loading chat" />
+      </div>
+    );
+  }
+
+  if (status === "inviteConsent") {
+    const chatInvite = isChatInviteUrl();
+    return (
+      <div className="flex-1 flex items-center justify-center p-6">
+        <div className="w-full max-w-md">
+          <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h1 className="text-xl font-semibold text-slate-900 mb-2">
+              {chatInvite ? "Join the chat" : "Sign in to your account"}
+            </h1>
+            <p className="text-slate-600 text-sm mb-6">
+              {chatInvite
+                ? "You can also opt into service-related text messages before you start chatting."
+                : "Continue to view your repairs, bookings, and messages with your shop."}
+            </p>
+            <form onSubmit={handleInviteAccept} className="space-y-4">
+              {chatInvite ? (
+                <label className="flex cursor-pointer gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <input
+                    type="checkbox"
+                    checked={inviteSmsConsent}
+                    onChange={(e) => setInviteSmsConsent(e.target.checked)}
+                    className="mt-1 h-4 w-4 shrink-0 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500/20"
+                  />
+                  <span className="text-sm leading-snug text-slate-700">
+                    Optional: I agree to receive service-related SMS about my repair,
+                    including status updates and questions about my bike. No marketing.
+                    Message frequency varies. Message &amp; data rates may apply. Reply{" "}
+                    <strong>STOP</strong> to opt out.
+                  </span>
+                </label>
+              ) : null}
+              <button
+                type="submit"
+                disabled={inviteAccepting}
+                className="w-full rounded-lg bg-emerald-600 px-4 py-3 font-semibold text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {inviteAccepting
+                  ? "Signing in…"
+                  : chatInvite
+                    ? "Continue to chat"
+                    : "Continue"}
+              </button>
+            </form>
+            {inviteMessage && (
+              <p className="mt-4 text-sm text-slate-600" role="alert">
+                {inviteMessage}
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (status === "login") {
+    const showSmsFirst = replyHint?.smsReplyAvailable;
+    return (
+      <div className="flex-1 flex items-center justify-center p-6">
+        <div className="w-full max-w-md">
+          <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h1 className="text-xl font-semibold text-slate-900 mb-2">Chat with us</h1>
+            {showSmsFirst ? (
+              <div className="mb-6 space-y-3 text-sm text-slate-600">
+                <p>
+                  The easiest way to reply is in the <strong className="text-slate-800">text message thread</strong> from
+                  us on your phone
+                  {replyHint.shopSmsNumber ? (
+                    <>
+                      {" "}
+                      (<span className="text-slate-800">{replyHint.shopSmsNumber}</span>)
+                    </>
+                  ) : null}
+                  .
+                </p>
+                {replyHint.customerHasApp && (
+                  <p>You can also open chat from the Bike Ops app notification.</p>
+                )}
+                {replyHint.statusUrl && (
+                  <p>
+                    <Link
+                      href={withJobAccessQuery(replyHint.statusUrl, jobAccess)}
+                      className="font-medium text-emerald-700 hover:text-emerald-800"
+                    >
+                      View your repair status
+                    </Link>
+                  </p>
+                )}
+              </div>
+            ) : (
+              <p className="text-slate-600 text-sm mb-6">
+                Enter the email address we have on file and we&apos;ll send you a sign-in link. No password needed.
+              </p>
+            )}
+            {showSmsFirst && (
+              <p className="text-slate-600 text-sm mb-4">
+                Prefer the web? Sign in with your email below.
+              </p>
+            )}
+            <form onSubmit={handleLogin} className="space-y-4">
+              <input
+                type="email"
+                value={loginEmail}
+                onChange={(e) => setLoginEmail(e.target.value)}
+                placeholder="your@email.com"
+                required
+                className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+              />
+              <button
+                type="submit"
+                disabled={loginSending}
+                className="w-full rounded-lg bg-emerald-600 px-4 py-3 font-semibold text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {loginSending ? "Sending…" : "Send sign-in link"}
+              </button>
+            </form>
+            {loginMessage && (
+              <p className="mt-4 text-sm text-slate-600" role="alert">
+                {loginMessage}
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Chat UI
+  return (
+    <div className="flex-1 flex flex-col min-h-0 w-full min-w-0 flex items-center justify-center px-2 sm:px-3 overflow-x-hidden">
+      <div className="w-full max-w-2xl flex flex-col flex-1 min-h-0 min-w-0 rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+        <header className="flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-200 bg-slate-50 flex-shrink-0">
+          <h2 className="font-semibold text-slate-900">
+            Chat with us
+            {customerName && (
+              <span className="font-normal text-slate-500 ml-2">· Hi {customerName}</span>
+            )}
+          </h2>
+          <div className="flex shrink-0 items-center gap-3">
+            <Link href="/chat/c/preferences" className="text-sm font-medium text-slate-500 hover:text-slate-700">
+              Settings
+            </Link>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="text-sm text-slate-500 hover:text-slate-700"
+            >
+              Sign out
+            </button>
+          </div>
+        </header>
+
+        <div className="relative flex-1 min-h-0">
+        <div ref={messagesScrollRef} onScroll={handleMessagesScroll} className="absolute inset-0 overflow-y-auto p-4 space-y-3">
+          {messages.map((msg) => {
+            const isSystem = msg.sender === "SYSTEM";
+            return (
+              <ChatMessageBubble
+                key={msg.id}
+                msg={msg}
+                isOwn={msg.sender === "CUSTOMER"}
+                align={msg.sender === "CUSTOMER" ? "end" : "start"}
+                bubbleClassName={
+                  msg.sender === "CUSTOMER"
+                    ? "bg-emerald-600 text-white rounded-br-md"
+                    : isSystem
+                      ? "border border-slate-200 bg-slate-50 text-slate-700 rounded-bl-md font-mono text-[13px]"
+                      : "bg-slate-100 text-slate-900 rounded-bl-md"
+                }
+                metaClassName={msg.sender === "CUSTOMER" ? "text-emerald-200" : "text-slate-500"}
+                linkClassName={msg.sender === "CUSTOMER" ? "text-emerald-100" : "text-emerald-700"}
+                actionMutedClassName={
+                  msg.sender === "CUSTOMER"
+                    ? "text-emerald-200/90 hover:text-white"
+                    : "text-slate-500 hover:text-slate-700"
+                }
+                saveEditButtonClassName={
+                  msg.sender === "CUSTOMER"
+                    ? "text-xs font-medium text-white hover:text-emerald-100"
+                    : undefined
+                }
+                viewed={
+                  msg.sender === "CUSTOMER" && staffLastReadAt != null
+                    ? new Date(msg.createdAt).getTime() <= new Date(staffLastReadAt).getTime()
+                    : undefined
+                }
+                role="CUSTOMER"
+                onPatch={msg.sender === "CUSTOMER" ? patchCustomerMessage : undefined}
+                onDelete={msg.sender === "CUSTOMER" ? deleteCustomerMessage : undefined}
+                onRemoveAttachment={msg.sender === "CUSTOMER" ? removeCustomerAttachment : undefined}
+                onEditingChange={handleBubbleEditingChange}
+                onToggleReaction={isSystem ? undefined : toggleReaction}
+              />
+            );
+          })}
+        </div>
+          {showScrollDown && (
+            <button
+              type="button"
+              onClick={scrollToBottom}
+              className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-white shadow-md border border-slate-200 text-slate-700 hover:bg-slate-50 transition-opacity"
+              aria-label="Scroll to latest message"
+            >
+              <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+          )}
+        </div>
+
+        <div className="flex-shrink-0 p-4 border-t border-slate-200 bg-slate-50">
+          {pendingImages.length > 0 && (
+            <div className="flex gap-2 mb-2 flex-wrap">
+              {pendingImages.map((p) => (
+                <div key={p.id} className="relative group">
+                  {p.mimeType?.startsWith("video/") ? (
+                    <div className="relative h-20 w-20 overflow-hidden rounded-lg border border-slate-200 bg-black">
+                      <video
+                        src={p.url}
+                        className="h-full w-full object-cover"
+                        muted
+                        preload="metadata"
+                      />
+                      <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-white text-xs font-medium">
+                        ▶
+                      </span>
+                    </div>
+                  ) : (
+                    <Image
+                      src={p.url} unoptimized={isPrivateFileUrl(p.url)}
+                      alt={p.filename}
+                      width={80}
+                      height={80}
+                      className="h-20 w-20 object-cover rounded-lg border border-slate-200"
+                    />
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setPendingImages((prev) => prev.filter((x) => x.id !== p.id))}
+                    className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-red-500 text-white text-xs flex items-center justify-center hover:bg-red-600"
+                    aria-label="Remove"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="flex gap-2 min-w-0">
+            <input
+              type="file"
+              ref={fileInputRef}
+              accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/quicktime"
+              className="hidden"
+              onChange={handleFileChange}
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="p-2 rounded-lg text-slate-500 hover:bg-slate-200 hover:text-slate-700 flex-shrink-0"
+              aria-label="Add image"
+            >
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}>
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                <circle cx="8.5" cy="8.5" r="1.5" />
+                <polyline points="21 15 16 10 5 21" />
+              </svg>
+            </button>
+            <textarea
+              ref={composerTextareaRef}
+              value={inputText}
+              rows={1}
+              onChange={(e) => {
+                const v = e.target.value;
+                setInputText(v);
+                if (v.trim().length > 0) {
+                  startTypingPing();
+                } else {
+                  stopTypingPing();
+                }
+              }}
+              onInput={(e) => {
+                const el = e.currentTarget;
+                el.style.height = "auto";
+                el.style.height = `${el.scrollHeight}px`;
+              }}
+              onBlur={() => stopTypingPing()}
+              onFocus={() => {
+                if (inputText.trim().length > 0) startTypingPing();
+              }}
+              onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && (e.preventDefault(), handleSend())}
+              placeholder="Type a message…"
+              className="flex-1 min-w-0 px-4 py-2.5 rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent resize-none overflow-hidden leading-normal"
+            />
+            <button
+              type="button"
+              onClick={handleSend}
+              disabled={sending || (!inputText.trim() && pendingImages.length === 0)}
+              className="px-4 py-2.5 rounded-lg bg-emerald-600 text-white font-medium hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {sending ? "Sending…" : "Send"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

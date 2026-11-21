@@ -1,0 +1,290 @@
+import type { NextRequest } from "next/server";
+import { randomUUID } from "crypto";
+import { put } from "@vercel/blob";
+import type { Prisma } from "@prisma/client";
+import Twilio from "twilio";
+import { BLOB_ACCESS, blobDisplayUrl } from "@/lib/blob";
+import { registerBlobAsset } from "@/lib/blob-access";
+import { prisma } from "@/lib/db";
+import { formatPhoneDisplay, normalizePhone } from "@/lib/phone";
+import {
+  buildSmsConsentUpdate,
+  SMS_CONSENT_SOURCES,
+} from "@/lib/sms-consent";
+import { requestOrigin } from "@/lib/request-host";
+
+type Db = Prisma.TransactionClient;
+
+const MMS_MAX_SIZE_MB = 5;
+const MMS_ALLOWED_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+  "image/heic",
+  "image/heif",
+] as const;
+
+const MMS_EXT_BY_MIME: Record<(typeof MMS_ALLOWED_TYPES)[number], string> = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "image/heic": "heic",
+  "image/heif": "heif",
+};
+
+export type TwilioInboundMedia = {
+  url: string;
+  contentType: string;
+};
+
+/**
+ * URL Twilio used to POST (must match Console webhook URL). Override when
+ * tunneling (ngrok) or if proxy host differs from the configured URL.
+ */
+export function getTwilioInboundWebhookUrl(request: NextRequest): string {
+  const override = process.env.TWILIO_WEBHOOK_URL?.trim();
+  if (override) return override;
+  // No trusted host → a URL Twilio never signed, so validation fails closed.
+  return `${requestOrigin(request.headers) ?? "https://invalid.invalid"}${request.nextUrl.pathname}`;
+}
+
+export function validateTwilioWebhook(
+  authToken: string,
+  signature: string | null,
+  url: string,
+  params: Record<string, string>
+): boolean {
+  return Twilio.validateRequest(authToken, signature ?? "", url, params);
+}
+
+/**
+ * Match inbound SMS sender / customer.phone (stored formats vary).
+ *
+ * More than one customer can share a number. The usual way: a stranger calls or
+ * texts, which leaves a provisional "(404) 555-…" profile, and staff then add
+ * the same person as a real customer from New Job instead of from the thread.
+ * Taking whichever row the database happened to return first sent that
+ * customer's replies to the placeholder's thread while staff were texting them
+ * in the real one. So when several match, prefer a real contact over a
+ * placeholder, then the one whose thread was active most recently — that is
+ * the conversation the reply belongs to.
+ */
+export async function findCustomerIdBySmsFrom(
+  shopId: string,
+  fromE164: string,
+  tx?: Db
+): Promise<string | null> {
+  const client = tx ?? prisma;
+  const customers = await client.customer.findMany({
+    where: { shopId, phone: { not: null } },
+    select: { id: true, phone: true },
+  });
+  const matchIds = customers
+    .filter((c) => c.phone && normalizePhone(c.phone) === fromE164)
+    .map((c) => c.id);
+  if (matchIds.length <= 1) return matchIds[0] ?? null;
+
+  const candidates = await client.customer.findMany({
+    where: { shopId, id: { in: matchIds } },
+    select: {
+      id: true,
+      provisional: true,
+      updatedAt: true,
+      conversations: {
+        orderBy: { updatedAt: "desc" },
+        take: 1,
+        select: { updatedAt: true },
+      },
+    },
+  });
+  const lastActive = (c: (typeof candidates)[number]) =>
+    Math.max(c.conversations[0]?.updatedAt.getTime() ?? 0, c.updatedAt.getTime());
+  candidates.sort((a, b) => {
+    if (a.provisional !== b.provisional) return a.provisional ? 1 : -1;
+    return lastActive(b) - lastActive(a);
+  });
+  return candidates[0]?.id ?? null;
+}
+
+/**
+ * Resolve a phone number to a customer, creating a placeholder profile when the
+ * number isn't on file yet.
+ *
+ * Both entry points for a stranger need this: a first inbound text (there is
+ * nothing to hang the conversation off, so the message would be dropped) and
+ * staff answering an unknown caller by text. The profile is named with the
+ * formatted number — the same fallback label the voice webhook uses for unknown
+ * callers — and flagged provisional for staff to fill in with "Create contact".
+ *
+ * `consentSource` records why we may text this number back; see
+ * SMS_CONSENT_SOURCES. It is only written on creation, so a number that already
+ * exists keeps whatever consent it had — an earlier STOP is never reversed here.
+ *
+ * Takes the same advisory lock as conversation consolidation so two inbound
+ * events arriving together can't create two profiles for one number.
+ */
+export async function findOrCreateProvisionalCustomer(
+  shopId: string,
+  phoneE164: string,
+  /** Null records no consent at all — for a caller the shop isn't texting. */
+  consentSource: string | null
+): Promise<{ customerId: string; created: boolean }> {
+  const existing = await findCustomerIdBySmsFrom(shopId, phoneE164);
+  if (existing) return { customerId: existing, created: false };
+
+  return prisma.$transaction(async (tx) => {
+    const lockKey = `${shopId}:${phoneE164}:sms-customer`;
+    // pg_advisory_xact_lock returns void — must use $executeRaw.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
+
+    // Re-check under the lock: a concurrent inbound event may have won.
+    const raced = await findCustomerIdBySmsFrom(shopId, phoneE164, tx);
+    if (raced) return { customerId: raced, created: false };
+
+    const customer = await tx.customer.create({
+      data: {
+        shopId,
+        firstName: formatPhoneDisplay(phoneE164) || phoneE164,
+        phone: phoneE164,
+        // Staff fill in the real details from the thread with "Create contact".
+        provisional: true,
+        ...(consentSource ? buildSmsConsentUpdate(true, consentSource) : {}),
+      },
+      select: { id: true },
+    });
+    return { customerId: customer.id, created: true };
+  });
+}
+
+/** Inbound text from a stranger: texting us first is consent to be answered. */
+export async function findOrCreateCustomerIdForInboundSms(
+  shopId: string,
+  fromE164: string
+): Promise<{ customerId: string; created: boolean }> {
+  return findOrCreateProvisionalCustomer(
+    shopId,
+    fromE164,
+    SMS_CONSENT_SOURCES.INBOUND_SMS
+  );
+}
+
+/** MediaUrl0 / MediaContentType0 … from Twilio inbound SMS/MMS webhooks. */
+export function parseTwilioInboundMedia(
+  params: Record<string, string>
+): TwilioInboundMedia[] {
+  const numMedia = parseInt(params.NumMedia ?? "0", 10) || 0;
+  const items: TwilioInboundMedia[] = [];
+  for (let i = 0; i < numMedia; i++) {
+    const url = params[`MediaUrl${i}`]?.trim();
+    if (!url) continue;
+    items.push({
+      url,
+      contentType:
+        params[`MediaContentType${i}`]?.trim() ?? "application/octet-stream",
+    });
+  }
+  return items;
+}
+
+function isTwilioMediaUrl(raw: string): boolean {
+  try {
+    const url = new URL(raw);
+    return url.protocol === "https:" && url.hostname === "api.twilio.com" && !url.port;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Download Twilio-hosted MMS media (URLs expire) and store in Blob as chat attachments.
+ */
+export async function importTwilioInboundMedia(
+  shopId: string,
+  media: TwilioInboundMedia[]
+): Promise<{ id: string }[]> {
+  if (media.length === 0) return [];
+
+  const accountSid = process.env.TWILIO_ACCOUNT_SID?.trim();
+  const authToken = process.env.TWILIO_AUTH_TOKEN?.trim();
+  if (!accountSid || !authToken) {
+    console.error(
+      "Twilio MMS: TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN required to fetch media"
+    );
+    return [];
+  }
+  if (!process.env.BLOB_READ_WRITE_TOKEN) {
+    console.error(
+      "Twilio MMS: BLOB_READ_WRITE_TOKEN required to store inbound photos"
+    );
+    return [];
+  }
+
+  const auth = Buffer.from(`${accountSid}:${authToken}`).toString("base64");
+  const attachments: { id: string }[] = [];
+
+  for (let i = 0; i < media.length; i++) {
+    const { url, contentType } = media[i];
+    if (
+      !MMS_ALLOWED_TYPES.includes(
+        contentType as (typeof MMS_ALLOWED_TYPES)[number]
+      )
+    ) {
+      console.warn("Twilio MMS: skipping unsupported type", contentType);
+      continue;
+    }
+
+    // The webhook is signature-checked, but these are our Twilio credentials:
+    // only ever send them to Twilio's own API host.
+    if (!isTwilioMediaUrl(url)) {
+      console.warn("Twilio MMS: refusing media URL outside api.twilio.com");
+      continue;
+    }
+
+    try {
+      const res = await fetch(url, {
+        headers: { Authorization: `Basic ${auth}` },
+      });
+      if (!res.ok) {
+        console.error("Twilio MMS: download failed", res.status, url);
+        continue;
+      }
+
+      const buffer = Buffer.from(await res.arrayBuffer());
+      if (buffer.length > MMS_MAX_SIZE_MB * 1024 * 1024) {
+        console.warn("Twilio MMS: file too large", buffer.length);
+        continue;
+      }
+
+      const ext =
+        MMS_EXT_BY_MIME[contentType as (typeof MMS_ALLOWED_TYPES)[number]] ??
+        "jpg";
+      const path = `chat/sms-${randomUUID()}.${ext}`;
+      const blob = await put(path, buffer, {
+        access: BLOB_ACCESS,
+        contentType,
+        addRandomSuffix: false,
+      });
+      // The sender isn't resolved yet; the customer reaches it through the
+      // conversation the attachment ends up in.
+      await registerBlobAsset({ pathname: blob.pathname, shopId, kind: "chat" });
+      const displayUrl = blobDisplayUrl(blob.url, blob.pathname);
+      const attachment = await prisma.messageAttachment.create({
+        data: {
+          shopId,
+          url: displayUrl,
+          filename: `photo-${i + 1}.${ext}`,
+          mimeType: contentType,
+        },
+      });
+      attachments.push({ id: attachment.id });
+    } catch (e) {
+      console.error("Twilio MMS: import failed", e);
+    }
+  }
+
+  return attachments;
+}
+
+export { findOrCreateGeneralConversation as findOrCreateConversationForInboundSms } from "@/lib/conversation";

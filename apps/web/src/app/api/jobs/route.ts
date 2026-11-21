@@ -1,0 +1,449 @@
+import { NextRequest, NextResponse } from "next/server";
+import { Stage } from "@prisma/client";
+import { prisma } from "@/lib/db";
+import { resolveProfileBikeForJobBike } from "@/lib/resolve-profile-bike";
+import { z } from "zod";
+import { getAuthorizedShopId, requireStaffShop } from "@/lib/api-auth";
+import { withPrismaRetry } from "@/lib/prisma-retry";
+import { sendJobEmail, getTemplateForStage } from "@/lib/email";
+import { getTemplateSlugForStage } from "@/lib/sms";
+import { syncCollectionJobService } from "@/lib/collection-fee";
+import { sendPushToAllStaff } from "@/lib/push";
+import { scheduleCatalogLookup } from "@/lib/bike-catalog-lookup";
+import { publishJobEvent } from "@/lib/realtime/publish-job-event";
+import { getAppFeatures } from "@/lib/app-settings";
+import { mirrorJobStageToCustomerChat } from "@/lib/system-chat";
+import { getBoardJobsForShop } from "@/lib/board-jobs";
+import { computeJobTotal, computeTotalPaid, getJobPaymentSummary } from "@/lib/job-payments";
+import { getEffectiveEmailUpdatesConsent } from "@/lib/sms-consent";
+import { normalizeJobCollectionWindowsForStorage } from "@/lib/normalize-job-collection-windows";
+import { optionalTrimmedString } from "@/lib/zod-helpers";
+import { jobTaxFieldsForShop } from "@/lib/sales-tax";
+import {
+  enrichJobsWithCatalogThumbnails,
+  enrichJobBikesWithCatalogThumbnails,
+} from "@/lib/bike-catalog-client";
+
+export const dynamic = "force-dynamic";
+// Catalog lookups scheduled here keep running after the response
+// (LOOKUP_TIME_BUDGET_MS fits inside this).
+export const maxDuration = 300;
+
+const bikeSchema = z.object({
+  make: z.string().min(1),
+  model: optionalTrimmedString,
+  year: z.number().int().min(1980).max(2100).optional().nullable(),
+  nickname: z.string().optional().nullable(),
+  imageUrl: z.string().optional().nullable(),
+  bikeId: z.string().optional().nullable(),
+  bikeType: z.enum(["REGULAR", "E_BIKE"]).optional(),
+});
+
+const createJobSchema = z.object({
+  bikeMake: z.string().min(1),
+  bikeModel: z.string().optional().nullable(),
+  bikes: z.array(bikeSchema).optional(),
+  customerId: z.string().optional().nullable(),
+  deliveryType: z.enum(["DROP_OFF_AT_SHOP", "COLLECTION_SERVICE"]).default("DROP_OFF_AT_SHOP"),
+  dropOffDate: z.string().optional().nullable(),
+  pickupDate: z.string().optional().nullable(),
+  collectionAddress: z.string().optional().nullable(),
+  collectionWindowStart: z.string().optional().nullable(),
+  collectionWindowEnd: z.string().optional().nullable(),
+  collectionReturnWindowStart: z.string().optional().nullable(),
+  collectionReturnWindowEnd: z.string().optional().nullable(),
+  notes: z.string().optional().nullable(),
+  internalNotes: z.string().optional().nullable(),
+  customerNotes: z.string().optional().nullable(),
+  serviceIds: z.array(z.string()).optional().default([]),
+});
+
+export async function GET(request: NextRequest) {
+  try {
+    const auth = await requireStaffShop(request);
+    if (!auth.ok) return auth.response;
+    const shopId = auth.shopId;
+    const { searchParams } = new URL(request.url);
+    const weekStart = searchParams.get("weekStart");
+    const weekEnd = searchParams.get("weekEnd");
+    const archived = searchParams.get("archived") === "true";
+    const customerIdFilter = searchParams.get("customerId");
+    const view = searchParams.get("view");
+    const summary = searchParams.get("summary") === "1" || searchParams.get("summary") === "true";
+
+    const where: Record<string, unknown> = { shopId };
+
+    if (customerIdFilter) {
+      where.customerId = customerIdFilter;
+    }
+
+    const andClauses: Record<string, unknown>[] = [];
+
+    if (archived) {
+      if (view === "board") {
+        // Archive page (board payload): archived completions plus active cancelled jobs (no board column).
+        andClauses.push({
+          OR: [{ archivedAt: { not: null } }, { stage: Stage.CANCELLED }],
+        });
+      } else {
+        where.archivedAt = { not: null };
+      }
+    } else {
+      where.archivedAt = null;
+      if (view === "board") {
+        andClauses.push({ stage: { not: Stage.CANCELLED } });
+      }
+    }
+
+    if (weekStart && weekEnd) {
+      const start = new Date(weekStart);
+      const end = new Date(weekEnd);
+      andClauses.push({
+        OR: [
+          {
+            dropOffDate: {
+              gte: start,
+              lte: end,
+            },
+          },
+          {
+            pickupDate: {
+              gte: start,
+              lte: end,
+            },
+          },
+          {
+            dropOffDate: null,
+            pickupDate: null,
+            createdAt: {
+              gte: start,
+              lte: end,
+            },
+          },
+        ],
+      });
+    }
+
+    if (andClauses.length > 0) {
+      where.AND = andClauses;
+    }
+    // No week filter: returns all jobs so the board shows everything in one view
+
+    const orderBy =
+      archived && view === "board"
+        ? { updatedAt: "desc" as const }
+        : archived
+          ? { archivedAt: "desc" as const }
+          : [
+              { columnSortOrder: { sort: "asc" as const, nulls: "last" as const } },
+              { dropOffDate: { sort: "asc" as const, nulls: "last" as const } },
+              { createdAt: "asc" as const },
+            ];
+
+    if (summary) {
+      const jobs = await withPrismaRetry(() =>
+        prisma.job.findMany({
+          where,
+          select: { id: true, stage: true, updatedAt: true },
+          orderBy,
+        })
+      );
+      const res = NextResponse.json(jobs);
+      res.headers.set("Cache-Control", "no-store");
+      return res;
+    }
+
+    if (view === "board") {
+      // Week / customer filters still use the full include path below.
+      if (!weekStart && !weekEnd && !customerIdFilter) {
+        const jobs = await getBoardJobsForShop(shopId, { archived });
+        const res = NextResponse.json(jobs);
+        res.headers.set("Cache-Control", "no-store");
+        return res;
+      }
+    }
+
+    const jobs = await withPrismaRetry(() =>
+      prisma.job.findMany({
+      where,
+      include: {
+        customer: { include: { bikes: true } },
+        mechanic: { select: { id: true, fullName: true, imageUrl: true } },
+        jobBikes: { include: { bike: true }, orderBy: { sortOrder: "asc" } },
+        jobServices: {
+          include: { service: true },
+        },
+        jobProducts: { include: { product: true } },
+        payments: {
+          select: {
+            amount: true,
+            status: true,
+            stripePaymentIntentId: true,
+            paymentMethod: true,
+          },
+        },
+      },
+      orderBy,
+      })
+    );
+    const jobsWithPaymentState = jobs.map((job) => {
+      const subtotal = computeJobTotal(job);
+      const totalPaid = computeTotalPaid(job.payments);
+      const paymentSummary = getJobPaymentSummary({
+        currentStatus: job.paymentStatus,
+        subtotal,
+        totalPaid,
+      });
+      return {
+        ...job,
+        paymentStatus: paymentSummary.paymentStatus,
+        totalPaid,
+        payments: undefined,
+      };
+    });
+
+    const enrichedJobs = await enrichJobsWithCatalogThumbnails(jobsWithPaymentState);
+    const res = NextResponse.json(enrichedJobs);
+    res.headers.set("Cache-Control", "no-store");
+    return res;
+  } catch (error) {
+    console.error("GET /api/jobs error:", error);
+    return NextResponse.json(
+      { error: "Failed to fetch jobs" },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  const shopId = await getAuthorizedShopId(request);
+  if (!shopId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  try {
+    const features = await getAppFeatures(shopId);
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: "Invalid JSON in request body" },
+        { status: 400 }
+      );
+    }
+    const data = createJobSchema.parse(body);
+    if (data.deliveryType === "COLLECTION_SERVICE" && !features.collectionServiceEnabled) {
+      return NextResponse.json(
+        { error: "Collection service is currently disabled." },
+        { status: 400 }
+      );
+    }
+    const bikes = data.bikes && data.bikes.length > 0 ? data.bikes : [{ make: data.bikeMake, model: data.bikeModel }];
+    const customerId = data.customerId ?? null;
+
+    const dropOffDate = data.dropOffDate ? new Date(data.dropOffDate) : null;
+    const pickupDate = data.pickupDate ? new Date(data.pickupDate) : null;
+    const collectionWindows = await normalizeJobCollectionWindowsForStorage(
+      shopId,
+      {
+        collectionWindowStart: data.collectionWindowStart,
+        collectionWindowEnd: data.collectionWindowEnd,
+        collectionReturnWindowStart: data.collectionReturnWindowStart,
+        collectionReturnWindowEnd: data.collectionReturnWindowEnd,
+      },
+      { dropOffDate, pickupDate }
+    );
+
+    const job = await prisma.$transaction(async (tx) => {
+      const newJob = await tx.job.create({
+        data: {
+          shop: { connect: { id: shopId } },
+          ...(await jobTaxFieldsForShop(shopId, tx)),
+          stage: Stage.BOOKED_IN,
+          bikeMake: bikes.length === 1 ? bikes[0].make : "Multiple",
+          bikeModel: bikes.length === 1 ? (bikes[0].model ?? "") : `${bikes.length} bikes`,
+          customer: customerId ? { connect: { id: customerId, shopId } } : undefined,
+          deliveryType: data.deliveryType as "DROP_OFF_AT_SHOP" | "COLLECTION_SERVICE",
+          dropOffDate,
+          pickupDate,
+          collectionAddress: data.collectionAddress ?? null,
+          collectionWindowStart: collectionWindows.collectionWindowStart ?? null,
+          collectionWindowEnd: collectionWindows.collectionWindowEnd ?? null,
+          collectionReturnWindowStart: collectionWindows.collectionReturnWindowStart ?? null,
+          collectionReturnWindowEnd: collectionWindows.collectionReturnWindowEnd ?? null,
+          notes: data.notes ?? null,
+          internalNotes: data.internalNotes ?? null,
+          customerNotes: data.customerNotes ?? null,
+        },
+      });
+
+      const resolvedBikes: Array<(typeof bikes)[number] & { bikeId: string | null }> = [];
+      // One profile bike per bike on the job: two same-make/model bikes are two bikes.
+      const claimedBikeIds = new Set<string>();
+      for (const b of bikes) {
+        let bikeId: string | null = b.bikeId ?? null;
+        if (!bikeId && customerId) {
+          bikeId = await resolveProfileBikeForJobBike({
+            tx,
+            shopId,
+            customerId,
+            bike: b,
+            claimedBikeIds,
+          });
+        }
+        if (bikeId) claimedBikeIds.add(bikeId);
+        resolvedBikes.push({ ...b, bikeId });
+      }
+
+      // Years flow both ways between the job and the customer's saved bike: a
+      // job without one (the phone app has no year field) takes the saved
+      // bike's, so it can be looked up; a year given on the job fills in a
+      // saved bike that has none — never overwriting one already there.
+      const profileYears = new Map(
+        (
+          await tx.bike.findMany({
+            where: { shopId, id: { in: resolvedBikes.flatMap((b) => (b.bikeId ? [b.bikeId] : [])) } },
+            select: { id: true, year: true },
+          })
+        ).map((p) => [p.id, p.year])
+      );
+      for (const b of resolvedBikes) {
+        if (!b.bikeId) continue;
+        const saved = profileYears.get(b.bikeId) ?? null;
+        if (b.year == null && saved != null) {
+          b.year = saved;
+        } else if (b.year != null && saved == null) {
+          await tx.bike.updateMany({ where: { id: b.bikeId, shopId, year: null }, data: { year: b.year } });
+        }
+      }
+
+      await tx.jobBike.createMany({
+        data: resolvedBikes.map((b, i) => ({
+          shopId,
+          jobId: newJob.id,
+          make: b.make,
+          model: b.model?.trim() || null,
+          year: b.year ?? null,
+          nickname: b.nickname ?? null,
+          imageUrl: b.imageUrl ?? null,
+          bikeId: b.bikeId,
+          bikeType: b.bikeType ?? null,
+          sortOrder: i,
+        })),
+      });
+
+      if (data.serviceIds && data.serviceIds.length > 0) {
+        const services = await tx.service.findMany({
+          where: { shopId, id: { in: data.serviceIds }, isSystem: false },
+        });
+        await tx.jobService.createMany({
+          data: services.map((s) => ({
+            shopId,
+            jobId: newJob.id,
+            serviceId: s.id,
+            quantity: 1,
+            unitPrice: s.price,
+          })),
+        });
+      }
+
+      if (features.collectionServiceEnabled) {
+        await syncCollectionJobService(tx, newJob.id);
+      }
+
+      return tx.job.findUnique({
+        where: { id: newJob.id, shopId },
+        include: {
+          customer: true,
+          mechanic: { select: { id: true, fullName: true, imageUrl: true } },
+          jobBikes: { include: { bike: true }, orderBy: { sortOrder: "asc" } },
+          jobServices: { include: { service: true } },
+          jobProducts: { include: { product: true } },
+        },
+      });
+    }, { timeout: 15000 });
+
+    // Match each bike to the catalog (searching the web for bikes it doesn't
+    // know yet) after the response is sent, so it never slows job creation.
+    scheduleCatalogLookup(job?.jobBikes?.map((jb) => jb.id) ?? []);
+
+    if (!job) {
+      return NextResponse.json({ error: "Failed to create job" }, { status: 500 });
+    }
+
+    const templateSlug = getTemplateForStage("BOOKED_IN", job.deliveryType);
+    const customerEmail = getEffectiveEmailUpdatesConsent(job.customer)
+      ? job.customer?.email?.trim()
+      : null;
+    if (!customerEmail) {
+      console.log("[Job created] No customer email – skipping booking confirmation");
+    } else if (!templateSlug) {
+      console.warn("[Job created] No template for BOOKED_IN – run `npx prisma db seed` to add templates");
+    } else {
+      const result = await sendJobEmail(templateSlug, customerEmail, job);
+      if (!result.ok) {
+        console.error("[Job created] Booking email failed:", result.error);
+      }
+    }
+
+    const customerName = [job.customer?.firstName, job.customer?.lastName].filter(Boolean).join(" ") || "Walk-in";
+    sendPushToAllStaff(shopId, {
+      title: "New Job",
+      body: `${customerName} — ${job.bikeMake} ${job.bikeModel}`.trim(),
+      data: { type: "new_job", jobId: job.id },
+    }).catch((e) => console.error("[Job created] Staff push failed:", e));
+
+    if (features.chatEnabled && job.customer?.id) {
+      const chatTemplateSlug = getTemplateSlugForStage("BOOKED_IN", job.deliveryType);
+      if (chatTemplateSlug) {
+        const shopRow = await prisma.shop.findUnique({
+          where: { id: shopId },
+          select: { name: true, subdomain: true },
+        });
+        try {
+          await mirrorJobStageToCustomerChat({
+            shopId,
+            customerId: job.customer.id,
+            job,
+            smsTemplateSlug: chatTemplateSlug,
+            shopHint: shopRow ?? undefined,
+          });
+        } catch (e) {
+          console.error("[Job created] stage chat mirror failed:", {
+            jobId: job.id,
+            customerId: job.customer?.id,
+            error: e instanceof Error ? e.message : String(e),
+          });
+        }
+      }
+    }
+
+    await publishJobEvent("job:created", { jobId: job.id, shopId });
+
+    return NextResponse.json(
+      job.jobBikes
+        ? {
+            ...job,
+            jobBikes: await enrichJobBikesWithCatalogThumbnails(job.jobBikes),
+          }
+        : job
+    );
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      const flattened = error.flatten();
+      const fieldErrors = Object.entries(flattened.fieldErrors ?? {})
+        .flatMap(([field, msgs]) =>
+          (Array.isArray(msgs) ? msgs : [msgs]).filter(Boolean).map((m) => `${field}: ${m}`)
+        );
+      const formErrors = Array.isArray(flattened.formErrors) ? flattened.formErrors : [];
+      const messages = [...formErrors, ...fieldErrors];
+      const message = messages.length ? messages.join("; ") : "Invalid input";
+      return NextResponse.json({ error: message }, { status: 400 });
+    }
+    console.error("POST /api/jobs error:", error);
+    const message =
+      error instanceof Error ? error.message : "Failed to create job";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}

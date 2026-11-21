@@ -1,0 +1,3097 @@
+import { Resend } from "resend";
+import fs from "fs";
+import path from "path";
+import { formatCollectionWindowRange } from "./format-collection-window";
+import { getEffectiveEmailUpdatesConsent } from "./sms-consent";
+import { getShopTimezone } from "./shop-timezone";
+import { getShopNotifyEmail } from "./shop-notify-email";
+import type { ChatCustomerReminderDelivery } from "./chat-reminder-delivery";
+import { getCustomerBillUrl, getCustomerStatusUrl } from "./job-customer-access";
+import type { BikeScopedSend } from "./sms";
+import {
+  getAppUrl,
+  getCustomerNotificationBlockReason,
+  getEmailRedirectTo,
+  getEmailSendingDisabledReason,
+  getResendApiKey,
+  getUnredirectedEmailBlockReason,
+  getShopAppUrl,
+  getStaffChatOpenUrl,
+  getStaffJobOpenUrl,
+  getStaffWaitlistOpenUrl,
+} from "./env";
+import { phoneTelHref } from "./phone";
+import { computeJobTotals, type JobPricing, type JobTotals } from "./job-payments";
+
+type ResendSendOptions = Parameters<Resend["emails"]["send"]>[0];
+
+export type ResendSendResult = {
+  data: { id: string } | null;
+  error: { message: string } | null;
+  redirectedFrom?: string;
+};
+
+/** Central outbound email gate — honors EMAIL_DISABLE and non-production EMAIL_REDIRECT_TO. */
+export async function sendResendEmail(
+  resend: Resend,
+  options: ResendSendOptions
+): Promise<ResendSendResult> {
+  const disableReason = getEmailSendingDisabledReason();
+  if (disableReason) {
+    console.warn(`[email] Skipping send: ${disableReason}`, options.subject);
+    return { data: null, error: { message: disableReason } };
+  }
+
+  const redirectTo = getEmailRedirectTo();
+
+  // Fail closed. Callers blocked by the customer-notification guard return before
+  // reaching here, so anything arriving without a redirect outside Production is a
+  // guard-bypassing sender (magic links, staff/platform notifications) about to
+  // deliver to a real address from the staging database.
+  const unredirectedReason = getUnredirectedEmailBlockReason();
+  if (unredirectedReason) {
+    console.error(`[email] Refusing send: ${unredirectedReason}`, options.subject);
+    return { data: null, error: { message: unredirectedReason } };
+  }
+
+  let payload = options;
+  let redirectedFrom: string | undefined;
+  if (redirectTo) {
+    const originalTo = Array.isArray(options.to) ? options.to.join(", ") : String(options.to);
+    redirectedFrom = originalTo;
+    payload = {
+      ...options,
+      to: redirectTo,
+      subject: `[redirect: ${originalTo}] ${options.subject}`,
+    };
+    console.warn(`[email] Redirecting ${originalTo} → ${redirectTo}`);
+  }
+
+  const { data, error } = await resend.emails.send(payload);
+  if (error) return { data: null, error };
+  return { data, error: null, redirectedFrom };
+}
+
+function getResend(): Resend | null {
+  const key = getResendApiKey();
+  return key ? new Resend(key) : null;
+}
+
+function skipIfCustomerNotificationsBlocked(
+  context: string
+): { ok: false; error: string } | null {
+  const reason = getCustomerNotificationBlockReason();
+  if (reason) {
+    console.warn(`[email] Skipping ${context}: ${reason}`);
+    return { ok: false, error: reason };
+  }
+  return null;
+}
+
+function extractEmailAddress(raw: string | null | undefined): string | null {
+  const trimmed = raw?.trim();
+  if (!trimmed) return null;
+  const match = trimmed.match(/<([^>]+)>/);
+  const email = match ? match[1].trim() : trimmed;
+  return email || null;
+}
+
+const DEFAULT_EMAIL_FROM_NAME = "Bike Ops";
+
+function formatFromEmail(displayName: string, rawFromEnv?: string | null): string {
+  const email = extractEmailAddress(rawFromEnv) ?? "onboarding@resend.dev";
+  return `${displayName} <${email}>`;
+}
+
+export function getPlatformFromEmail(): string {
+  return formatFromEmail(DEFAULT_EMAIL_FROM_NAME, process.env.FROM_EMAIL);
+}
+
+function getFromEmail(): string {
+  return getPlatformFromEmail();
+}
+
+function getCustomerNoReplyEmail(): string {
+  const explicitNoReply =
+    extractEmailAddress(process.env.CUSTOMER_NO_REPLY_EMAIL) ||
+    extractEmailAddress(process.env.NO_REPLY_EMAIL);
+  if (explicitNoReply) return explicitNoReply;
+
+  const fromEmail = extractEmailAddress(process.env.FROM_EMAIL) ?? "onboarding@resend.dev";
+  const atIndex = fromEmail.lastIndexOf("@");
+  if (atIndex === -1) return fromEmail;
+  return `no-reply@${fromEmail.slice(atIndex + 1)}`;
+}
+
+export function getCustomerEmailSendOptions(): { from: string; replyTo: string } {
+  const noReplyEmail = getCustomerNoReplyEmail();
+  return {
+    from: formatFromEmail(DEFAULT_EMAIL_FROM_NAME, noReplyEmail),
+    replyTo: noReplyEmail,
+  };
+}
+
+const CUSTOMER_EMAIL_HEADER_LOGO_CID = "customer-email-header-logo";
+const DEFAULT_HEADER_LOGO_FILE = "bike-ops-logo.png";
+
+export interface CustomerEmailBrandingAssets {
+  /** Centered header image (bike-ops-logo.png or HTTPS override). */
+  headerLogoSrc: string;
+  attachments?: { filename: string; content: Buffer; contentId: string }[];
+}
+
+/**
+ * Single centered header logo for customer emails.
+ * Per-shop branding wins when available; otherwise URL from app base or CID-embedded file.
+ * Override: CUSTOMER_EMAIL_HEADER_LOGO_URL or CUSTOMER_EMAIL_LOGO_URL / SHOP_LOGO_URL (HTTPS).
+ */
+export async function getCustomerEmailBrandingAssets(shopId?: string | null): Promise<CustomerEmailBrandingAssets> {
+  let base = getAppUrl();
+  const logoOverride =
+    process.env.CUSTOMER_EMAIL_HEADER_LOGO_URL?.trim() ||
+    process.env.CUSTOMER_EMAIL_LOGO_URL?.trim() ||
+    process.env.SHOP_LOGO_URL?.trim();
+
+  if (logoOverride?.startsWith("http")) {
+    return { headerLogoSrc: logoOverride };
+  }
+
+  if (shopId) {
+    try {
+      const { prisma } = await import("./db");
+      const settings = await prisma.appSettings.findUnique({
+        where: { shopId },
+        select: {
+          logoUrl: true,
+          shop: { select: { subdomain: true } },
+        },
+      });
+      if (settings?.shop.subdomain) {
+        base = getShopAppUrl(settings.shop.subdomain) || base;
+      }
+      if (settings?.logoUrl?.trim()) {
+        return { headerLogoSrc: resolveEmailImageSrc(settings.logoUrl, base) };
+      }
+    } catch {
+      // Fall back to the default logo below.
+    }
+  }
+
+  if (base) {
+    return { headerLogoSrc: `${base}/${DEFAULT_HEADER_LOGO_FILE}` };
+  }
+
+  try {
+    const logoPath = path.join(process.cwd(), "public", DEFAULT_HEADER_LOGO_FILE);
+    if (fs.existsSync(logoPath)) {
+      return {
+        headerLogoSrc: `cid:${CUSTOMER_EMAIL_HEADER_LOGO_CID}`,
+        attachments: [
+          {
+            filename: DEFAULT_HEADER_LOGO_FILE,
+            content: fs.readFileSync(logoPath),
+            contentId: CUSTOMER_EMAIL_HEADER_LOGO_CID,
+          },
+        ],
+      };
+    }
+  } catch {
+    // ignore
+  }
+
+  return { headerLogoSrc: "" };
+}
+
+export function customerEmailBrandingAttachments(
+  assets: CustomerEmailBrandingAssets
+): { filename: string; content: Buffer; contentId: string }[] | undefined {
+  return assets.attachments;
+}
+
+export function mergeTemplateVariables(
+  html: string,
+  vars: Record<string, string>
+): string {
+  let result = html;
+  for (const [key, value] of Object.entries(vars)) {
+    result = result.replace(
+      new RegExp(`\\{\\{${key}\\}\\}`, "g"),
+      value ?? ""
+    );
+  }
+  return result;
+}
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/** Staff-typed text merged into an email template: escape markup, keep the line breaks. */
+function toTemplateHtmlText(text: string): string {
+  return escapeHtml(text).replace(/\r\n|\r|\n/g, "<br />");
+}
+
+function formatDeliveryTypeLabel(deliveryType: string): string {
+  if (deliveryType === "DROP_OFF_AT_SHOP") return "Drop-off at shop";
+  if (deliveryType === "COLLECTION_SERVICE") return "Collection service";
+  return deliveryType;
+}
+
+/** Aligns with src/app/globals.css --primary, --background, --foreground, --muted, --border */
+const BIKE_OPS_EMAIL = {
+  font: "'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+  bgPage: "#f8fafc",
+  bgCard: "#ffffff",
+  bgFooter: "#f1f5f9",
+  border: "#e2e8f0",
+  text: "#334155",
+  heading: "#0f172a",
+  muted: "#64748b",
+  primary: "#4f46e5",
+  accentBar: "#4f46e5",
+} as const;
+
+const BIKE_OPS_EMAIL_DARK = {
+  bgPage: "#111118",
+  bgCard: "#1a1a24",
+  bgFooter: "#15151f",
+  border: "#2a2a3a",
+  text: "#d1d5db",
+  heading: "#f1f1f4",
+  muted: "#9ca3af",
+  accentBar: "#6366f1",
+  primary: "#818cf8",
+  tableBg: "#1e1e2a",
+  tableHeaderBg: "#22222e",
+  tableRowAlt: "#1a1a26",
+} as const;
+
+const CUSTOMER_EMAIL_FOOTER_BRAND = "Bike Ops";
+const CUSTOMER_EMAIL_FOOTER_TAGLINE = "Thanks for choosing us for your bike care.";
+const PLATFORM_EMAIL_FOOTER_TAGLINE =
+  "Software for bike shops — bookings, repairs, and customer communication.";
+const PLATFORM_SIGNUP_EMAIL_DISCLAIMER =
+  "You received this email because you started signing up for Bike Ops. If you didn't create an account, you can ignore this message.";
+const PLATFORM_SIGNUP_READ_ONLY_NOTICE =
+  "This inbox is not monitored. Please do not reply to this email — use the confirmation link above to finish setting up your workspace.";
+const PLATFORM_PASSWORD_RESET_EMAIL_DISCLAIMER =
+  "You received this email because someone asked to reset the password for your Bike Ops account. If that wasn't you, you can ignore this message — your password won't change.";
+const PLATFORM_PASSWORD_RESET_READ_ONLY_NOTICE =
+  "This inbox is not monitored. Please do not reply to this email — use the link above to choose a new password.";
+
+function bikeOpsEmailShopSubtitle(): string | null {
+  const shop = process.env.SHOP_NAME?.trim();
+  if (!shop) return null;
+  const norm = shop.replace(/\s+/g, " ").toLowerCase();
+  if (norm === "bike ops") return null;
+  return shop;
+}
+
+/** Header logo: height-led so wide wordmarks stay proportional (not full-card width). */
+const EMAIL_HEADER_LOGO_MAX_HEIGHT_PX = 112;
+const EMAIL_HEADER_LOGO_MAX_WIDTH_PX = 400;
+
+function resolveEmailImageSrc(src: string, baseUrl = getAppUrl()): string {
+  const trimmed = src.trim();
+  if (!trimmed || trimmed.startsWith("cid:") || trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return trimmed;
+  }
+
+  if (trimmed.startsWith("/")) {
+    const base = baseUrl.replace(/\/$/, "");
+    if (base) return `${base}${trimmed}`;
+  }
+
+  return trimmed;
+}
+
+function buildCustomerEmailHeaderBlock(headerLogoSrc: string): string {
+  const resolvedLogoSrc = resolveEmailImageSrc(headerLogoSrc);
+  if (!resolvedLogoSrc) return "";
+  const src = resolvedLogoSrc.startsWith("cid:") ? resolvedLogoSrc : escapeHtml(resolvedLogoSrc);
+  const h = EMAIL_HEADER_LOGO_MAX_HEIGHT_PX;
+  const w = EMAIL_HEADER_LOGO_MAX_WIDTH_PX;
+  const img = `<img src="${src}" alt="Bike Ops" height="${h}" style="display:block;margin:0 auto;border:0;height:${h}px;max-height:${h}px;width:auto;max-width:${w}px;object-fit:contain;outline:none;text-decoration:none" />`;
+  const websiteUrl = process.env.SHOP_WEBSITE_URL?.trim();
+  if (websiteUrl) {
+    return `<a href="${escapeHtml(websiteUrl)}" target="_blank" rel="noopener noreferrer" style="display:block;text-decoration:none;border:0">${img}</a>`;
+  }
+  return img;
+}
+
+/**
+ * Shared HTML shell for customer emails — table layout, Plus Jakarta Sans, Bike Ops colors (matches web app).
+ */
+export function buildCustomerEmailHtml(options: {
+  innerHtml: string;
+  headerLogoSrc: string;
+  heading?: string;
+  footerBrand?: string;
+  /** Omit for shop subtitle from env; pass `null` to hide secondary footer line. */
+  footerSecondary?: string | null;
+  footerTagline?: string;
+  footerDisclaimer?: string;
+}): string {
+  const {
+    innerHtml,
+    headerLogoSrc,
+    heading,
+    footerBrand = CUSTOMER_EMAIL_FOOTER_BRAND,
+    footerTagline = CUSTOMER_EMAIL_FOOTER_TAGLINE,
+    footerDisclaimer = "You are receiving this because you booked or interacted with our shop. If this was not you, you can ignore this message.",
+  } = options;
+  const { font, bgPage, bgCard, bgFooter, border, text, heading: headColor, muted, accentBar } =
+    BIKE_OPS_EMAIL;
+
+  const headerBlock = buildCustomerEmailHeaderBlock(headerLogoSrc);
+
+  const headingRow = heading
+    ? `<tr>
+    <td style="padding:8px 40px 4px;font-family:${font};color:${headColor};text-align:center">
+      <h1 class="email-heading" style="margin:0;font-size:26px;line-height:1.25;font-weight:700;letter-spacing:-0.02em;color:${headColor}">${escapeHtml(heading)}</h1>
+    </td>
+  </tr>`
+    : "";
+
+  const shopSub =
+    options.footerSecondary === undefined ? bikeOpsEmailShopSubtitle() : options.footerSecondary;
+  const footerSecondary = shopSub
+    ? `<p class="email-footer-secondary" style="margin:6px 0 0;font-family:${font};font-size:13px;line-height:1.5;color:${muted}">${escapeHtml(shopSub)}</p>`
+    : "";
+
+  const dk = BIKE_OPS_EMAIL_DARK;
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="supported-color-schemes" content="light dark" />
+  <title>${escapeHtml(footerBrand)}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700&amp;display=swap" rel="stylesheet" />
+  <style>
+    :root { color-scheme: light dark; }
+    @media (prefers-color-scheme: dark) {
+      body, .email-body { background-color: ${dk.bgPage} !important; }
+      .email-card { background-color: ${dk.bgCard} !important; border-color: ${dk.border} !important; }
+      .email-accent-bar { background-color: ${dk.accentBar} !important; }
+      .email-body-cell { color: ${dk.text} !important; }
+      .email-heading { color: ${dk.heading} !important; }
+      .email-footer { background-color: ${dk.bgFooter} !important; border-color: ${dk.border} !important; }
+      .email-footer-brand { color: ${dk.heading} !important; }
+      .email-footer-secondary, .email-muted { color: ${dk.muted} !important; }
+      .email-disclaimer { color: ${dk.muted} !important; }
+      .email-table { border-color: ${dk.border} !important; }
+      .email-table-header { background-color: ${dk.tableHeaderBg} !important; }
+      .email-table-header td, .email-table-header th { color: ${dk.muted} !important; border-color: ${dk.border} !important; }
+      .email-table-row td { border-color: ${dk.border} !important; color: ${dk.text} !important; }
+      .email-table-row-alt { background-color: ${dk.tableRowAlt} !important; }
+      .email-table-label { color: ${dk.muted} !important; }
+      .email-table-value { color: ${dk.heading} !important; }
+      .email-cta-btn { background-color: ${dk.primary} !important; }
+      .email-summary-box { background-color: ${dk.tableHeaderBg} !important; border-color: ${dk.border} !important; }
+      .email-quote-box { background-color: ${dk.tableHeaderBg} !important; border-left-color: ${dk.primary} !important; color: ${dk.text} !important; }
+      a { color: ${dk.primary} !important; }
+      .email-cta-btn a { color: #ffffff !important; }
+    }
+  </style>
+</head>
+<body class="email-body" style="margin:0;padding:0;background-color:${bgPage};-webkit-text-size-adjust:100%">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-body" style="background-color:${bgPage}">
+  <tbody><tr><td align="center" style="padding:28px 16px 40px">
+    <table role="presentation" width="640" cellpadding="0" cellspacing="0" border="0" class="email-card" style="width:100%;max-width:640px;background-color:${bgCard};border:1px solid ${border};border-radius:12px;overflow:hidden">
+      <tbody>
+        <tr>
+          <td class="email-accent-bar" style="height:4px;line-height:4px;font-size:0;background-color:${accentBar};mso-line-height-rule:exactly">&nbsp;</td>
+        </tr>
+        <tr>
+          <td align="center" style="padding:28px 40px 12px">${headerBlock}</td>
+        </tr>
+        ${headingRow}
+        <tr>
+          <td class="email-body-cell" style="padding:${heading ? "16px" : "8px"} 40px 8px;font-family:${font};font-size:15px;line-height:1.65;color:${text}">
+            ${innerHtml}
+          </td>
+        </tr>
+        <tr>
+          <td class="email-footer" style="padding:24px 40px 28px;background-color:${bgFooter};border-top:1px solid ${border}">
+            <p class="email-footer-brand" style="margin:0;font-family:${font};font-size:14px;line-height:1.5;font-weight:600;color:${headColor}">${escapeHtml(footerBrand)}</p>
+            ${footerSecondary}
+            <p class="email-muted" style="margin:10px 0 0;font-family:${font};font-size:12px;line-height:1.5;color:${muted}">${escapeHtml(footerTagline)}</p>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="email-disclaimer" style="margin:16px 0 0;font-family:${font};font-size:11px;line-height:1.4;color:${muted};max-width:640px">
+      ${escapeHtml(footerDisclaimer)}
+    </p>
+  </td></tr></tbody>
+</table>
+</body>
+</html>`;
+}
+
+function buildCustomerReadOnlyNoticeHtml(notice?: string): string {
+  const text = notice ?? getCustomerReadOnlyNoticeText();
+  return `<p class="email-muted" style="margin:24px 0 0;font-size:12px;line-height:1.6;color:#64748b">${escapeHtml(text)}</p>`;
+}
+
+function getCustomerReadOnlyNoticeText(): string {
+  return "This inbox is not monitored. Please do not reply to this email. Use the links in this email or contact the shop directly if you need help.";
+}
+
+export function buildReadOnlyCustomerEmailHtml(options: {
+  innerHtml: string;
+  headerLogoSrc: string;
+  heading?: string;
+  footerBrand?: string;
+  footerSecondary?: string | null;
+  footerTagline?: string;
+  footerDisclaimer?: string;
+  readOnlyNotice?: string;
+}): string {
+  return buildCustomerEmailHtml({
+    ...options,
+    innerHtml: `${options.innerHtml}${buildCustomerReadOnlyNoticeHtml(options.readOnlyNotice)}`,
+  });
+}
+
+/** Primary action button — Bike Ops indigo (matches app --primary). */
+export function buildCustomerEmailCtaButton(href: string, label: string): string {
+  const { font, primary } = BIKE_OPS_EMAIL;
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:24px auto 0;border-collapse:separate;width:100%;max-width:100%">
+  <tbody><tr>
+    <td align="center" style="padding:0">
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" class="email-cta-btn" style="width:100%;max-width:400px;border-collapse:separate">
+        <tbody><tr>
+          <td align="center" bgcolor="${primary}" class="email-cta-btn" style="background-color:${primary};border-radius:10px;mso-padding-alt:0">
+            <a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer" style="display:block;padding:14px 28px;font-family:${font};font-size:15px;font-weight:600;line-height:1.25;color:#ffffff;text-decoration:none;border-radius:10px">${escapeHtml(label)}</a>
+          </td>
+        </tr></tbody>
+      </table>
+    </td>
+  </tr></tbody>
+</table>`;
+}
+
+/** Sample merge values for staff preview and test sends (Email Templates settings). */
+export function getEmailTemplatePreviewVars(): Record<string, string> {
+  const base = getAppUrl();
+  const statusUrl = base ? `${base}/status/preview` : "https://example.com/status/preview";
+  const shopName = process.env.SHOP_NAME?.trim() || "Basement Bike Mechanic";
+  return {
+    customerName: "Alex Rider",
+    bikeMake: "Trek",
+    bikeModel: "Domane SL 5",
+    shopName,
+    customerNotes: "Please check the rear derailleur.",
+    statusUrl,
+    statusButtonHtml: buildCustomerEmailCtaButton(statusUrl, "Track your repair status"),
+    rejectionReason:
+      "We are fully booked for your requested dates. We hope to serve you another time.",
+    dropOffDate: new Date(Date.now() + 86400000).toLocaleDateString("en-US", {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    }),
+    pickupDate: new Date(Date.now() + 7 * 86400000).toLocaleDateString("en-US", {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    }),
+  };
+}
+
+export function mergeEmailTemplateWithPreviewVars(bodyHtml: string): string {
+  return mergeTemplateVariables(bodyHtml, getEmailTemplatePreviewVars());
+}
+
+const LEGACY_WAITING_ON_CUSTOMER_TEMPLATE_BODY =
+  `<p>Hi {{customerName}},</p><p>We’re ready to move forward with your {{bikeMake}} {{bikeModel}}, but we need your approval before we continue.</p><p>Please reply to this email with your approval (or any questions), and we’ll get back to work.</p><p style="margin: 20px 0;">{{statusButtonHtml}}</p><p>Thanks,<br/>The {{shopName}} Team</p>`;
+
+const WAITING_ON_CUSTOMER_TEMPLATE_BODY =
+  `<p>Hi {{customerName}},</p><p>We’re ready to move forward with your {{bikeMake}} {{bikeModel}}, but we need your approval before we continue.</p><p>Please contact the shop to approve the work so we can continue.</p><p style="margin: 20px 0;">{{statusButtonHtml}}</p><p>Thanks,<br/>The {{shopName}} Team</p>`;
+
+const BIKE_WAITING_ON_PARTS_TEMPLATE_BODY =
+  `<p>Hi {{customerName}},</p><p>A quick update on your {{bikeName}}: we're waiting on parts before we can finish it.</p><p>We'll let you know as soon as the parts arrive. Any other bikes on this repair are unaffected.</p><p style="margin: 20px 0;">{{statusButtonHtml}}</p><p>Thanks,<br/>The {{shopName}} Team</p>`;
+
+const WAITLIST_PROMOTED_DROPOFF_TEMPLATE_BODY =
+  `<p>Hi {{customerName}},</p><p>Great news — a spot has opened up and we’ve booked in your {{bikeMake}} {{bikeModel}}! You’re off the waitlist.</p><p>Please drop your bike off at {{shopName}} at your scheduled time. We’ll keep you posted as the repair progresses.</p><p style="margin: 20px 0;">{{statusButtonHtml}}</p><p>Thanks,<br/>The {{shopName}} Team</p>`;
+
+const WAITLIST_PROMOTED_COLLECTION_TEMPLATE_BODY =
+  `<p>Hi {{customerName}},</p><p>Great news — a spot has opened up and we’ve booked in your {{bikeMake}} {{bikeModel}}! You’re off the waitlist.</p><p>We’ll collect your bike at the arranged time and keep you posted as the repair progresses.</p><p style="margin: 20px 0;">{{statusButtonHtml}}</p><p>Thanks,<br/>The {{shopName}} Team</p>`;
+
+/** Default content for waitlist-promotion templates, used to backfill un-reseeded databases. */
+const WAITLIST_PROMOTED_TEMPLATE_DEFAULTS: Record<
+  string,
+  { name: string; subject: string; bodyHtml: string; deliveryType: "DROP_OFF_AT_SHOP" | "COLLECTION_SERVICE" }
+> = {
+  waitlist_promoted_dropoff: {
+    name: "Waitlist Promoted (Drop-off)",
+    subject: "Good news — a spot opened up for your {{bikeMake}} {{bikeModel}}! – {{shopName}}",
+    bodyHtml: WAITLIST_PROMOTED_DROPOFF_TEMPLATE_BODY,
+    deliveryType: "DROP_OFF_AT_SHOP",
+  },
+  waitlist_promoted_collection: {
+    name: "Waitlist Promoted (Collection)",
+    subject: "Good news — a spot opened up for your {{bikeMake}} {{bikeModel}}! – {{shopName}}",
+    bodyHtml: WAITLIST_PROMOTED_COLLECTION_TEMPLATE_BODY,
+    deliveryType: "COLLECTION_SERVICE",
+  },
+};
+
+/** Slug for the email sent when a waitlist entry is promoted to a booked-in job. */
+export function getWaitlistPromotedTemplateSlug(deliveryType: string): string {
+  return deliveryType === "COLLECTION_SERVICE"
+    ? "waitlist_promoted_collection"
+    : "waitlist_promoted_dropoff";
+}
+
+/**
+ * Send one customer-style email using a DB template slug + preview merge data (for staff testing).
+ */
+export async function sendEmailTemplateTestEmail(
+  shopId: string,
+  slug: string,
+  recipient: string
+): Promise<{ ok: boolean; error?: string }> {
+  const resend = getResend();
+  if (!resend) {
+    return { ok: false, error: "Email not configured (set RESEND_API_KEY)" };
+  }
+
+  const trimmedTo = recipient.trim();
+  if (!trimmedTo || !trimmedTo.includes("@")) {
+    return { ok: false, error: "Invalid email address" };
+  }
+
+  const { prisma } = await import("./db");
+  const template = await prisma.emailTemplate.findUnique({
+    where: { shopId_slug: { shopId, slug: slug.trim() } },
+  });
+  if (!template) {
+    return { ok: false, error: "Template not found" };
+  }
+
+  const vars = getEmailTemplatePreviewVars();
+  const subject = `${mergeTemplateVariables(template.subject, vars)} [test]`;
+  const mergedBody = mergeTemplateVariables(template.bodyHtml, vars);
+  const branding = await getCustomerEmailBrandingAssets(shopId);
+  const html = buildReadOnlyCustomerEmailHtml({
+    innerHtml: mergedBody,
+    headerLogoSrc: branding.headerLogoSrc,
+  });
+  const attachments = customerEmailBrandingAttachments(branding);
+
+  try {
+    const { error } = await sendResendEmail(resend, {
+      ...getCustomerEmailSendOptions(),
+      to: trimmedTo,
+      subject,
+      html,
+      ...(attachments && { attachments }),
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Unknown error" };
+  }
+}
+
+/** Full customer email HTML as sent (wrapper + logo + sample variable merge). */
+export async function buildCustomerEmailPreviewDocument(bodyHtml: string, shopId?: string | null): Promise<string> {
+  const merged = mergeEmailTemplateWithPreviewVars(bodyHtml);
+  const branding = await getCustomerEmailBrandingAssets(shopId);
+  return buildReadOnlyCustomerEmailHtml({
+    innerHtml: merged,
+    headerLogoSrc: branding.headerLogoSrc,
+  });
+}
+
+interface JobForEmail {
+  id: string;
+  shopId: string;
+  bikeMake: string;
+  bikeModel: string;
+  stage?: string;
+  customer: { firstName: string; lastName: string | null } | null;
+  customerNotes?: string | null;
+  dropOffDate?: Date | string | null;
+  pickupDate?: Date | string | null;
+  collectionWindowStart?: string | null;
+  collectionWindowEnd?: string | null;
+}
+
+export async function sendJobEmail(
+  templateSlug: string,
+  recipient: string,
+  job: JobForEmail,
+  bikeScope?: BikeScopedSend
+): Promise<{ ok: boolean; error?: string }> {
+  const blocked = skipIfCustomerNotificationsBlocked("sendJobEmail");
+  if (blocked) return blocked;
+
+  const resend = getResend();
+  if (!resend) {
+    console.warn("RESEND_API_KEY not set, skipping email");
+    return { ok: false, error: "Email not configured" };
+  }
+
+  // Never send booking confirmation to customer for pending-approval jobs
+  const isBookingConfirmation =
+    templateSlug === "booking_confirmation_dropoff" ||
+    templateSlug === "booking_confirmation_collection";
+  if (isBookingConfirmation && job.stage === "PENDING_APPROVAL") {
+    return { ok: false, error: "Booking not yet approved" };
+  }
+
+  const { prisma } = await import("./db");
+  const shopId = job.shopId;
+  const shopRow = await prisma.shop
+    .findUnique({ where: { id: shopId }, select: { name: true, subdomain: true } })
+    .catch(() => null);
+
+  let template = await prisma.emailTemplate.findUnique({
+    where: { shopId_slug: { shopId, slug: templateSlug } },
+  });
+
+  // Backfill newly-added default templates for older databases that haven't been re-seeded.
+  if (!template && templateSlug === "bike_waiting_on_parts") {
+    try {
+      template = await prisma.emailTemplate.create({
+        data: {
+          shopId,
+          slug: templateSlug,
+          name: "Bike Waiting on Parts",
+          subject: "Update: waiting on parts for your {{bikeName}} – {{shopName}}",
+          bodyHtml: BIKE_WAITING_ON_PARTS_TEMPLATE_BODY,
+          triggerType: "MANUAL",
+          stage: null,
+          deliveryType: null,
+          delayDays: null,
+        },
+      });
+    } catch {
+      template = await prisma.emailTemplate.findUnique({
+        where: { shopId_slug: { shopId, slug: templateSlug } },
+      });
+    }
+  }
+
+  if (!template && templateSlug === "waiting_on_customer") {
+    try {
+      template = await prisma.emailTemplate.create({
+        data: {
+          shopId,
+          slug: templateSlug,
+          name: "Waiting on Customer",
+          subject: "Action needed: We’re waiting on your approval – {{shopName}}",
+          bodyHtml: WAITING_ON_CUSTOMER_TEMPLATE_BODY,
+          triggerType: "STAGE_CHANGE",
+          stage: "WAITING_ON_CUSTOMER",
+          deliveryType: null,
+          delayDays: null,
+        },
+      });
+    } catch {
+      template = await prisma.emailTemplate.findUnique({
+        where: { shopId_slug: { shopId, slug: templateSlug } },
+      });
+    }
+  }
+
+  if (
+    templateSlug === "waiting_on_customer" &&
+    template?.bodyHtml?.trim() === LEGACY_WAITING_ON_CUSTOMER_TEMPLATE_BODY
+  ) {
+    try {
+      template = await prisma.emailTemplate.update({
+        where: { shopId_slug: { shopId, slug: templateSlug } },
+        data: { bodyHtml: WAITING_ON_CUSTOMER_TEMPLATE_BODY },
+      });
+    } catch {
+      template = { ...template, bodyHtml: WAITING_ON_CUSTOMER_TEMPLATE_BODY };
+    }
+  }
+
+  // Backfill waitlist-promotion templates for databases that predate them.
+  if (!template && WAITLIST_PROMOTED_TEMPLATE_DEFAULTS[templateSlug]) {
+    const def = WAITLIST_PROMOTED_TEMPLATE_DEFAULTS[templateSlug];
+    try {
+      template = await prisma.emailTemplate.create({
+        data: {
+          shopId,
+          slug: templateSlug,
+          name: def.name,
+          subject: def.subject,
+          bodyHtml: def.bodyHtml,
+          triggerType: "MANUAL",
+          stage: null,
+          deliveryType: def.deliveryType,
+          delayDays: null,
+        },
+      });
+    } catch {
+      template = await prisma.emailTemplate.findUnique({
+        where: { shopId_slug: { shopId, slug: templateSlug } },
+      });
+    }
+  }
+
+  if (!template) {
+    return { ok: false, error: "Template not found" };
+  }
+
+  const statusUrl = getCustomerStatusUrl(job.id, shopId, shopRow?.subdomain);
+  const statusButtonHtml = statusUrl
+    ? buildCustomerEmailCtaButton(statusUrl, "Track your repair status")
+    : "";
+  const shopTimeZone = await getShopTimezone(shopId);
+
+  const formatDate = (d: Date | string | null | undefined): string => {
+    if (!d) return "";
+    const date = typeof d === "string" ? new Date(d) : d;
+    return date.toLocaleDateString("en-US", {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    });
+  };
+
+  // A bike-scoped send names that bike, so even templates written against
+  // {{bikeMake}} {{bikeModel}} render the affected bike, not "Multiple / 3 bikes".
+  const bikeMake = bikeScope?.bikeMake ?? job.bikeMake;
+  const bikeModel = bikeScope?.bikeModel ?? job.bikeModel;
+  const vars: Record<string, string> = {
+    customerName: job.customer
+      ? job.customer.lastName
+        ? `${job.customer.firstName} ${job.customer.lastName}`
+        : job.customer.firstName
+      : "Customer",
+    bikeMake,
+    bikeModel,
+    bikeName: bikeScope?.bikeName ?? `${bikeMake} ${bikeModel}`.trim(),
+    shopName: shopRow?.name ?? process.env.SHOP_NAME ?? "Basement Bike Mechanic",
+    customerNotes: job.customerNotes ?? "",
+    statusUrl,
+    statusButtonHtml,
+    dropOffDate: formatDate(job.dropOffDate),
+    pickupDate: formatDate(job.pickupDate),
+    collectionWindow:
+      formatCollectionWindowRange(job.collectionWindowStart, job.collectionWindowEnd, {
+        shopTimeZone,
+        referenceDate: job.dropOffDate,
+      }) ?? "",
+  };
+
+  const subject = mergeTemplateVariables(template.subject, vars);
+  const bodyHtml = mergeTemplateVariables(template.bodyHtml, vars);
+  const branding = await getCustomerEmailBrandingAssets(job.shopId);
+  const html = buildReadOnlyCustomerEmailHtml({
+    innerHtml: bodyHtml,
+    headerLogoSrc: branding.headerLogoSrc,
+  });
+  const attachments = customerEmailBrandingAttachments(branding);
+
+  try {
+    const { error } = await sendResendEmail(resend, {
+      ...getCustomerEmailSendOptions(),
+      to: recipient,
+      subject,
+      html,
+      ...(attachments && { attachments }),
+    });
+
+    if (error) {
+      return { ok: false, error: error.message };
+    }
+
+    await prisma.jobEmail.create({
+      data: {
+        shopId,
+        jobId: job.id,
+        jobBikeId: bikeScope?.jobBikeId ?? null,
+        templateSlug,
+        recipient,
+      },
+    });
+
+    return { ok: true };
+  } catch (e) {
+    const err = e instanceof Error ? e.message : "Unknown error";
+    return { ok: false, error: err };
+  }
+}
+
+export async function sendBookingRequestNotification(
+  job: {
+    shopId?: string;
+    id: string;
+    bikeMake: string;
+    bikeModel: string;
+    deliveryType: string;
+    dropOffDate: Date | string | null;
+    pickupDate: Date | string | null;
+    collectionWindowStart?: string | null;
+    collectionWindowEnd?: string | null;
+    customerNotes?: string | null;
+    customer: { firstName: string; lastName: string | null; email: string | null; phone: string | null } | null;
+    jobServices?: { service?: { name: string } | null; customServiceName?: string | null; quantity: number }[];
+  }
+): Promise<{ ok: boolean; error?: string }> {
+  const resend = getResend();
+  if (!resend) {
+    return { ok: false, error: "Email not configured" };
+  }
+
+  const shopId = job.shopId ?? "shop_default";
+  const notifyEmail = await getShopNotifyEmail(shopId);
+  if (!notifyEmail) {
+    console.warn("No staff notification email configured, skipping booking notification");
+    return { ok: false, error: "No notification email configured" };
+  }
+
+  const { prisma } = await import("./db");
+  const shopRow = await prisma.shop
+    .findUnique({ where: { id: shopId }, select: { subdomain: true } })
+    .catch(() => null);
+  const staffJobUrl = getStaffJobOpenUrl(job.id, shopRow?.subdomain);
+  const customerName = job.customer
+    ? job.customer.lastName
+      ? `${job.customer.firstName} ${job.customer.lastName}`
+      : job.customer.firstName
+    : "Unknown";
+  const servicesList =
+    job.jobServices
+      ?.map((js) => `${js.service?.name ?? js.customServiceName ?? "Service"}${js.quantity > 1 ? ` × ${js.quantity}` : ""}`)
+      .join(", ") || "None specified";
+  const dropOff = job.dropOffDate
+    ? new Date(job.dropOffDate).toLocaleDateString("en-US", {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      })
+    : "Not set";
+  const pickup = job.pickupDate
+    ? new Date(job.pickupDate).toLocaleDateString("en-US", {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      })
+    : "Not set";
+
+  const shopTimeZone = await getShopTimezone(job.shopId ?? "shop_default");
+  const pickupWindowText = formatCollectionWindowRange(
+    job.collectionWindowStart,
+    job.collectionWindowEnd,
+    { shopTimeZone, referenceDate: job.dropOffDate }
+  );
+  const collectionWindowLine = pickupWindowText
+    ? `<br/><strong>Collection window:</strong> ${pickupWindowText}`
+    : "";
+
+  const subject = `New booking request: ${job.bikeMake} ${job.bikeModel}`;
+  const innerHtml = `
+<p style="margin:0 0 20px">A new booking request has been submitted and is awaiting your approval.</p>
+
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" class="email-table" style="margin-bottom:20px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
+  <tbody>
+    <tr class="email-table-header" style="background-color:#f8fafc">
+      <td colspan="2" style="padding:12px 16px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b">Customer</td>
+    </tr>
+    <tr class="email-table-row">
+      <td class="email-table-label" style="padding:10px 16px;font-size:14px;font-weight:600;color:#475569;width:40%;border-top:1px solid #e2e8f0">Name</td>
+      <td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#0f172a;border-top:1px solid #e2e8f0">${escapeHtml(customerName)}</td>
+    </tr>
+    <tr class="email-table-row email-table-row-alt" style="background-color:#f8fafc">
+      <td class="email-table-label" style="padding:10px 16px;font-size:14px;font-weight:600;color:#475569;border-top:1px solid #e2e8f0">Email</td>
+      <td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#0f172a;border-top:1px solid #e2e8f0">${escapeHtml(job.customer?.email ?? "—")}</td>
+    </tr>
+    <tr class="email-table-row">
+      <td class="email-table-label" style="padding:10px 16px;font-size:14px;font-weight:600;color:#475569;border-top:1px solid #e2e8f0">Phone</td>
+      <td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#0f172a;border-top:1px solid #e2e8f0">${escapeHtml(job.customer?.phone ?? "—")}</td>
+    </tr>
+  </tbody>
+</table>
+
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" class="email-table" style="margin-bottom:20px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
+  <tbody>
+    <tr class="email-table-header" style="background-color:#f8fafc">
+      <td colspan="2" style="padding:12px 16px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b">Booking details</td>
+    </tr>
+    <tr class="email-table-row">
+      <td class="email-table-label" style="padding:10px 16px;font-size:14px;font-weight:600;color:#475569;width:40%;border-top:1px solid #e2e8f0">Bike</td>
+      <td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#0f172a;border-top:1px solid #e2e8f0">${escapeHtml(job.bikeMake)} ${escapeHtml(job.bikeModel)}</td>
+    </tr>
+    <tr class="email-table-row email-table-row-alt" style="background-color:#f8fafc">
+      <td class="email-table-label" style="padding:10px 16px;font-size:14px;font-weight:600;color:#475569;border-top:1px solid #e2e8f0">Delivery</td>
+      <td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#0f172a;border-top:1px solid #e2e8f0">${job.deliveryType === "COLLECTION_SERVICE" ? "Collection service" : "Drop-off at shop"}</td>
+    </tr>
+    <tr class="email-table-row">
+      <td class="email-table-label" style="padding:10px 16px;font-size:14px;font-weight:600;color:#475569;border-top:1px solid #e2e8f0">Preferred drop-off</td>
+      <td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#0f172a;border-top:1px solid #e2e8f0">${escapeHtml(dropOff)}${collectionWindowLine}</td>
+    </tr>
+    <tr class="email-table-row email-table-row-alt" style="background-color:#f8fafc">
+      <td class="email-table-label" style="padding:10px 16px;font-size:14px;font-weight:600;color:#475569;border-top:1px solid #e2e8f0">Preferred pickup</td>
+      <td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#0f172a;border-top:1px solid #e2e8f0">${escapeHtml(pickup)}</td>
+    </tr>
+    <tr class="email-table-row">
+      <td class="email-table-label" style="padding:10px 16px;font-size:14px;font-weight:600;color:#475569;border-top:1px solid #e2e8f0">Services</td>
+      <td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#0f172a;border-top:1px solid #e2e8f0">${escapeHtml(servicesList)}</td>
+    </tr>
+    ${job.customerNotes ? `<tr class="email-table-row email-table-row-alt" style="background-color:#f8fafc">
+      <td class="email-table-label" style="padding:10px 16px;font-size:14px;font-weight:600;color:#475569;border-top:1px solid #e2e8f0">Notes</td>
+      <td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#0f172a;border-top:1px solid #e2e8f0">${escapeHtml(job.customerNotes)}</td>
+    </tr>` : ""}
+  </tbody>
+</table>
+
+${staffJobUrl ? buildCustomerEmailCtaButton(staffJobUrl, "Review & accept or reject") : ""}
+`.trim();
+
+  const branding = await getCustomerEmailBrandingAssets(job.shopId);
+  const html = buildCustomerEmailHtml({
+    innerHtml,
+    headerLogoSrc: branding.headerLogoSrc,
+    heading: "New booking request",
+  });
+  const attachments = customerEmailBrandingAttachments(branding);
+
+  try {
+    const { error } = await sendResendEmail(resend, {
+      from: getFromEmail(),
+      to: notifyEmail,
+      subject,
+      html,
+      ...(attachments && { attachments }),
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (e) {
+    const err = e instanceof Error ? e.message : "Unknown error";
+    return { ok: false, error: err };
+  }
+}
+
+function formatPaymentMethodLabel(method: string): string {
+  const normalized = method.trim().toLowerCase();
+  if (!normalized || normalized === "unknown") return "Payment";
+  if (normalized === "cash") return "Cash";
+  if (normalized === "terminal" || normalized === "card_present") return "Card (in person)";
+  if (normalized === "apple_pay") return "Apple Pay";
+  if (normalized === "google_pay") return "Google Pay";
+  if (normalized === "online" || normalized === "card") return "Card (online)";
+  return method.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function formatMoney(amount: number, currency = "usd"): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: currency.toUpperCase(),
+  }).format(amount);
+}
+
+export async function sendPaymentReceivedNotification(details: {
+  shopId: string;
+  jobId: string;
+  amount: number;
+  currency?: string;
+  paymentMethod: string;
+  customerName: string;
+  customerEmail?: string | null;
+  customerPhone?: string | null;
+  bikeMake: string;
+  bikeModel: string;
+  isPaidInFull?: boolean;
+  remainingBalance?: number;
+  subtotal?: number;
+  totalPaid?: number;
+}): Promise<{ ok: boolean; error?: string }> {
+  const resend = getResend();
+  if (!resend) {
+    return { ok: false, error: "Email not configured" };
+  }
+
+  const notifyEmail = await getShopNotifyEmail(details.shopId);
+  if (!notifyEmail) {
+    console.warn("No staff notification email configured, skipping payment notification");
+    return { ok: false, error: "No notification email configured" };
+  }
+
+  const { prisma } = await import("./db");
+  const shopRow = await prisma.shop
+    .findUnique({ where: { id: details.shopId }, select: { subdomain: true } })
+    .catch(() => null);
+
+  const currency = details.currency ?? "usd";
+  const amountFormatted = formatMoney(details.amount, currency);
+  const methodLabel = formatPaymentMethodLabel(details.paymentMethod);
+  const staffJobUrl = getStaffJobOpenUrl(details.jobId, shopRow?.subdomain);
+  const balanceLine =
+    details.isPaidInFull === true
+      ? "Paid in full"
+      : details.remainingBalance != null && details.remainingBalance > 0
+        ? `${formatMoney(details.remainingBalance, currency)} remaining`
+        : null;
+
+  const subject = `Payment received: ${amountFormatted} — ${details.bikeMake} ${details.bikeModel}`;
+  const innerHtml = `
+<p style="margin:0 0 20px">A payment has been recorded for a job.</p>
+
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" class="email-table" style="margin-bottom:20px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
+  <tbody>
+    <tr class="email-table-header" style="background-color:#f8fafc">
+      <td colspan="2" style="padding:12px 16px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b">Payment</td>
+    </tr>
+    <tr class="email-table-row">
+      <td class="email-table-label" style="padding:10px 16px;font-size:14px;font-weight:600;color:#475569;width:40%;border-top:1px solid #e2e8f0">Amount</td>
+      <td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#0f172a;border-top:1px solid #e2e8f0">${escapeHtml(amountFormatted)}</td>
+    </tr>
+    <tr class="email-table-row email-table-row-alt" style="background-color:#f8fafc">
+      <td class="email-table-label" style="padding:10px 16px;font-size:14px;font-weight:600;color:#475569;border-top:1px solid #e2e8f0">Method</td>
+      <td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#0f172a;border-top:1px solid #e2e8f0">${escapeHtml(methodLabel)}</td>
+    </tr>
+    ${
+      balanceLine
+        ? `<tr class="email-table-row">
+      <td class="email-table-label" style="padding:10px 16px;font-size:14px;font-weight:600;color:#475569;border-top:1px solid #e2e8f0">Balance</td>
+      <td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#0f172a;border-top:1px solid #e2e8f0">${escapeHtml(balanceLine)}</td>
+    </tr>`
+        : ""
+    }
+  </tbody>
+</table>
+
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" class="email-table" style="margin-bottom:20px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
+  <tbody>
+    <tr class="email-table-header" style="background-color:#f8fafc">
+      <td colspan="2" style="padding:12px 16px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b">Job</td>
+    </tr>
+    <tr class="email-table-row">
+      <td class="email-table-label" style="padding:10px 16px;font-size:14px;font-weight:600;color:#475569;width:40%;border-top:1px solid #e2e8f0">Bike</td>
+      <td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#0f172a;border-top:1px solid #e2e8f0">${escapeHtml(details.bikeMake)} ${escapeHtml(details.bikeModel)}</td>
+    </tr>
+    <tr class="email-table-row email-table-row-alt" style="background-color:#f8fafc">
+      <td class="email-table-label" style="padding:10px 16px;font-size:14px;font-weight:600;color:#475569;border-top:1px solid #e2e8f0">Customer</td>
+      <td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#0f172a;border-top:1px solid #e2e8f0">${escapeHtml(details.customerName)}</td>
+    </tr>
+    <tr class="email-table-row">
+      <td class="email-table-label" style="padding:10px 16px;font-size:14px;font-weight:600;color:#475569;border-top:1px solid #e2e8f0">Email</td>
+      <td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#0f172a;border-top:1px solid #e2e8f0">${escapeHtml(details.customerEmail ?? "—")}</td>
+    </tr>
+    <tr class="email-table-row email-table-row-alt" style="background-color:#f8fafc">
+      <td class="email-table-label" style="padding:10px 16px;font-size:14px;font-weight:600;color:#475569;border-top:1px solid #e2e8f0">Phone</td>
+      <td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#0f172a;border-top:1px solid #e2e8f0">${escapeHtml(details.customerPhone ?? "—")}</td>
+    </tr>
+  </tbody>
+</table>
+
+${staffJobUrl ? buildCustomerEmailCtaButton(staffJobUrl, "View job") : ""}
+`.trim();
+
+  const branding = await getCustomerEmailBrandingAssets(details.shopId);
+  const html = buildCustomerEmailHtml({
+    innerHtml,
+    headerLogoSrc: branding.headerLogoSrc,
+    heading: "Payment received",
+  });
+  const attachments = customerEmailBrandingAttachments(branding);
+
+  try {
+    const { error } = await sendResendEmail(resend, {
+      from: getFromEmail(),
+      to: notifyEmail,
+      subject,
+      html,
+      ...(attachments && { attachments }),
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (e) {
+    const err = e instanceof Error ? e.message : "Unknown error";
+    return { ok: false, error: err };
+  }
+}
+
+const DEFAULT_PLATFORM_SIGNUP_NOTIFY_EMAIL = "support@bikeops.co";
+
+function getPlatformSignupNotifyEmail(): string {
+  return (
+    process.env.PLATFORM_SIGNUP_NOTIFY_EMAIL?.trim() ||
+    process.env.SHOP_NOTIFY_EMAIL?.trim() ||
+    DEFAULT_PLATFORM_SIGNUP_NOTIFY_EMAIL
+  );
+}
+
+export async function sendPlatformSignupNotification(details: {
+  shopName: string;
+  subdomain: string;
+  ownerName: string;
+  ownerEmail: string;
+  trialEndsAt: Date | null;
+  loginUrl: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  const resend = getResend();
+  if (!resend) {
+    console.warn("RESEND_API_KEY not set, skipping platform signup notification");
+    return { ok: false, error: "Email not configured" };
+  }
+
+  const notifyEmail = getPlatformSignupNotifyEmail();
+  if (!notifyEmail) {
+    return { ok: false, error: "No notification email configured" };
+  }
+
+  const trialEnds = details.trialEndsAt
+    ? details.trialEndsAt.toLocaleDateString("en-US", {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      })
+    : "Not set";
+
+  const signedUpAt = new Date().toLocaleString("en-US", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+
+  const subject = `New Bike Ops trial signup: ${details.shopName}`;
+  const innerHtml = `
+<p style="margin:0 0 20px">A new shop signed up for a Bike Ops trial.</p>
+
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" class="email-table" style="margin-bottom:20px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
+  <tbody>
+    <tr class="email-table-header" style="background-color:#f8fafc">
+      <td colspan="2" style="padding:12px 16px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b">Shop</td>
+    </tr>
+    <tr class="email-table-row">
+      <td class="email-table-label" style="padding:10px 16px;font-size:14px;font-weight:600;color:#475569;width:40%;border-top:1px solid #e2e8f0">Name</td>
+      <td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#0f172a;border-top:1px solid #e2e8f0">${escapeHtml(details.shopName)}</td>
+    </tr>
+    <tr class="email-table-row email-table-row-alt" style="background-color:#f8fafc">
+      <td class="email-table-label" style="padding:10px 16px;font-size:14px;font-weight:600;color:#475569;border-top:1px solid #e2e8f0">Subdomain</td>
+      <td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#0f172a;border-top:1px solid #e2e8f0">${escapeHtml(details.subdomain)}</td>
+    </tr>
+    <tr class="email-table-row">
+      <td class="email-table-label" style="padding:10px 16px;font-size:14px;font-weight:600;color:#475569;border-top:1px solid #e2e8f0">Trial ends</td>
+      <td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#0f172a;border-top:1px solid #e2e8f0">${escapeHtml(trialEnds)}</td>
+    </tr>
+    <tr class="email-table-row email-table-row-alt" style="background-color:#f8fafc">
+      <td class="email-table-label" style="padding:10px 16px;font-size:14px;font-weight:600;color:#475569;border-top:1px solid #e2e8f0">Signed up</td>
+      <td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#0f172a;border-top:1px solid #e2e8f0">${escapeHtml(signedUpAt)}</td>
+    </tr>
+  </tbody>
+</table>
+
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" class="email-table" style="margin-bottom:20px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
+  <tbody>
+    <tr class="email-table-header" style="background-color:#f8fafc">
+      <td colspan="2" style="padding:12px 16px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b">Owner</td>
+    </tr>
+    <tr class="email-table-row">
+      <td class="email-table-label" style="padding:10px 16px;font-size:14px;font-weight:600;color:#475569;width:40%;border-top:1px solid #e2e8f0">Name</td>
+      <td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#0f172a;border-top:1px solid #e2e8f0">${escapeHtml(details.ownerName)}</td>
+    </tr>
+    <tr class="email-table-row email-table-row-alt" style="background-color:#f8fafc">
+      <td class="email-table-label" style="padding:10px 16px;font-size:14px;font-weight:600;color:#475569;border-top:1px solid #e2e8f0">Email</td>
+      <td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#0f172a;border-top:1px solid #e2e8f0"><a href="mailto:${escapeHtml(details.ownerEmail)}" style="color:#4f46e5;text-decoration:underline">${escapeHtml(details.ownerEmail)}</a></td>
+    </tr>
+  </tbody>
+</table>
+
+${buildCustomerEmailCtaButton(details.loginUrl, "Open shop login")}
+`.trim();
+
+  const branding = await getCustomerEmailBrandingAssets();
+  const html = buildCustomerEmailHtml({
+    innerHtml,
+    headerLogoSrc: branding.headerLogoSrc,
+    heading: "New trial signup",
+  });
+  const attachments = customerEmailBrandingAttachments(branding);
+
+  try {
+    const { error } = await sendResendEmail(resend, {
+      from: getFromEmail(),
+      to: notifyEmail,
+      subject,
+      html,
+      ...(attachments && { attachments }),
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (e) {
+    const err = e instanceof Error ? e.message : "Unknown error";
+    return { ok: false, error: err };
+  }
+}
+
+export async function sendSignupVerificationEmail(details: {
+  ownerName: string;
+  ownerEmail: string;
+  shopName: string;
+  verificationUrl: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  const resend = getResend();
+  if (!resend) {
+    console.warn("RESEND_API_KEY not set, skipping signup verification email");
+    return { ok: false, error: "Email not configured" };
+  }
+
+  const subject = "Confirm your email to start your Bike Ops trial";
+  const innerHtml = `
+<p style="margin:0 0 16px">Hi ${escapeHtml(details.ownerName)},</p>
+<p style="margin:0 0 16px">Thanks for signing up for <strong>${escapeHtml(details.shopName)}</strong> on Bike Ops. Confirm your email address to finish creating your workspace.</p>
+<p style="margin:0 0 16px">This link expires in 24 hours. If you did not request this, you can ignore this email.</p>
+${buildCustomerEmailCtaButton(details.verificationUrl, "Confirm email and create workspace")}
+<p class="email-muted" style="margin:24px 0 0;font-size:12px;color:#64748b;word-break:break-all">Or copy this link: <a href="${escapeHtml(details.verificationUrl)}" style="color:#4f46e5;text-decoration:underline">${escapeHtml(details.verificationUrl)}</a></p>
+`.trim();
+
+  const branding = await getCustomerEmailBrandingAssets();
+  const html = buildReadOnlyCustomerEmailHtml({
+    innerHtml,
+    headerLogoSrc: branding.headerLogoSrc,
+    heading: "Confirm your email",
+    footerSecondary: null,
+    footerTagline: PLATFORM_EMAIL_FOOTER_TAGLINE,
+    footerDisclaimer: PLATFORM_SIGNUP_EMAIL_DISCLAIMER,
+    readOnlyNotice: PLATFORM_SIGNUP_READ_ONLY_NOTICE,
+  });
+  const attachments = customerEmailBrandingAttachments(branding);
+
+  try {
+    const { error } = await sendResendEmail(resend, {
+      from: getFromEmail(),
+      to: details.ownerEmail,
+      subject,
+      html,
+      ...(attachments && { attachments }),
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (e) {
+    const err = e instanceof Error ? e.message : "Unknown error";
+    return { ok: false, error: err };
+  }
+}
+
+export async function sendPasswordResetEmail(details: {
+  userName: string | null;
+  userEmail: string;
+  shopName: string;
+  resetUrl: string;
+  expiresInMinutes: number;
+}): Promise<{ ok: boolean; error?: string }> {
+  const resend = getResend();
+  if (!resend) {
+    console.warn("RESEND_API_KEY not set, skipping password reset email");
+    return { ok: false, error: "Email not configured" };
+  }
+
+  const subject = "Reset your Bike Ops password";
+  const greeting = details.userName?.trim() ? `Hi ${escapeHtml(details.userName.trim())},` : "Hi,";
+  const innerHtml = `
+<p style="margin:0 0 16px">${greeting}</p>
+<p style="margin:0 0 16px">We got a request to reset your password for <strong>${escapeHtml(details.shopName)}</strong> on Bike Ops. Use the button below to choose a new one.</p>
+<p style="margin:0 0 16px">This link expires in ${details.expiresInMinutes} minutes and can only be used once. If you did not request this, you can ignore this email.</p>
+${buildCustomerEmailCtaButton(details.resetUrl, "Choose a new password")}
+<p class="email-muted" style="margin:24px 0 0;font-size:12px;color:#64748b;word-break:break-all">Or copy this link: <a href="${escapeHtml(details.resetUrl)}" style="color:#4f46e5;text-decoration:underline">${escapeHtml(details.resetUrl)}</a></p>
+`.trim();
+
+  const branding = await getCustomerEmailBrandingAssets();
+  const html = buildReadOnlyCustomerEmailHtml({
+    innerHtml,
+    headerLogoSrc: branding.headerLogoSrc,
+    heading: "Reset your password",
+    footerSecondary: null,
+    footerTagline: PLATFORM_EMAIL_FOOTER_TAGLINE,
+    footerDisclaimer: PLATFORM_PASSWORD_RESET_EMAIL_DISCLAIMER,
+    readOnlyNotice: PLATFORM_PASSWORD_RESET_READ_ONLY_NOTICE,
+  });
+  const attachments = customerEmailBrandingAttachments(branding);
+
+  try {
+    const { error } = await sendResendEmail(resend, {
+      from: getFromEmail(),
+      to: details.userEmail,
+      subject,
+      html,
+      ...(attachments && { attachments }),
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (e) {
+    const err = e instanceof Error ? e.message : "Unknown error";
+    return { ok: false, error: err };
+  }
+}
+
+export async function sendWaitlistRequestNotification(entry: {
+  shopId?: string;
+  id: string;
+  customerName: string;
+  email: string;
+  phone: string;
+  bikeSummary: string;
+  deliveryType: string;
+  customerNotes?: string | null;
+  servicesList?: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  const resend = getResend();
+  if (!resend) {
+    return { ok: false, error: "Email not configured" };
+  }
+
+  const shopId = entry.shopId ?? "shop_default";
+  const notifyEmail = await getShopNotifyEmail(shopId);
+  if (!notifyEmail) {
+    console.warn("No staff notification email configured, skipping waitlist notification");
+    return { ok: false, error: "No notification email configured" };
+  }
+
+  const { prisma } = await import("./db");
+  const shopRow = await prisma.shop
+    .findUnique({ where: { id: shopId }, select: { subdomain: true, name: true } })
+    .catch(() => null);
+  const waitlistUrl = getStaffWaitlistOpenUrl(shopRow?.subdomain);
+  const waitlistLinkHtml = waitlistUrl
+    ? `<p style="margin:16px 0 0 0">${buildCustomerEmailCtaButton(waitlistUrl, "Open waitlist")}</p>`
+    : "";
+  const shopLabel =
+    shopRow?.name?.trim() || process.env.SHOP_NAME || "Basement Bike Mechanic";
+
+  const innerHtml = `
+    <h2 style="margin:0 0 12px 0; font-size:18px;">New waitlist request</h2>
+    <p style="margin:0 0 8px 0;"><strong>Customer:</strong> ${escapeHtml(entry.customerName)}</p>
+    <p style="margin:0 0 8px 0;"><strong>Email:</strong> ${escapeHtml(entry.email)}</p>
+    <p style="margin:0 0 8px 0;"><strong>Phone:</strong> ${escapeHtml(entry.phone)}</p>
+    <p style="margin:0 0 8px 0;"><strong>Bikes:</strong> ${escapeHtml(entry.bikeSummary)}</p>
+    <p style="margin:0 0 8px 0;"><strong>Delivery:</strong> ${escapeHtml(formatDeliveryTypeLabel(entry.deliveryType))}</p>
+    <p style="margin:0 0 8px 0;"><strong>Services:</strong> ${escapeHtml(entry.servicesList || "None specified")}</p>
+    ${entry.customerNotes ? `<p style="margin:0 0 8px 0;"><strong>Notes:</strong><br/>${escapeHtml(entry.customerNotes)}</p>` : ""}
+    ${waitlistLinkHtml}
+  `;
+
+  const branding = await getCustomerEmailBrandingAssets(entry.shopId);
+  const html = buildCustomerEmailHtml({
+    innerHtml,
+    headerLogoSrc: branding.headerLogoSrc,
+  });
+  const attachments = customerEmailBrandingAttachments(branding);
+
+  try {
+    const { error } = await sendResendEmail(resend, {
+      from: getFromEmail(),
+      to: notifyEmail,
+      subject: `Waitlist request — ${shopLabel}`,
+      html,
+      ...(attachments && { attachments }),
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (e) {
+    const err = e instanceof Error ? e.message : "Unknown error";
+    return { ok: false, error: err };
+  }
+}
+
+/** Notify shop staff when a customer sends an in-app chat message. */
+export async function sendStaffNewChatMessageNotification(details: {
+  shopId: string;
+  conversationId: string;
+  messageId?: string;
+  customerName: string;
+  messagePreview: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  const resend = getResend();
+  if (!resend) {
+    return { ok: false, error: "Email not configured" };
+  }
+
+  const notifyEmail = await getShopNotifyEmail(details.shopId);
+  if (!notifyEmail) {
+    console.warn(
+      "No staff notification email configured, skipping chat message notification"
+    );
+    return { ok: false, error: "No notification email configured" };
+  }
+
+  const { prisma } = await import("./db");
+  const shopRow = await prisma.shop
+    .findUnique({
+      where: { id: details.shopId },
+      select: { subdomain: true, name: true },
+    })
+    .catch(() => null);
+
+  const staffChatUrl = getStaffChatOpenUrl(
+    details.conversationId,
+    shopRow?.subdomain,
+    details.messageId
+  );
+  const preview =
+    details.messagePreview.trim().slice(0, 280) || "Sent a photo";
+  const shopLabel = shopRow?.name?.trim() || "your shop";
+
+  const innerHtml = `
+<p style="margin:0 0 16px">New chat message from <strong>${escapeHtml(details.customerName)}</strong>.</p>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:16px;border:1px solid #e2e8f0;border-radius:8px">
+  <tr><td style="padding:12px 16px;font-size:14px;color:#0f172a;white-space:pre-wrap">${escapeHtml(preview)}</td></tr>
+</table>
+${staffChatUrl ? buildCustomerEmailCtaButton(staffChatUrl, "Open conversation") : ""}
+`.trim();
+
+  const branding = await getCustomerEmailBrandingAssets(details.shopId);
+  const html = buildCustomerEmailHtml({
+    innerHtml,
+    headerLogoSrc: branding.headerLogoSrc,
+    heading: "New chat message",
+  });
+  const attachments = customerEmailBrandingAttachments(branding);
+
+  try {
+    const { error } = await sendResendEmail(resend, {
+      from: getFromEmail(),
+      to: notifyEmail,
+      subject: `New message from ${details.customerName} — ${shopLabel}`,
+      html,
+      ...(attachments && { attachments }),
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (e) {
+    const err = e instanceof Error ? e.message : "Unknown error";
+    return { ok: false, error: err };
+  }
+}
+
+export async function sendWaitlistReceivedEmail(entry: {
+  shopId?: string;
+  customerName: string;
+  recipient: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  const blocked = skipIfCustomerNotificationsBlocked("sendWaitlistReceivedEmail");
+  if (blocked) return blocked;
+
+  const resend = getResend();
+  if (!resend) {
+    console.warn("RESEND_API_KEY not set, skipping email");
+    return { ok: false, error: "Email not configured" };
+  }
+
+  const shopName = process.env.SHOP_NAME || "Basement Bike Mechanic";
+
+  const innerHtml = `
+    <h2 style="margin:0 0 12px 0; font-size:18px;">You’re on the waitlist</h2>
+    <p style="margin:0 0 8px 0;">Hi ${escapeHtml(entry.customerName)},</p>
+    <p style="margin:0 0 8px 0;">
+      Thanks for your booking request. We’re currently at capacity, so we’ve added you to our waitlist.
+      We’ll reach out as soon as a spot opens up.
+    </p>
+    <p style="margin:16px 0 0 0;">— ${escapeHtml(shopName)}</p>
+  `;
+
+  const branding = await getCustomerEmailBrandingAssets(entry.shopId);
+  const html = buildReadOnlyCustomerEmailHtml({
+    innerHtml,
+    headerLogoSrc: branding.headerLogoSrc,
+  });
+  const attachments = customerEmailBrandingAttachments(branding);
+
+  try {
+    const { error } = await sendResendEmail(resend, {
+      ...getCustomerEmailSendOptions(),
+      to: entry.recipient,
+      subject: `Waitlist confirmation — ${shopName}`,
+      html,
+      ...(attachments && { attachments }),
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (e) {
+    const err = e instanceof Error ? e.message : "Unknown error";
+    return { ok: false, error: err };
+  }
+}
+
+export async function sendBookingReceivedEmail(
+  job: {
+    shopId?: string;
+    id: string;
+    bikeMake: string;
+    bikeModel: string;
+    deliveryType: string;
+    dropOffDate: Date | string | null;
+    pickupDate: Date | string | null;
+    collectionAddress?: string | null;
+    collectionWindowStart?: string | null;
+    collectionWindowEnd?: string | null;
+    customerNotes?: string | null;
+    customer: { firstName: string; lastName: string | null; email: string | null } | null;
+    jobServices?: { service?: { name: string } | null; customServiceName?: string | null; quantity: number }[];
+  }
+): Promise<{ ok: boolean; error?: string }> {
+  const blocked = skipIfCustomerNotificationsBlocked("sendBookingReceivedEmail");
+  if (blocked) return blocked;
+
+  const resend = getResend();
+  if (!resend) return { ok: false, error: "Email not configured" };
+
+  const customerEmail = job.customer?.email?.trim();
+  if (!customerEmail) return { ok: false, error: "No customer email" };
+
+  const customerName = job.customer
+    ? job.customer.lastName
+      ? `${job.customer.firstName} ${job.customer.lastName}`
+      : job.customer.firstName
+    : "there";
+
+  const shopRow = job.shopId
+    ? await import("./db")
+        .then(({ prisma }) =>
+          prisma.shop.findUnique({ where: { id: job.shopId }, select: { subdomain: true } })
+        )
+        .catch(() => null)
+    : null;
+  const statusUrl =
+    job.shopId ? getCustomerStatusUrl(job.id, job.shopId, shopRow?.subdomain) || null : null;
+
+  const formatDate = (d: Date | string | null): string => {
+    if (!d) return "Not set";
+    return new Date(d).toLocaleDateString("en-US", {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    });
+  };
+
+  const servicesList =
+    job.jobServices
+      ?.map((js) => `${js.service?.name ?? js.customServiceName ?? "Service"}${js.quantity > 1 ? ` × ${js.quantity}` : ""}`)
+      .join(", ") || null;
+
+  const isCollection = job.deliveryType === "COLLECTION_SERVICE";
+  const shopTimeZone = await getShopTimezone(job.shopId ?? "shop_default");
+
+  let scheduleLines = "";
+  if (isCollection) {
+    scheduleLines += `<tr class="email-table-row"><td class="email-table-label" style="padding:10px 16px;font-size:14px;color:#64748b;border-bottom:1px solid #e2e8f0;white-space:nowrap;width:40%"><strong>Collection date</strong></td><td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#334155;border-bottom:1px solid #e2e8f0">${escapeHtml(formatDate(job.dropOffDate))}</td></tr>`;
+    if (job.collectionAddress) {
+      scheduleLines += `<tr class="email-table-row email-table-row-alt"><td class="email-table-label" style="padding:10px 16px;font-size:14px;color:#64748b;border-bottom:1px solid #e2e8f0;white-space:nowrap"><strong>Address</strong></td><td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#334155;border-bottom:1px solid #e2e8f0">${escapeHtml(job.collectionAddress)}</td></tr>`;
+    }
+    const windowText = formatCollectionWindowRange(
+      job.collectionWindowStart,
+      job.collectionWindowEnd,
+      { shopTimeZone, referenceDate: job.dropOffDate }
+    );
+    if (windowText) {
+      scheduleLines += `<tr class="email-table-row"><td class="email-table-label" style="padding:10px 16px;font-size:14px;color:#64748b;border-bottom:1px solid #e2e8f0;white-space:nowrap"><strong>Collection window</strong></td><td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#334155;border-bottom:1px solid #e2e8f0">${escapeHtml(windowText)}</td></tr>`;
+    }
+  } else {
+    scheduleLines += `<tr class="email-table-row"><td class="email-table-label" style="padding:10px 16px;font-size:14px;color:#64748b;border-bottom:1px solid #e2e8f0;white-space:nowrap;width:40%"><strong>Drop-off date</strong></td><td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#334155;border-bottom:1px solid #e2e8f0">${escapeHtml(formatDate(job.dropOffDate))}</td></tr>`;
+    scheduleLines += `<tr class="email-table-row email-table-row-alt"><td class="email-table-label" style="padding:10px 16px;font-size:14px;color:#64748b;white-space:nowrap"><strong>Est. pick-up date</strong></td><td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#334155">${escapeHtml(formatDate(job.pickupDate))}</td></tr>`;
+  }
+
+  const ctaButton = statusUrl
+    ? buildCustomerEmailCtaButton(statusUrl, "Track your booking")
+    : "";
+
+  const innerHtml = `
+<p style="margin:0 0 20px">Hi ${escapeHtml(customerName)},</p>
+<p style="margin:0 0 20px">Thanks for submitting your booking request — we've received it and will review it shortly. You'll get a confirmation email once it's approved.</p>
+
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" class="email-table" style="margin-bottom:20px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
+  <tbody>
+    <tr class="email-table-header" style="background-color:#f8fafc">
+      <td colspan="2" style="padding:12px 16px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#64748b">Your booking</td>
+    </tr>
+    <tr class="email-table-row">
+      <td class="email-table-label" style="padding:10px 16px;font-size:14px;color:#64748b;border-bottom:1px solid #e2e8f0;white-space:nowrap;width:40%"><strong>Bike</strong></td>
+      <td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#334155;border-bottom:1px solid #e2e8f0">${escapeHtml(job.bikeMake)} ${escapeHtml(job.bikeModel)}</td>
+    </tr>
+    ${servicesList ? `<tr class="email-table-row email-table-row-alt"><td class="email-table-label" style="padding:10px 16px;font-size:14px;color:#64748b;border-bottom:1px solid #e2e8f0;white-space:nowrap"><strong>Services</strong></td><td class="email-table-value" style="padding:10px 16px;font-size:14px;color:#334155;border-bottom:1px solid #e2e8f0">${escapeHtml(servicesList)}</td></tr>` : ""}
+    ${scheduleLines}
+  </tbody>
+</table>
+
+${job.customerNotes ? `<p class="email-muted" style="margin:0 0 20px;font-size:14px;color:#64748b"><strong>Your notes:</strong> ${escapeHtml(job.customerNotes)}</p>` : ""}
+${ctaButton}
+`;
+
+  const branding = await getCustomerEmailBrandingAssets(job.shopId);
+  const html = buildReadOnlyCustomerEmailHtml({
+    innerHtml,
+    headerLogoSrc: branding.headerLogoSrc,
+    heading: "Booking Request Received",
+  });
+  const attachments = customerEmailBrandingAttachments(branding);
+
+  try {
+    const { error } = await sendResendEmail(resend, {
+      ...getCustomerEmailSendOptions(),
+      to: customerEmail,
+      subject: `We received your booking request — ${job.bikeMake} ${job.bikeModel}`,
+      html,
+      ...(attachments && { attachments }),
+    });
+
+    if (error) {
+      return { ok: false, error: error.message };
+    }
+    return { ok: true };
+  } catch (e) {
+    const err = e instanceof Error ? e.message : "Unknown error";
+    return { ok: false, error: err };
+  }
+}
+
+export async function sendBookingDeclinedEmail(
+  recipient: string,
+  job: {
+    shopId: string;
+    bikeMake: string;
+    bikeModel: string;
+    /** Customer-facing text only — never the internal cancellation reason. */
+    customerMessage: string;
+    customer: { firstName: string; lastName: string | null } | null;
+  }
+): Promise<{ ok: boolean; error?: string }> {
+  const blocked = skipIfCustomerNotificationsBlocked("sendBookingDeclinedEmail");
+  if (blocked) return blocked;
+
+  const resend = getResend();
+  if (!resend) {
+    return { ok: false, error: "Email not configured" };
+  }
+
+  const { prisma } = await import("./db");
+  const shopRow = await prisma.shop
+    .findUnique({ where: { id: job.shopId }, select: { name: true } })
+    .catch(() => null);
+  const template = await prisma.emailTemplate.findUnique({
+    where: { shopId_slug: { shopId: job.shopId, slug: "booking_declined" } },
+  });
+
+  if (!template) {
+    console.warn("booking_declined template not found – run db:seed");
+    return { ok: false, error: "Template not found" };
+  }
+
+  const shopName = shopRow?.name ?? process.env.SHOP_NAME ?? "Basement Bike Mechanic";
+  const customerName = job.customer
+    ? job.customer.lastName
+      ? `${job.customer.firstName} ${job.customer.lastName}`
+      : job.customer.firstName
+    : "Customer";
+
+  const vars: Record<string, string> = {
+    customerName,
+    bikeMake: job.bikeMake,
+    bikeModel: job.bikeModel,
+    shopName,
+    rejectionReason: toTemplateHtmlText(
+      job.customerMessage || "We're unable to accommodate this booking at this time."
+    ),
+  };
+
+  const subject = mergeTemplateVariables(template.subject, vars);
+  const bodyHtml = mergeTemplateVariables(template.bodyHtml, vars);
+  const branding = await getCustomerEmailBrandingAssets(job.shopId);
+  const html = buildReadOnlyCustomerEmailHtml({
+    innerHtml: bodyHtml,
+    headerLogoSrc: branding.headerLogoSrc,
+  });
+  const attachments = customerEmailBrandingAttachments(branding);
+
+  try {
+    const { error } = await sendResendEmail(resend, {
+      ...getCustomerEmailSendOptions(),
+      to: recipient,
+      subject,
+      html,
+      ...(attachments && { attachments }),
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (e) {
+    const err = e instanceof Error ? e.message : "Unknown error";
+    return { ok: false, error: err };
+  }
+}
+
+export function getTemplateForStage(
+  stage: string,
+  deliveryType: string
+): string | null {
+  if (stage === "BOOKED_IN") {
+    return deliveryType === "COLLECTION_SERVICE" ? "booking_confirmation_collection" : "booking_confirmation_dropoff";
+  }
+  if (stage === "RECEIVED") {
+    return deliveryType === "COLLECTION_SERVICE" ? "bike_collected" : "bike_arrived";
+  }
+  const map: Record<string, string> = {
+    WORKING_ON: "working_on_bike",
+    WAITING_ON_CUSTOMER: "waiting_on_customer",
+    WAITING_ON_PARTS: "waiting_on_parts",
+    BIKE_READY: "bike_ready",
+    COMPLETED: "bike_completed",
+  };
+  return map[stage] ?? null;
+}
+
+type CustomerForMissedBookingEmail = {
+  id: string;
+  shopId: string;
+  email: string | null;
+  emailUpdatesConsent?: boolean | null;
+};
+
+/**
+ * Send booking confirmation for BOOKED_IN jobs created without a customer email.
+ * Deduped via JobEmail records (same as job creation and stage-change sends).
+ */
+export async function sendBookingConfirmationForJob(
+  jobId: string,
+  opts?: { force?: boolean }
+): Promise<{ ok: boolean; error?: string; recipient?: string }> {
+  const { prisma } = await import("./db");
+  const job = await prisma.job.findUnique({
+    where: { id: jobId },
+    include: { customer: true },
+  });
+  if (!job) return { ok: false, error: "Job not found" };
+
+  if (job.stage !== "BOOKED_IN" && job.stage !== "PENDING_APPROVAL") {
+    return {
+      ok: false,
+      error: "Job is not in Booked In or Pending approval",
+    };
+  }
+
+  const recipient = getEffectiveEmailUpdatesConsent(job.customer)
+    ? job.customer?.email?.trim()
+    : null;
+  if (!recipient) {
+    return { ok: false, error: "No customer email or email updates disabled" };
+  }
+
+  const templateSlug = getTemplateForStage("BOOKED_IN", job.deliveryType);
+  if (!templateSlug) return { ok: false, error: "Template not found" };
+
+  if (!opts?.force) {
+    const alreadySent = await prisma.jobEmail.findFirst({
+      where: { shopId: job.shopId, jobId: job.id, templateSlug },
+    });
+    if (alreadySent) {
+      return { ok: false, error: "Booking confirmation was already sent for this job" };
+    }
+  }
+
+  const result = await sendJobEmail(templateSlug, recipient, {
+    id: job.id,
+    shopId: job.shopId,
+    bikeMake: job.bikeMake,
+    bikeModel: job.bikeModel,
+    stage: job.stage === "PENDING_APPROVAL" ? "BOOKED_IN" : job.stage,
+    customer: job.customer
+      ? {
+          firstName: job.customer.firstName,
+          lastName: job.customer.lastName,
+        }
+      : null,
+    customerNotes: job.customerNotes,
+    dropOffDate: job.dropOffDate,
+    pickupDate: job.pickupDate,
+    collectionWindowStart: job.collectionWindowStart,
+    collectionWindowEnd: job.collectionWindowEnd,
+  });
+
+  return result.ok ? { ok: true, recipient } : result;
+}
+
+export async function sendMissedBookingConfirmationEmails(
+  customer: CustomerForMissedBookingEmail
+): Promise<void> {
+  if (skipIfCustomerNotificationsBlocked("sendMissedBookingConfirmationEmails")) return;
+  if (!getEffectiveEmailUpdatesConsent(customer)) return;
+
+  const recipient = customer.email?.trim();
+  if (!recipient) return;
+
+  const { prisma } = await import("./db");
+  const jobs = await prisma.job.findMany({
+    where: {
+      customerId: customer.id,
+      shopId: customer.shopId,
+      stage: "BOOKED_IN",
+      archivedAt: null,
+    },
+    include: { customer: true },
+  });
+
+  for (const job of jobs) {
+    const result = await sendBookingConfirmationForJob(job.id);
+    if (!result.ok && result.error !== "Booking confirmation was already sent for this job") {
+      console.error(
+        `[Customer email added] Booking confirmation failed for job ${job.id}:`,
+        result.error
+      );
+    }
+  }
+}
+
+export interface JobServiceForInvoice {
+  service?: { name: string } | null;
+  customServiceName?: string | null;
+  quantity: number;
+  unitPrice: string | number | { toString(): string };
+}
+
+export interface JobProductForInvoice {
+  product: { name: string };
+  quantity: number;
+  unitPrice: string | number | { toString(): string };
+}
+
+export interface JobForInvoice {
+  id: string;
+  shopId: string;
+  bikeMake: string;
+  bikeModel: string;
+  deliveryType?: string;
+  customer: { firstName: string; lastName: string | null; email: string | null } | null;
+  jobServices: JobServiceForInvoice[];
+  jobProducts?: JobProductForInvoice[];
+}
+
+/** An invoice needs the job's tax and discount to show (and charge) the right total. */
+export type JobForPricedInvoice = JobForInvoice & JobPricing & { discountReason?: string | null };
+
+function formatPrice(amount: number): string {
+  return amount.toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+  });
+}
+
+/** Subtotal / discount / tax rows, shown only when the job has a discount or tax. */
+function buildDiscountAndTaxRowsHtml(totals: JobTotals, discountReason?: string | null): string {
+  if (totals.discount <= 0 && totals.tax <= 0) return "";
+  const row = (label: string, value: string) => `
+    <tr>
+      <td class="email-table-label" style="font-size:15px;font-weight:600;color:#64748b;padding-bottom:8px">${label}</td>
+      <td class="email-table-value" style="font-size:15px;font-weight:600;color:#334155;text-align:right;padding-bottom:8px">${value}</td>
+    </tr>`;
+  const discountLabel = discountReason?.trim() ? `Discount (${escapeHtml(discountReason.trim())})` : "Discount";
+  return [
+    row("Subtotal", formatPrice(totals.itemsTotal)),
+    totals.discount > 0 ? row(discountLabel, `−${formatPrice(totals.discount)}`) : "",
+    totals.tax > 0 ? row(`Sales tax (${totals.taxRatePercent}%)`, formatPrice(totals.tax)) : "",
+  ].join("");
+}
+
+function buildInvoiceInnerHtml(
+  job: JobForPricedInvoice,
+  totals: JobTotals,
+  totalPaid: number,
+  shopName: string
+): string {
+  const subtotal = totals.total;
+  const hasSurcharge = totalPaid > subtotal;
+  const customerName = job.customer
+    ? [job.customer.firstName, job.customer.lastName].filter(Boolean).join(" ").trim() || "Customer"
+    : "Customer";
+
+  const date = new Date().toLocaleDateString("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+
+  const serviceRows = (job.jobServices ?? []).map((js, i) => {
+    const unitPrice = typeof js.unitPrice === "string" ? parseFloat(js.unitPrice) : Number(js.unitPrice);
+    const lineTotal = unitPrice * (js.quantity || 1);
+    return `
+      <tr class="email-table-row${i % 2 === 1 ? " email-table-row-alt" : ""}">
+        <td class="email-table-value" style="padding: 14px 18px; border-bottom: 1px solid #e2e8f0; color: #334155; font-size: 16px;">${escapeHtml(js.service?.name ?? js.customServiceName ?? "Service")}</td>
+        <td class="email-table-label" style="padding: 14px 18px; border-bottom: 1px solid #e2e8f0; color: #64748b; text-align: center; font-size: 16px;">${js.quantity}</td>
+        <td class="email-table-label" style="padding: 14px 18px; border-bottom: 1px solid #e2e8f0; color: #64748b; text-align: right; font-size: 16px;">${formatPrice(unitPrice)}</td>
+        <td class="email-table-value" style="padding: 14px 18px; border-bottom: 1px solid #e2e8f0; color: #0f172a; font-weight: 600; text-align: right; font-size: 16px;">${formatPrice(lineTotal)}</td>
+      </tr>
+    `;
+  }).join("");
+  const svcCount = (job.jobServices ?? []).length;
+  const productRows = (job.jobProducts ?? []).map((jp, i) => {
+    const unitPrice = typeof jp.unitPrice === "string" ? parseFloat(jp.unitPrice) : Number(jp.unitPrice);
+    const lineTotal = unitPrice * (jp.quantity || 1);
+    return `
+      <tr class="email-table-row${(svcCount + i) % 2 === 1 ? " email-table-row-alt" : ""}">
+        <td class="email-table-value" style="padding: 14px 18px; border-bottom: 1px solid #e2e8f0; color: #334155; font-size: 16px;">${escapeHtml(jp.product?.name ?? "Product")}</td>
+        <td class="email-table-label" style="padding: 14px 18px; border-bottom: 1px solid #e2e8f0; color: #64748b; text-align: center; font-size: 16px;">${jp.quantity}</td>
+        <td class="email-table-label" style="padding: 14px 18px; border-bottom: 1px solid #e2e8f0; color: #64748b; text-align: right; font-size: 16px;">${formatPrice(unitPrice)}</td>
+        <td class="email-table-value" style="padding: 14px 18px; border-bottom: 1px solid #e2e8f0; color: #0f172a; font-weight: 600; text-align: right; font-size: 16px;">${formatPrice(lineTotal)}</td>
+      </tr>
+    `;
+  }).join("");
+  const rows = serviceRows + productRows;
+
+  return `
+<p class="email-muted" style="margin:0 0 20px;font-size:16px;color:#64748b">Thank you for your payment, ${escapeHtml(customerName)}.</p>
+<p class="email-muted" style="margin:0 0 24px;font-size:14px;color:#64748b">${escapeHtml(date)}</p>
+
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" class="email-table" style="margin-bottom:24px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
+  <thead>
+    <tr class="email-table-header" style="background-color:#f8fafc">
+      <th style="padding:14px 18px;text-align:left;font-size:15px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.05em">Item</th>
+      <th style="padding:14px 18px;text-align:center;font-size:15px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.05em">Qty</th>
+      <th style="padding:14px 18px;text-align:right;font-size:15px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.05em">Unit Price</th>
+      <th style="padding:14px 18px;text-align:right;font-size:15px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.05em">Total</th>
+    </tr>
+  </thead>
+  <tbody>${rows}</tbody>
+</table>
+
+<div class="email-summary-box" style="padding:16px;background-color:#f1f5f9;border-radius:8px;border:1px solid #e2e8f0">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+    ${buildDiscountAndTaxRowsHtml(totals, job.discountReason)}
+    ${hasSurcharge ? `
+    <tr>
+      <td class="email-table-label" style="font-size:16px;font-weight:600;color:#475569">${totals.discount > 0 || totals.tax > 0 ? "Total" : "Subtotal"}</td>
+      <td class="email-table-value" style="font-size:16px;font-weight:600;color:#334155;text-align:right">${formatPrice(subtotal)}</td>
+    </tr>
+    <tr>
+      <td class="email-table-label" style="font-size:16px;font-weight:600;color:#475569;padding-top:8px">Card processing fee</td>
+      <td class="email-table-value" style="font-size:16px;font-weight:600;color:#334155;text-align:right;padding-top:8px">${formatPrice(totalPaid - subtotal)}</td>
+    </tr>
+    ` : ""}
+    <tr>
+      <td class="email-table-label" style="font-size:16px;font-weight:700;color:#475569;padding-top:${hasSurcharge ? "8px" : "0"}">Total paid</td>
+      <td class="email-heading" style="font-size:20px;font-weight:700;color:#334155;text-align:right;padding-top:${hasSurcharge ? "8px" : "0"}">${formatPrice(totalPaid)}</td>
+    </tr>
+  </table>
+</div>
+
+<p class="email-muted" style="margin:24px 0 0;font-size:14px;color:#64748b">This receipt is for your ${escapeHtml(job.bikeMake)} ${escapeHtml(job.bikeModel)} repair.</p>
+<p class="email-muted" style="margin:20px 0 0;font-size:14px;color:#64748b">If you have any questions, please don't hesitate to get in touch.</p>
+<p class="email-muted" style="margin:20px 0 0;font-size:12px;color:#94a3b8">Thank you for choosing ${escapeHtml(shopName)}.</p>
+  `.trim();
+}
+
+function buildBikeReadyInvoiceInnerHtml(
+  job: JobForPricedInvoice,
+  totals: JobTotals,
+  totalPaid: number,
+  shopName: string,
+  billUrl: string
+): string {
+  const subtotal = totals.total;
+  const customerName = job.customer
+    ? [job.customer.firstName, job.customer.lastName].filter(Boolean).join(" ").trim() || "Customer"
+    : "Customer";
+  const remaining = Math.max(0, subtotal - totalPaid);
+  const readyMessage =
+    job.deliveryType === "COLLECTION_SERVICE"
+      ? `Good news: your ${escapeHtml(job.bikeMake)} ${escapeHtml(job.bikeModel)} is ready and raring to roll. Since this was a collection, we'll be in touch to schedule its return home. Here is the itemized bill for the work completed.`
+      : `Good news: your ${escapeHtml(job.bikeMake)} ${escapeHtml(job.bikeModel)} is ready for pickup. Here is the itemized bill for the work completed.`;
+  const serviceRows = (job.jobServices ?? []).map((js, i) => {
+    const unitPrice = typeof js.unitPrice === "string" ? parseFloat(js.unitPrice) : Number(js.unitPrice);
+    const lineTotal = unitPrice * (js.quantity || 1);
+    return `
+      <tr class="email-table-row${i % 2 === 1 ? " email-table-row-alt" : ""}">
+        <td class="email-table-value" style="padding:14px 18px;border-bottom:1px solid #e2e8f0;color:#334155;font-size:16px">${escapeHtml(js.service?.name ?? js.customServiceName ?? "Service")}</td>
+        <td class="email-table-label" style="padding:14px 18px;border-bottom:1px solid #e2e8f0;color:#64748b;text-align:center;font-size:16px">${js.quantity}</td>
+        <td class="email-table-label" style="padding:14px 18px;border-bottom:1px solid #e2e8f0;color:#64748b;text-align:right;font-size:16px">${formatPrice(unitPrice)}</td>
+        <td class="email-table-value" style="padding:14px 18px;border-bottom:1px solid #e2e8f0;color:#0f172a;font-weight:600;text-align:right;font-size:16px">${formatPrice(lineTotal)}</td>
+      </tr>
+    `;
+  }).join("");
+  const svcCount = (job.jobServices ?? []).length;
+  const productRows = (job.jobProducts ?? []).map((jp, i) => {
+    const unitPrice = typeof jp.unitPrice === "string" ? parseFloat(jp.unitPrice) : Number(jp.unitPrice);
+    const lineTotal = unitPrice * (jp.quantity || 1);
+    return `
+      <tr class="email-table-row${(svcCount + i) % 2 === 1 ? " email-table-row-alt" : ""}">
+        <td class="email-table-value" style="padding:14px 18px;border-bottom:1px solid #e2e8f0;color:#334155;font-size:16px">${escapeHtml(jp.product?.name ?? "Product")}</td>
+        <td class="email-table-label" style="padding:14px 18px;border-bottom:1px solid #e2e8f0;color:#64748b;text-align:center;font-size:16px">${jp.quantity}</td>
+        <td class="email-table-label" style="padding:14px 18px;border-bottom:1px solid #e2e8f0;color:#64748b;text-align:right;font-size:16px">${formatPrice(unitPrice)}</td>
+        <td class="email-table-value" style="padding:14px 18px;border-bottom:1px solid #e2e8f0;color:#0f172a;font-weight:600;text-align:right;font-size:16px">${formatPrice(lineTotal)}</td>
+      </tr>
+    `;
+  }).join("");
+  const rows = serviceRows + productRows || `
+    <tr class="email-table-row">
+      <td colspan="4" class="email-muted" style="padding:14px 18px;border-bottom:1px solid #e2e8f0;color:#64748b;font-size:16px">No line items added yet.</td>
+    </tr>
+  `;
+
+  return `
+<p class="email-body-cell" style="margin:0 0 16px;font-size:16px;color:#475569">Hi ${escapeHtml(customerName)},</p>
+<p class="email-body-cell" style="margin:0 0 24px;font-size:16px;color:#475569">${readyMessage}</p>
+
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" class="email-table" style="margin-bottom:24px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
+  <thead>
+    <tr class="email-table-header" style="background-color:#f8fafc">
+      <th style="padding:14px 18px;text-align:left;font-size:15px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.05em">Item</th>
+      <th style="padding:14px 18px;text-align:center;font-size:15px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.05em">Qty</th>
+      <th style="padding:14px 18px;text-align:right;font-size:15px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.05em">Unit Price</th>
+      <th style="padding:14px 18px;text-align:right;font-size:15px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.05em">Total</th>
+    </tr>
+  </thead>
+  <tbody>${rows}</tbody>
+</table>
+
+<div class="email-summary-box" style="padding:16px;background-color:#f1f5f9;border-radius:8px;border:1px solid #e2e8f0;margin-bottom:24px">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+    ${buildDiscountAndTaxRowsHtml(totals, job.discountReason)}
+    <tr>
+      <td class="email-table-label" style="font-size:16px;font-weight:600;color:#475569">Total</td>
+      <td class="email-table-value" style="font-size:18px;font-weight:700;color:#334155;text-align:right">${formatPrice(subtotal)}</td>
+    </tr>
+    ${totalPaid > 0 ? `
+    <tr>
+      <td class="email-muted" style="font-size:15px;font-weight:600;color:#64748b;padding-top:8px">Already paid</td>
+      <td class="email-muted" style="font-size:15px;font-weight:600;color:#64748b;text-align:right;padding-top:8px">${formatPrice(totalPaid)}</td>
+    </tr>
+    ` : ""}
+    <tr>
+      <td class="email-table-label" style="font-size:16px;font-weight:700;color:#475569;padding-top:8px">Balance due</td>
+      <td class="email-heading" style="font-size:20px;font-weight:700;color:#0f172a;text-align:right;padding-top:8px">${formatPrice(remaining)}</td>
+    </tr>
+  </table>
+</div>
+
+${billUrl ? buildCustomerEmailCtaButton(billUrl, remaining > 0 ? "View and pay your bill" : "View your bill") : ""}
+<p class="email-muted" style="margin:24px 0 0;font-size:14px;color:#64748b">Thanks,<br/>The ${escapeHtml(shopName)} Team</p>
+  `.trim();
+}
+
+const SHOP_NAME = process.env.SHOP_NAME || "Basement Bike Mechanic";
+
+export async function sendChatMagicLinkEmail(
+  recipient: string,
+  magicLinkUrl: string,
+  resendClient?: InstanceType<typeof Resend> | null,
+  shopId?: string | null
+): Promise<{ ok: boolean; error?: string }> {
+  const resend = resendClient ?? getResend();
+  if (!resend) {
+    console.warn("RESEND_API_KEY not set, skipping chat magic link email");
+    return { ok: false, error: "Email not configured" };
+  }
+
+  const shopName = SHOP_NAME;
+  const subject = `Sign in to ${shopName}`;
+  const branding = await getCustomerEmailBrandingAssets(shopId);
+  const innerHtml = `
+<p class="email-body-cell" style="margin:0 0 12px;color:#475569">Click the button below to sign in to your account. This link expires in 15 minutes.</p>
+<p class="email-body-cell" style="margin:0 0 24px;color:#475569">Once signed in, you can view your repairs, chat with us, and more.</p>
+${buildCustomerEmailCtaButton(magicLinkUrl, "Sign in to your account")}
+<p class="email-muted" style="margin:24px 0 0;font-size:12px;color:#6b7280">If you didn't request this email, you can safely ignore it.</p>
+<p class="email-muted" style="margin:12px 0 0;font-size:12px;color:#64748b;word-break:break-all">Or copy this link: <a href="${escapeHtml(magicLinkUrl)}" style="color:#4f46e5;text-decoration:underline">${escapeHtml(magicLinkUrl)}</a></p>
+`.trim();
+  const html = buildReadOnlyCustomerEmailHtml({
+    innerHtml,
+    headerLogoSrc: branding.headerLogoSrc,
+    heading: `Sign in to ${shopName}`,
+  });
+  const attachments = customerEmailBrandingAttachments(branding);
+
+  const customerEmailSendOptions = getCustomerEmailSendOptions();
+  console.log("[sendChatMagicLinkEmail] from:", customerEmailSendOptions.from, "| to:", recipient);
+  try {
+    const { data, error } = await sendResendEmail(resend, {
+      ...customerEmailSendOptions,
+      to: recipient,
+      subject,
+      html,
+      ...(attachments && { attachments }),
+    });
+    if (error) {
+      console.error("[sendChatMagicLinkEmail] Resend error:", error);
+      return { ok: false, error: error.message };
+    }
+    console.log("[sendChatMagicLinkEmail] sent ok, id:", data?.id);
+    return { ok: true };
+  } catch (e) {
+    console.error("[sendChatMagicLinkEmail] exception:", e);
+    return { ok: false, error: e instanceof Error ? e.message : "Unknown error" };
+  }
+}
+
+function buildChatReminderReplyOptionsHtml(
+  delivery: ChatCustomerReminderDelivery,
+  shopName: string
+): { html: string; plain: string } {
+  const parts: string[] = [];
+  const plainParts: string[] = [];
+
+  if (delivery.smsReplyAvailable) {
+    const numberLine = delivery.shopSmsNumber
+      ? `Open the text thread from <strong>${escapeHtml(shopName)}</strong> on your phone and reply there. Our number: <strong>${escapeHtml(delivery.shopSmsNumber)}</strong>.`
+      : `Open the text message thread from <strong>${escapeHtml(shopName)}</strong> on your phone and reply there.`;
+    parts.push(
+      `<p class="email-body-cell" style="margin:0 0 16px;font-size:16px;color:#475569">${numberLine}</p>`
+    );
+    plainParts.push(
+      delivery.shopSmsNumber
+        ? `Reply in the text thread from ${shopName} on your phone (our number: ${delivery.shopSmsNumber}).`
+        : `Reply in the text thread from ${shopName} on your phone.`
+    );
+  }
+
+  if (delivery.customerHasApp) {
+    parts.push(
+      `<p class="email-body-cell" style="margin:0 0 16px;font-size:16px;color:#475569">If you use the Bike Ops app, you can also open the chat from the notification we sent.</p>`
+    );
+    plainParts.push("If you use the Bike Ops app, open chat from the notification we sent.");
+  }
+
+  if (delivery.webChatUrl) {
+    const label = delivery.smsReplyAvailable ? "Open chat in your browser" : "Open chat";
+    parts.push(buildCustomerEmailCtaButton(delivery.webChatUrl, label));
+    plainParts.push(`${label}: ${delivery.webChatUrl}`);
+  }
+
+  if (delivery.statusUrl) {
+    parts.push(
+      `<p class="email-body-cell" style="margin:16px 0 0;font-size:15px;color:#475569"><a href="${escapeHtml(delivery.statusUrl)}" style="color:#4f46e5;text-decoration:underline">View your repair status</a></p>`
+    );
+    plainParts.push(`Repair status: ${delivery.statusUrl}`);
+  }
+
+  if (delivery.smsReplyAvailable && delivery.shopSmsNumber) {
+    const tel = phoneTelHref(delivery.shopSmsNumber);
+    if (tel) {
+      parts.push(
+        `<p class="email-muted" style="margin:12px 0 0;font-size:14px;color:#64748b"><a href="${escapeHtml(tel)}" style="color:#4f46e5;text-decoration:underline">Call or text ${escapeHtml(delivery.shopSmsNumber)}</a></p>`
+      );
+    }
+  }
+
+  return { html: parts.join("\n"), plain: plainParts.join("\n\n") };
+}
+
+export async function sendChatCustomerReplyReminder(
+  customerEmail: string,
+  customerFirstName: string,
+  reminderMinutes: number,
+  staffMessageBody: string | null,
+  attachmentFilenames: string[] = [],
+  delivery: ChatCustomerReminderDelivery,
+  shopId?: string | null
+): Promise<{ ok: boolean; error?: string }> {
+  const blocked = skipIfCustomerNotificationsBlocked("sendChatCustomerReplyReminder");
+  if (blocked) return blocked;
+
+  const resend = getResend();
+  if (!resend) {
+    console.warn("RESEND_API_KEY not set, skipping chat reminder email");
+    return { ok: false, error: "Email not configured" };
+  }
+
+  const shopName = SHOP_NAME;
+  const name = customerFirstName.trim() || "there";
+  const subject = `${shopName} is waiting for your reply`;
+  const trimmedBody = staffMessageBody?.trim() ?? "";
+  const files = attachmentFilenames.map((f) => f.trim()).filter(Boolean);
+  const hasLatestInBody = trimmedBody.length > 0 || files.length > 0;
+
+  const latestMessageHtml = hasLatestInBody
+    ? `<div class="email-quote-box" style="margin: 0 0 24px; padding: 16px; background: #f1f5f9; border-radius: 8px; border-left: 4px solid #4f46e5; font-size: 15px; color: #334155;">
+        ${trimmedBody.length > 0 ? `<div style="white-space: pre-wrap; word-break: break-word;">${escapeHtml(trimmedBody)}</div>` : ""}
+        ${files.length > 0 ? `<p class="email-muted" style="margin: ${trimmedBody.length > 0 ? "12px" : "0"} 0 0; font-size: 14px; color: #475569;"><span style="color: #64748b;">Included:</span> ${files.map((f) => escapeHtml(f)).join(", ")}</p>` : ""}
+      </div>`
+    : `<p class="email-body-cell" style="margin: 0 0 24px; font-size: 16px; color: #475569;">We sent you a message in chat at least ${reminderMinutes} minute${reminderMinutes === 1 ? "" : "s"} ago. When you have a moment, please open the conversation and reply.</p>`;
+
+  const intro = hasLatestInBody
+    ? `<p style="margin: 0 0 16px; font-size: 16px; color: #475569;">We sent you a message in chat at least ${reminderMinutes} minute${reminderMinutes === 1 ? "" : "s"} ago. Here is the latest message:</p>`
+    : "";
+
+  const plainLatest =
+    trimmedBody.length > 0
+      ? trimmedBody + (files.length > 0 ? `\n\nIncluded: ${files.join(", ")}` : "")
+      : files.length > 0
+        ? `Included: ${files.join(", ")}`
+        : "";
+
+  const replyOptions = buildChatReminderReplyOptionsHtml(delivery, shopName);
+  const replyIntro = delivery.smsReplyAvailable
+    ? "How to reply:"
+    : "Open the conversation:";
+
+  const textBody = hasLatestInBody
+    ? `Hi ${name},\n\nWe sent you a message in chat at least ${reminderMinutes} minute${reminderMinutes === 1 ? "" : "s"} ago. Here is the latest message:\n\n${plainLatest}\n\n${replyIntro}\n\n${replyOptions.plain}\n\n${getCustomerReadOnlyNoticeText()}\n\nIf you already replied, you can ignore this email.`
+    : `Hi ${name},\n\nWe sent you a message in chat at least ${reminderMinutes} minute${reminderMinutes === 1 ? "" : "s"} ago. When you have a moment, please reply.\n\n${replyIntro}\n\n${replyOptions.plain}\n\n${getCustomerReadOnlyNoticeText()}\n\nIf you already replied, you can ignore this email.`;
+
+  const branding = await getCustomerEmailBrandingAssets(shopId);
+  const innerHtml = `
+${intro}
+${latestMessageHtml}
+<p style="margin:0 0 12px;font-size:15px;font-weight:600;color:#334155">${replyIntro}</p>
+${replyOptions.html}
+<p style="margin:24px 0 0;font-size:12px;color:#6b7280">If you already replied, you can ignore this email.</p>
+`.trim();
+  const html = buildReadOnlyCustomerEmailHtml({
+    innerHtml,
+    headerLogoSrc: branding.headerLogoSrc,
+    heading: `Hi ${name}`,
+  });
+  const attachments = customerEmailBrandingAttachments(branding);
+
+  try {
+    const { error } = await sendResendEmail(resend, {
+      ...getCustomerEmailSendOptions(),
+      to: customerEmail,
+      subject,
+      text: textBody,
+      html,
+      ...(attachments && { attachments }),
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Unknown error" };
+  }
+}
+
+export async function sendChatStaffReplyReminder(
+  staffEmail: string,
+  customerDisplayName: string,
+  chatUrl: string,
+  reminderMinutes: number
+): Promise<{ ok: boolean; error?: string }> {
+  const resend = getResend();
+  if (!resend) {
+    console.warn("RESEND_API_KEY not set, skipping chat reminder email");
+    return { ok: false, error: "Email not configured" };
+  }
+
+  const shopName = SHOP_NAME;
+  const subject = `Chat: ${customerDisplayName} is waiting for a reply`;
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background: #f8fafc; color: #0f172a; }
+    .container { max-width: 480px; margin: 0 auto; padding: 40px 20px; }
+    .card { background: white; border-radius: 12px; padding: 32px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.07); }
+    .btn { display: inline-block; padding: 14px 28px; background: #0f766e; color: white !important; text-decoration: none; font-weight: 600; border-radius: 8px; }
+    .muted { color: #64748b; font-size: 14px; margin-top: 24px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <h1 style="margin: 0 0 16px; font-size: 22px;">${escapeHtml(customerDisplayName)} messaged you</h1>
+      <p style="margin: 0 0 24px; font-size: 16px; color: #475569;">
+        It has been at least ${reminderMinutes} minute${reminderMinutes === 1 ? "" : "s"} since their last message. Open ${escapeHtml(shopName)} chat to reply when you can.
+      </p>
+      <a href="${chatUrl}" class="btn">Open staff chat</a>
+      <p class="muted">
+        If you already replied, you can ignore this email.
+      </p>
+    </div>
+  </div>
+</body>
+</html>
+  `.trim();
+
+  try {
+    const { error } = await sendResendEmail(resend, {
+      from: getFromEmail(),
+      to: staffEmail,
+      subject,
+      html,
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Unknown error" };
+  }
+}
+
+export async function sendPaymentReceiptEmail(
+  job: JobForPricedInvoice,
+  totalPaid?: number
+): Promise<{ ok: boolean; error?: string }> {
+  const blocked = skipIfCustomerNotificationsBlocked("sendPaymentReceiptEmail");
+  if (blocked) return blocked;
+
+  const resend = getResend();
+  if (!resend) {
+    console.warn("RESEND_API_KEY not set, skipping payment receipt email");
+    return { ok: false, error: "Email not configured" };
+  }
+
+  const email = job.customer?.email;
+  if (!email || !email.trim()) {
+    return { ok: false, error: "No customer email" };
+  }
+
+  const { prisma } = await import("./db");
+  const shopRow = await prisma.shop
+    .findUnique({ where: { id: job.shopId }, select: { name: true } })
+    .catch(() => null);
+  const shopName = shopRow?.name ?? SHOP_NAME;
+
+  const totals = computeJobTotals(job);
+  const subtotal = totals.total;
+
+  const paid = totalPaid ?? subtotal;
+
+  const subject = `Payment receipt – ${job.bikeMake} ${job.bikeModel} – ${shopName}`;
+
+  const branding = await getCustomerEmailBrandingAssets(job.shopId);
+  const innerHtml = buildInvoiceInnerHtml(job, totals, paid, shopName);
+  const html = buildReadOnlyCustomerEmailHtml({
+    innerHtml,
+    headerLogoSrc: branding.headerLogoSrc,
+    heading: "Payment receipt",
+  });
+  const attachments = customerEmailBrandingAttachments(branding);
+
+  try {
+    const { data, error } = await sendResendEmail(resend, {
+      ...getCustomerEmailSendOptions(),
+      to: email,
+      subject,
+      html,
+      ...(attachments && { attachments }),
+    });
+
+    if (error) {
+      return { ok: false, error: error.message };
+    }
+
+    console.log(`[Email] Receipt sent to ${email} for job ${job.id}. Resend id: ${data?.id ?? "unknown"} – check resend.com/emails for delivery status`);
+
+    await prisma.jobEmail.create({
+      data: {
+        shopId: job.shopId,
+        jobId: job.id,
+        templateSlug: "payment_receipt",
+        recipient: email,
+      },
+    });
+
+    return { ok: true };
+  } catch (e) {
+    const err = e instanceof Error ? e.message : "Unknown error";
+    return { ok: false, error: err };
+  }
+}
+
+export async function sendBikeReadyInvoiceEmail(
+  job: JobForPricedInvoice,
+  totalPaid = 0
+): Promise<{ ok: boolean; error?: string }> {
+  const blocked = skipIfCustomerNotificationsBlocked("sendBikeReadyInvoiceEmail");
+  if (blocked) return blocked;
+
+  const resend = getResend();
+  if (!resend) {
+    console.warn("RESEND_API_KEY not set, skipping bike ready invoice email");
+    return { ok: false, error: "Email not configured" };
+  }
+
+  const email = job.customer?.email;
+  if (!email?.trim()) {
+    return { ok: false, error: "No customer email" };
+  }
+
+  const { prisma } = await import("./db");
+  const shopRow = await prisma.shop
+    .findUnique({ where: { id: job.shopId }, select: { name: true, subdomain: true } })
+    .catch(() => null);
+  const shopName = shopRow?.name ?? SHOP_NAME;
+  const totals = computeJobTotals(job);
+  const billUrl = getCustomerBillUrl(job.id, job.shopId, shopRow?.subdomain);
+  const subject = `Your bike is ready - bill for ${job.bikeMake} ${job.bikeModel}`;
+
+  const branding = await getCustomerEmailBrandingAssets(job.shopId);
+  const innerHtml = buildBikeReadyInvoiceInnerHtml(job, totals, totalPaid, shopName, billUrl);
+  const html = buildReadOnlyCustomerEmailHtml({
+    innerHtml,
+    headerLogoSrc: branding.headerLogoSrc,
+    heading: "Your bike is ready",
+  });
+  const attachments = customerEmailBrandingAttachments(branding);
+
+  try {
+    const { error } = await sendResendEmail(resend, {
+      ...getCustomerEmailSendOptions(),
+      to: email,
+      subject,
+      html,
+      ...(attachments && { attachments }),
+    });
+
+    if (error) return { ok: false, error: error.message };
+
+    await prisma.jobEmail.create({
+      data: {
+        shopId: job.shopId,
+        jobId: job.id,
+        templateSlug: "bike_ready_invoice",
+        recipient: email,
+      },
+    });
+
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Unknown error" };
+  }
+}
+
+export interface ReviewRequestEmailParams {
+  recipientEmail: string;
+  recipientName?: string | null;
+  /** Tracking redirect URL for Google (already includes token + platform). Omit to hide the button. */
+  googleTrackUrl?: string | null;
+  /** Tracking redirect URL for Yelp. Omit to hide the button. */
+  yelpTrackUrl?: string | null;
+  shopName?: string;
+  shopId?: string | null;
+  /** Which follow-up wave this is (1 = initial/day-3, 2 = day-7, 3 = day-14). Defaults to 1. */
+  followUpNumber?: 1 | 2 | 3;
+}
+
+/** Sends a review request email with Google and/or Yelp CTA buttons. */
+export async function sendReviewRequestEmail({
+  recipientEmail,
+  recipientName,
+  googleTrackUrl,
+  yelpTrackUrl,
+  shopName,
+  shopId,
+  followUpNumber = 1,
+}: ReviewRequestEmailParams): Promise<void> {
+  if (skipIfCustomerNotificationsBlocked("sendReviewRequestEmail")) return;
+
+  const resend = getResend();
+  if (!resend) throw new Error("Email sending is not configured (missing Resend API key).");
+
+  const branding = await getCustomerEmailBrandingAssets(shopId);
+  const shop = shopName || process.env.SHOP_NAME?.trim() || "Basement Bike Mechanic";
+  const firstName = recipientName ? recipientName.split(" ")[0] : null;
+  const greeting = firstName ? `Hi ${firstName},` : "Hi there,";
+
+  const googleBtn = googleTrackUrl
+    ? buildCustomerEmailCtaButton(googleTrackUrl, "Review us on Google")
+    : "";
+
+  const yelpBtn = yelpTrackUrl
+    ? buildCustomerEmailCtaButton(yelpTrackUrl, "Review us on Yelp")
+    : "";
+
+  const subjectByWave: Record<1 | 2 | 3, string> = {
+    1: `How was your experience at ${shop}?`,
+    2: `Still enjoying your bike? We'd love a quick review`,
+    3: `One last ask — how was your recent service at ${shop}?`,
+  };
+
+  const bodyByWave: Record<1 | 2 | 3, string> = {
+    1: `Thank you for choosing ${escapeHtml(shop)}! We hope your experience was great and your bike is riding perfectly. If you have a moment, we'd love to hear what you think. Your review helps other cyclists find us and means the world to our small team.`,
+    2: `Just a quick follow-up — if you haven't had a chance yet, sharing your experience with ${escapeHtml(shop)} would really mean a lot to us and helps future customers find a shop they can trust.`,
+    3: `This is our last message about this, and we completely understand if now isn't the right time. But if you ever do have a spare moment, even a few words about your recent service makes a huge difference for our small team.`,
+  };
+
+  const innerHtml = `
+    <p style="margin:0 0 16px">${escapeHtml(greeting)}</p>
+    <p style="margin:0 0 16px">${bodyByWave[followUpNumber]}</p>
+    ${googleBtn}
+    ${yelpBtn ? `<div style="margin-top:12px">${yelpBtn}</div>` : ""}
+    <p style="margin:24px 0 0;font-size:13px;color:#64748b">You can review on whichever platform you prefer — even a few words makes a big difference. Thank you!</p>
+  `;
+
+  const html = buildReadOnlyCustomerEmailHtml({
+    innerHtml,
+    headerLogoSrc: branding.headerLogoSrc,
+    heading: "How did we do?",
+  });
+
+  const { error } = await sendResendEmail(resend, {
+    ...getCustomerEmailSendOptions(),
+    to: recipientEmail,
+    subject: subjectByWave[followUpNumber],
+    html,
+    ...(branding.attachments ? { attachments: branding.attachments } : {}),
+  });
+  if (error) {
+    throw new Error(error.message);
+  }
+}
+
+const BROADCAST_FOOTER_DISCLAIMER =
+  "You are receiving this because you opted in to email updates from our shop.";
+
+const BROADCAST_MARKETING_UNSUBSCRIBE_HTML = `<p class="email-muted" style="margin:16px 0 0;font-size:12px;line-height:1.6;color:#64748b"><a href="{{{RESEND_UNSUBSCRIBE_URL}}}" style="color:#4f46e5;text-decoration:underline">Unsubscribe</a> from shop update emails.</p>`;
+
+export type BroadcastRecipient = {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string | null;
+};
+
+export type EmailBroadcastHistoryItem = {
+  id: string;
+  subject: string;
+  bodyHtml: string;
+  recipientCount: number;
+  failedCount: number;
+  skippedCount: number;
+  resendBroadcastId: string | null;
+  sentAt: string;
+};
+
+/** Recent mass-send broadcasts for this shop (newest first). */
+export async function listEmailBroadcastHistory(
+  shopId: string,
+  limit = 50
+): Promise<EmailBroadcastHistoryItem[]> {
+  const { prisma } = await import("./db");
+  const rows = await prisma.emailBroadcast.findMany({
+    where: { shopId },
+    orderBy: { sentAt: "desc" },
+    take: Math.min(Math.max(limit, 1), 100),
+    select: {
+      id: true,
+      subject: true,
+      bodyHtml: true,
+      recipientCount: true,
+      failedCount: true,
+      skippedCount: true,
+      resendBroadcastId: true,
+      sentAt: true,
+    },
+  });
+
+  return rows.map((row) => ({
+    id: row.id,
+    subject: row.subject,
+    bodyHtml: row.bodyHtml,
+    recipientCount: row.recipientCount,
+    failedCount: row.failedCount,
+    skippedCount: row.skippedCount,
+    resendBroadcastId: row.resendBroadcastId,
+    sentAt: row.sentAt.toISOString(),
+  }));
+}
+
+/** Customers with a usable email who have not opted out of email updates. */
+export async function getBroadcastRecipients(shopId: string): Promise<BroadcastRecipient[]> {
+  const { prisma } = await import("./db");
+  const customers = await prisma.customer.findMany({
+    where: {
+      shopId,
+      email: { not: null },
+      emailUpdatesConsent: { not: false },
+    },
+    select: {
+      id: true,
+      email: true,
+      firstName: true,
+      lastName: true,
+      emailUpdatesConsent: true,
+    },
+    orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
+  });
+
+  return customers
+    .filter((c) => getEffectiveEmailUpdatesConsent(c))
+    .map((c) => ({
+      id: c.id,
+      email: c.email!.trim(),
+      firstName: c.firstName,
+      lastName: c.lastName,
+    }));
+}
+
+function broadcastCustomerDisplayName(customer: {
+  firstName: string;
+  lastName: string | null;
+}): string {
+  return [customer.firstName, customer.lastName].filter(Boolean).join(" ").trim() || "there";
+}
+
+async function resolveShopDisplayName(shopId: string): Promise<string> {
+  const { prisma } = await import("./db");
+  const shop = await prisma.shop.findUnique({
+    where: { id: shopId },
+    select: { name: true },
+  });
+  return shop?.name?.trim() || process.env.SHOP_NAME?.trim() || "our shop";
+}
+
+/**
+ * Staff test send for a news/update broadcast — uses sample merge data + Bike Ops shell.
+ * Uses transactional send (single email) so previews don't require Marketing segment sync.
+ */
+export async function sendCustomerBroadcastTestEmail(
+  shopId: string,
+  options: { subject: string; bodyHtml: string; to: string }
+): Promise<{ ok: boolean; error?: string }> {
+  const resend = getResend();
+  if (!resend) {
+    return { ok: false, error: "Email not configured (set RESEND_API_KEY)" };
+  }
+
+  const trimmedTo = options.to.trim();
+  if (!trimmedTo || !trimmedTo.includes("@")) {
+    return { ok: false, error: "Invalid email address" };
+  }
+
+  const shopName = await resolveShopDisplayName(shopId);
+  const vars = {
+    ...getEmailTemplatePreviewVars(),
+    shopName,
+  };
+  const subject = `${mergeTemplateVariables(options.subject.trim(), vars)} [test]`;
+  const mergedBody = mergeTemplateVariables(options.bodyHtml, vars);
+  const branding = await getCustomerEmailBrandingAssets(shopId);
+  const html = buildReadOnlyCustomerEmailHtml({
+    innerHtml: mergedBody,
+    headerLogoSrc: branding.headerLogoSrc,
+    footerDisclaimer: BROADCAST_FOOTER_DISCLAIMER,
+  });
+  const attachments = customerEmailBrandingAttachments(branding);
+
+  try {
+    const { error } = await sendResendEmail(resend, {
+      ...getCustomerEmailSendOptions(),
+      to: trimmedTo,
+      subject,
+      html,
+      ...(attachments && { attachments }),
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Unknown error" };
+  }
+}
+
+/**
+ * Mass-send a news/update email via Resend Marketing Broadcasts (not transactional quota).
+ * Syncs consented customers into a shop segment, then sends one Broadcast.
+ */
+export async function sendCustomerBroadcastEmails(
+  shopId: string,
+  options: { subject: string; bodyHtml: string }
+): Promise<{
+  ok: boolean;
+  sent: number;
+  failed: number;
+  skipped: number;
+  errors: { email: string; error: string }[];
+  error?: string;
+  broadcastId?: string;
+  historyId?: string;
+}> {
+  const {
+    RESEND_MARKETING_FREE_CONTACT_CAP,
+    ensureShopEmailUpdatesSegment,
+    marketingBroadcastLogoSrc,
+    syncEmailUpdatesSegment,
+    toResendBroadcastMergeFields,
+  } = await import("./resend-marketing-broadcast");
+
+  const blocked = skipIfCustomerNotificationsBlocked("sendCustomerBroadcastEmails");
+  if (blocked) {
+    return { ok: false, sent: 0, failed: 0, skipped: 0, errors: [], error: blocked.error };
+  }
+
+  const disableReason = getEmailSendingDisabledReason();
+  if (disableReason) {
+    return { ok: false, sent: 0, failed: 0, skipped: 0, errors: [], error: disableReason };
+  }
+
+  const redirectTo = getEmailRedirectTo();
+  if (redirectTo) {
+    return {
+      ok: false,
+      sent: 0,
+      failed: 0,
+      skipped: 0,
+      errors: [],
+      error:
+        "Marketing broadcasts cannot use EMAIL_REDIRECT_TO. Send a test email instead, or run this from production.",
+    };
+  }
+
+  const resend = getResend();
+  if (!resend) {
+    return {
+      ok: false,
+      sent: 0,
+      failed: 0,
+      skipped: 0,
+      errors: [],
+      error: "Email not configured (set RESEND_API_KEY)",
+    };
+  }
+
+  const subjectTemplate = options.subject.trim();
+  const bodyTemplate = options.bodyHtml.trim();
+  if (!subjectTemplate) {
+    return { ok: false, sent: 0, failed: 0, skipped: 0, errors: [], error: "Subject is required" };
+  }
+  if (!bodyTemplate) {
+    return { ok: false, sent: 0, failed: 0, skipped: 0, errors: [], error: "Message body is required" };
+  }
+
+  const { prisma } = await import("./db");
+  const shop = await prisma.shop.findUnique({
+    where: { id: shopId },
+    select: {
+      id: true,
+      name: true,
+      subdomain: true,
+      resendEmailUpdatesSegmentId: true,
+    },
+  });
+  if (!shop) {
+    return { ok: false, sent: 0, failed: 0, skipped: 0, errors: [], error: "Shop not found" };
+  }
+
+  const recipients = await getBroadcastRecipients(shopId);
+  if (recipients.length === 0) {
+    return {
+      ok: false,
+      sent: 0,
+      failed: 0,
+      skipped: 0,
+      errors: [],
+      error: "No customers with email updates enabled",
+    };
+  }
+
+  const seenEmails = new Set<string>();
+  const uniqueRecipients = recipients.filter((r) => {
+    const key = r.email.toLowerCase();
+    if (seenEmails.has(key)) return false;
+    seenEmails.add(key);
+    return true;
+  });
+  const skipped = recipients.length - uniqueRecipients.length;
+
+  if (uniqueRecipients.length > RESEND_MARKETING_FREE_CONTACT_CAP) {
+    return {
+      ok: false,
+      sent: 0,
+      failed: 0,
+      skipped,
+      errors: [],
+      error: `This list has ${uniqueRecipients.length} contacts. Resend's free Marketing plan covers ${RESEND_MARKETING_FREE_CONTACT_CAP}. Upgrade Marketing or shrink the list.`,
+    };
+  }
+
+  const segmentResult = await ensureShopEmailUpdatesSegment(resend, shop);
+  if (!segmentResult.segmentId) {
+    return {
+      ok: false,
+      sent: 0,
+      failed: 0,
+      skipped,
+      errors: [],
+      error: segmentResult.error ?? "Could not prepare Marketing segment",
+    };
+  }
+
+  const sync = await syncEmailUpdatesSegment(
+    resend,
+    segmentResult.segmentId,
+    uniqueRecipients.map((r) => ({
+      email: r.email,
+      displayName: broadcastCustomerDisplayName(r),
+    }))
+  );
+
+  if (sync.synced === 0) {
+    return {
+      ok: false,
+      sent: 0,
+      failed: sync.failed,
+      skipped,
+      errors: sync.errors.map((e) => ({ email: "", error: e })),
+      error: sync.errors[0] ?? "Could not sync contacts to Resend Marketing",
+    };
+  }
+
+  const shopName = shop.name?.trim() || process.env.SHOP_NAME?.trim() || "our shop";
+  const branding = await getCustomerEmailBrandingAssets(shopId);
+  const logoSrc = marketingBroadcastLogoSrc(
+    branding.headerLogoSrc,
+    getShopAppUrl(shop.subdomain) || getAppUrl()
+  );
+  const sendOptions = getCustomerEmailSendOptions();
+
+  const subject = toResendBroadcastMergeFields(subjectTemplate, shopName);
+  const mergedBody = toResendBroadcastMergeFields(bodyTemplate, shopName);
+  const html = buildReadOnlyCustomerEmailHtml({
+    innerHtml: `${mergedBody}${BROADCAST_MARKETING_UNSUBSCRIBE_HTML}`,
+    headerLogoSrc: logoSrc,
+    footerDisclaimer: BROADCAST_FOOTER_DISCLAIMER,
+  });
+
+  try {
+    const { data, error } = await resend.broadcasts.create({
+      segmentId: segmentResult.segmentId,
+      from: sendOptions.from,
+      replyTo: sendOptions.replyTo,
+      subject,
+      html,
+      name: `${shopName} · ${new Date().toISOString().slice(0, 16)}`,
+      send: true,
+    });
+
+    if (error || !data?.id) {
+      return {
+        ok: false,
+        sent: 0,
+        failed: uniqueRecipients.length,
+        skipped,
+        errors: [{ email: "", error: error?.message ?? "Broadcast create failed" }],
+        error: error?.message ?? "Broadcast create failed",
+      };
+    }
+
+    const history = await prisma.emailBroadcast.create({
+      data: {
+        shopId,
+        subject: subjectTemplate,
+        bodyHtml: bodyTemplate,
+        recipientCount: sync.synced,
+        failedCount: sync.failed,
+        skippedCount: skipped,
+        resendBroadcastId: data.id,
+      },
+      select: { id: true },
+    });
+
+    return {
+      ok: sync.failed === 0,
+      sent: sync.synced,
+      failed: sync.failed,
+      skipped,
+      errors: sync.errors.map((e) => ({ email: "", error: e })),
+      broadcastId: data.id,
+      historyId: history.id,
+      ...(sync.failed > 0
+        ? {
+            error: `Broadcast queued for ${sync.synced} contact${sync.synced === 1 ? "" : "s"}, but ${sync.failed} contact sync failed.`,
+          }
+        : {}),
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      sent: 0,
+      failed: uniqueRecipients.length,
+      skipped,
+      errors: [
+        {
+          email: "",
+          error: e instanceof Error ? e.message : "Unknown error",
+        },
+      ],
+      error: e instanceof Error ? e.message : "Unknown error",
+    };
+  }
+}
+
+export interface EstimateEmailItem {
+  name: string;
+  quantity: number;
+  unitPrice: number;
+  decision?: "PENDING" | "APPROVED" | "DECLINED";
+}
+
+function buildEstimateItemRows(items: EstimateEmailItem[], showDecision: boolean): string {
+  return items
+    .map((item, i) => {
+      const lineTotal = item.unitPrice * (item.quantity || 1);
+      const decisionCell = showDecision
+        ? `<td class="email-table-label" style="padding:14px 18px;border-bottom:1px solid #e2e8f0;font-size:15px;font-weight:600;text-align:center;color:${
+            item.decision === "APPROVED" ? "#047857" : "#b91c1c"
+          }">${item.decision === "APPROVED" ? "Approved" : "Declined"}</td>`
+        : "";
+      return `
+      <tr class="email-table-row${i % 2 === 1 ? " email-table-row-alt" : ""}">
+        <td class="email-table-value" style="padding:14px 18px;border-bottom:1px solid #e2e8f0;color:#334155;font-size:16px">${escapeHtml(item.name)}${
+          item.quantity > 1 ? ` <span style="color:#64748b">× ${item.quantity}</span>` : ""
+        }</td>
+        ${decisionCell}
+        <td class="email-table-value" style="padding:14px 18px;border-bottom:1px solid #e2e8f0;color:#0f172a;font-weight:600;text-align:right;font-size:16px">${formatPrice(lineTotal)}</td>
+      </tr>`;
+    })
+    .join("");
+}
+
+/** Customer email: the shop sent an estimate to review on the status page. */
+export async function sendEstimateEmail(details: {
+  shopId: string;
+  jobId: string;
+  to: string;
+  customerFirstName: string | null;
+  bikeName: string;
+  message: string | null;
+  items: EstimateEmailItem[];
+  total: number;
+  reviewUrl: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  const blocked = skipIfCustomerNotificationsBlocked("sendEstimateEmail");
+  if (blocked) return blocked;
+
+  const resend = getResend();
+  if (!resend) return { ok: false, error: "Email not configured" };
+
+  const { prisma } = await import("./db");
+  const shopRow = await prisma.shop
+    .findUnique({ where: { id: details.shopId }, select: { name: true } })
+    .catch(() => null);
+  const shopName = shopRow?.name ?? SHOP_NAME;
+
+  const greeting = details.customerFirstName?.trim()
+    ? `Hi ${escapeHtml(details.customerFirstName.trim())},`
+    : "Hi,";
+  const note = details.message?.trim()
+    ? `<div class="email-summary-box" style="padding:16px;background-color:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;margin:0 0 24px;font-size:16px;color:#334155">${escapeHtml(details.message.trim()).replace(/\r\n|\r|\n/g, "<br />")}</div>`
+    : "";
+
+  const innerHtml = `
+<p class="email-body-cell" style="margin:0 0 16px;font-size:16px;color:#475569">${greeting}</p>
+<p class="email-body-cell" style="margin:0 0 24px;font-size:16px;color:#475569">${escapeHtml(shopName)} has an estimate for your ${escapeHtml(details.bikeName)}. Approve or decline each item, and we'll get back to work. Nothing is added to your bill until you approve it.</p>
+${note}
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" class="email-table" style="margin-bottom:24px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
+  <tbody>${buildEstimateItemRows(details.items, false)}</tbody>
+</table>
+<div class="email-summary-box" style="padding:16px;background-color:#f1f5f9;border-radius:8px;border:1px solid #e2e8f0">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+    <tr>
+      <td class="email-table-label" style="font-size:16px;font-weight:600;color:#475569">Estimate total</td>
+      <td class="email-table-value" style="font-size:18px;font-weight:700;color:#334155;text-align:right">${formatPrice(details.total)}</td>
+    </tr>
+  </table>
+</div>
+${buildCustomerEmailCtaButton(details.reviewUrl, "Review estimate")}
+`.trim();
+
+  const branding = await getCustomerEmailBrandingAssets(details.shopId);
+  const html = buildReadOnlyCustomerEmailHtml({
+    innerHtml,
+    headerLogoSrc: branding.headerLogoSrc,
+    heading: "Estimate ready to review",
+  });
+  const attachments = customerEmailBrandingAttachments(branding);
+
+  try {
+    const { error } = await sendResendEmail(resend, {
+      ...getCustomerEmailSendOptions(),
+      to: details.to,
+      subject: `Estimate for your ${details.bikeName} - ${formatPrice(details.total)}`,
+      html,
+      ...(attachments && { attachments }),
+    });
+    if (error) return { ok: false, error: error.message };
+
+    await prisma.jobEmail.create({
+      data: {
+        shopId: details.shopId,
+        jobId: details.jobId,
+        templateSlug: "estimate_sent",
+        recipient: details.to,
+      },
+    });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Unknown error" };
+  }
+}
+
+/** Staff email: a customer approved or declined an estimate. */
+export async function sendEstimateResponseNotification(details: {
+  shopId: string;
+  jobId: string;
+  customerName: string;
+  bikeName: string;
+  items: EstimateEmailItem[];
+  approvedTotal: number;
+  customerComment: string | null;
+}): Promise<{ ok: boolean; error?: string }> {
+  const resend = getResend();
+  if (!resend) return { ok: false, error: "Email not configured" };
+
+  const notifyEmail = await getShopNotifyEmail(details.shopId);
+  if (!notifyEmail) return { ok: false, error: "No notification email configured" };
+
+  const { prisma } = await import("./db");
+  const shopRow = await prisma.shop
+    .findUnique({ where: { id: details.shopId }, select: { subdomain: true } })
+    .catch(() => null);
+  const staffJobUrl = getStaffJobOpenUrl(details.jobId, shopRow?.subdomain);
+
+  const approvedCount = details.items.filter((i) => i.decision === "APPROVED").length;
+  const summary =
+    approvedCount === 0
+      ? `${details.customerName} declined the estimate for the ${details.bikeName}.`
+      : `${details.customerName} approved ${approvedCount} of ${details.items.length} items (${formatPrice(details.approvedTotal)}) for the ${details.bikeName}. Approved items are on the job's invoice now.`;
+  const comment = details.customerComment?.trim()
+    ? `<p class="email-body-cell" style="margin:0 0 24px;font-size:16px;color:#334155"><strong>Customer note:</strong> ${escapeHtml(details.customerComment.trim())}</p>`
+    : "";
+
+  const innerHtml = `
+<p class="email-body-cell" style="margin:0 0 24px;font-size:16px;color:#475569">${escapeHtml(summary)}</p>
+${comment}
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" class="email-table" style="margin-bottom:24px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
+  <tbody>${buildEstimateItemRows(details.items, true)}</tbody>
+</table>
+${staffJobUrl ? buildCustomerEmailCtaButton(staffJobUrl, "View job") : ""}
+`.trim();
+
+  const branding = await getCustomerEmailBrandingAssets(details.shopId);
+  const html = buildCustomerEmailHtml({
+    innerHtml,
+    headerLogoSrc: branding.headerLogoSrc,
+    heading: approvedCount === 0 ? "Estimate declined" : "Estimate approved",
+  });
+  const attachments = customerEmailBrandingAttachments(branding);
+
+  try {
+    const { error } = await sendResendEmail(resend, {
+      from: getFromEmail(),
+      to: notifyEmail,
+      subject:
+        approvedCount === 0
+          ? `Estimate declined - ${details.customerName}, ${details.bikeName}`
+          : `Estimate approved - ${details.customerName}, ${details.bikeName}`,
+      html,
+      ...(attachments && { attachments }),
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Unknown error" };
+  }
+}

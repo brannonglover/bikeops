@@ -1,0 +1,391 @@
+import Twilio from "twilio";
+import { resolveOutboundMmsMediaUrls, type MmsAttachment } from "./blob";
+import { getCustomerNotificationBlockReason } from "./env";
+import {
+  getCustomerBillUrl,
+  getCustomerChatUrl,
+  getCustomerStatusUrl,
+} from "./job-customer-access";
+import { normalizePhone } from "./phone";
+
+type SmsProvider = "twilio";
+
+interface SmsSendResult {
+  ok: boolean;
+  error?: string;
+  provider?: SmsProvider;
+  externalMessageId?: string;
+  externalStatus?: string;
+  externalStatusName?: string;
+  externalStatusDescription?: string;
+}
+
+const twilio =
+  process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN
+    ? Twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN)
+    : null;
+
+const TWILIO_FROM_NUMBER = process.env.TWILIO_PHONE_NUMBER?.trim() ?? null;
+
+function isTwilioConfigured(): boolean {
+  return Boolean(twilio && TWILIO_FROM_NUMBER);
+}
+
+export function getConfiguredSmsProvider(): SmsProvider | null {
+  if (isTwilioConfigured()) return "twilio";
+  return null;
+}
+
+export function getConfiguredSmsSender(): string | null {
+  return isTwilioConfigured() ? TWILIO_FROM_NUMBER : null;
+}
+
+function getSmsNotConfiguredError(): string {
+  return "SMS not configured";
+}
+
+async function sendTwilioSms(
+  to: string,
+  text: string,
+  mediaUrl?: string[]
+): Promise<SmsSendResult> {
+  if (!twilio || !TWILIO_FROM_NUMBER) {
+    console.warn(
+      "Twilio not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required), skipping SMS"
+    );
+    return { ok: false, error: getSmsNotConfiguredError() };
+  }
+
+  try {
+    const payload: {
+      body: string;
+      from: string;
+      to: string;
+      mediaUrl?: string[];
+    } = {
+      body: text,
+      from: TWILIO_FROM_NUMBER,
+      to,
+    };
+    if (mediaUrl && mediaUrl.length > 0) {
+      payload.mediaUrl = mediaUrl;
+    }
+
+    const response = await twilio.messages.create(payload);
+
+    return { ok: true, provider: "twilio", externalMessageId: response.sid };
+  } catch (e) {
+    const err = e instanceof Error ? e.message : "Unknown error";
+    console.error("Twilio SMS send error:", err);
+    return { ok: false, error: err };
+  }
+}
+
+async function sendSms(
+  phoneNumber: string,
+  text: string,
+  mediaUrl?: string[]
+): Promise<SmsSendResult> {
+  const blockReason = getCustomerNotificationBlockReason();
+  if (blockReason) {
+    console.warn(`[sms] Skipping send: ${blockReason}`);
+    return { ok: false, error: blockReason };
+  }
+
+  if (!isTwilioConfigured()) {
+    return { ok: false, error: getSmsNotConfiguredError() };
+  }
+
+  const normalized = normalizePhone(phoneNumber);
+  if (!normalized) {
+    return { ok: false, error: "Invalid phone number" };
+  }
+
+  return sendTwilioSms(normalized, text, mediaUrl);
+}
+
+/** SMS templates - slugs match email templates. {{statusUrl}} links to /status/[jobId] */
+const SMS_TEMPLATES: Record<string, string> = {
+  booking_confirmation_dropoff:
+    "Booking confirmed! Your {{bikeMake}} {{bikeModel}} is scheduled.\n\nDrop off at the shop.\n\nTrack: {{statusUrl}}\n\nReply HELP for help, STOP to opt out.",
+  booking_confirmation_collection:
+    "Booking confirmed! We'll collect your {{bikeMake}} {{bikeModel}} as arranged.\n\nTrack: {{statusUrl}}\n\nReply HELP for help, STOP to opt out.",
+  bike_arrived:
+    "Your {{bikeMake}} {{bikeModel}} has arrived.\n\nTrack status: {{statusUrl}}\n\nReply HELP for help, STOP to opt out.",
+  bike_collected:
+    "We've collected your {{bikeMake}} {{bikeModel}}.\n\nTrack status: {{statusUrl}}\n\nReply HELP for help, STOP to opt out.",
+  working_on_bike:
+    "We're working on your {{bikeMake}} {{bikeModel}}.\n\nTrack: {{statusUrl}}\n\nReply HELP for help, STOP to opt out.",
+  waiting_on_parts:
+    "Waiting on parts for your {{bikeMake}} {{bikeModel}}.\n\nTrack: {{statusUrl}}\n\nReply HELP for help, STOP to opt out.",
+  waiting_on_customer:
+    "We need your approval to continue work on your {{bikeMake}} {{bikeModel}}.\n\nTrack: {{statusUrl}}\n\nReply HELP for help, STOP to opt out.",
+  bike_waiting_on_parts:
+    "Update on your {{bikeName}}: we're waiting on parts to finish it. We'll let you know as soon as they arrive.\n\nTrack: {{statusUrl}}\n\nReply HELP for help, STOP to opt out.",
+  bike_ready:
+    "{{bikeReadyMessage}}\n\nView your itemized bill: {{billUrl}}\n\nReply HELP for help, STOP to opt out.",
+  bike_ready_invoice:
+    "{{bikeReadyMessage}}\n\nView your itemized bill: {{billUrl}}\n\nReply HELP for help, STOP to opt out.",
+  waitlist_promoted_dropoff:
+    "Great news — a spot opened up! Your {{bikeMake}} {{bikeModel}} is now booked in and off the waitlist.\n\nDrop off at the shop.\n\nTrack: {{statusUrl}}\n\nReply HELP for help, STOP to opt out.",
+  waitlist_promoted_collection:
+    "Great news — a spot opened up! Your {{bikeMake}} {{bikeModel}} is now booked in and off the waitlist.\n\nWe'll collect it as arranged.\n\nTrack: {{statusUrl}}\n\nReply HELP for help, STOP to opt out.",
+};
+
+/** Slug for the SMS sent when a waitlist entry is promoted to a booked-in job. */
+export function getWaitlistPromotedSmsSlug(deliveryType: string): string {
+  return deliveryType === "COLLECTION_SERVICE"
+    ? "waitlist_promoted_collection"
+    : "waitlist_promoted_dropoff";
+}
+
+export function getTemplateSlugForStage(
+  stage: string,
+  deliveryType: string
+): string | null {
+  if (stage === "BOOKED_IN") {
+    return deliveryType === "COLLECTION_SERVICE"
+      ? "booking_confirmation_collection"
+      : "booking_confirmation_dropoff";
+  }
+  if (stage === "RECEIVED") {
+    return deliveryType === "COLLECTION_SERVICE" ? "bike_collected" : "bike_arrived";
+  }
+  const map: Record<string, string> = {
+    WORKING_ON: "working_on_bike",
+    WAITING_ON_CUSTOMER: "waiting_on_customer",
+    WAITING_ON_PARTS: "waiting_on_parts",
+    BIKE_READY: "bike_ready_invoice",
+  };
+  return map[stage] ?? null;
+}
+
+function mergeTemplateVariables(
+  text: string,
+  vars: Record<string, string>
+): string {
+  let result = text;
+  for (const [key, value] of Object.entries(vars)) {
+    result = result.replace(
+      new RegExp(`\\{\\{${key}\\}\\}`, "g"),
+      value ?? ""
+    );
+  }
+  return result;
+}
+
+export interface JobForSms {
+  id: string;
+  shopId: string;
+  bikeMake: string;
+  bikeModel: string;
+  deliveryType?: string;
+  customer: { firstName: string; lastName: string | null } | null;
+}
+
+function getBikeReadySmsMessage(job: JobForSms): string {
+  const bikeName = `${job.bikeMake} ${job.bikeModel}`.trim();
+  if (job.deliveryType === "COLLECTION_SERVICE") {
+    return `Good news! Your ${bikeName} is ready and raring to roll. We'll be in touch to schedule its return home.`;
+  }
+  return `Good news! Your ${bikeName} is ready for pickup.`;
+}
+
+type ShopSmsContext = { name: string; subdomain: string | null };
+
+/** Overrides for a send scoped to one bike of a multi-bike job. */
+export type BikeScopedSend = {
+  /** Display name for the bike — nickname, else make + model. */
+  bikeName?: string;
+  bikeMake?: string;
+  bikeModel?: string;
+  jobBikeId?: string;
+};
+
+export async function buildJobSmsMessage(
+  templateSlug: string,
+  job: JobForSms,
+  shopHint?: ShopSmsContext,
+  bikeScope?: BikeScopedSend
+): Promise<{ ok: boolean; message?: string; error?: string }> {
+  const body = SMS_TEMPLATES[templateSlug];
+  if (!body) {
+    return { ok: false, error: `SMS template not found: ${templateSlug}` };
+  }
+
+  let shopRow = shopHint ?? null;
+  if (!shopRow) {
+    const { prisma } = await import("./db");
+    shopRow = await prisma.shop
+      .findUnique({ where: { id: job.shopId }, select: { name: true, subdomain: true } })
+      .catch(() => null);
+  }
+  const shopName = shopRow?.name ?? process.env.SHOP_NAME ?? "Basement Bike Mechanic";
+  const customerName = job.customer
+    ? job.customer.lastName
+      ? `${job.customer.firstName} ${job.customer.lastName}`
+      : job.customer.firstName
+    : "Customer";
+
+  const statusUrl = getCustomerStatusUrl(job.id, job.shopId, shopRow?.subdomain);
+  const billUrl = getCustomerBillUrl(job.id, job.shopId, shopRow?.subdomain);
+
+  // A bike-scoped send names that bike, so even templates written against
+  // {{bikeMake}} {{bikeModel}} render the affected bike, not "Multiple / 3 bikes".
+  const bikeMake = bikeScope?.bikeMake ?? job.bikeMake;
+  const bikeModel = bikeScope?.bikeModel ?? job.bikeModel;
+  const vars: Record<string, string> = {
+    customerName,
+    bikeMake,
+    bikeModel,
+    bikeName: bikeScope?.bikeName ?? `${bikeMake} ${bikeModel}`.trim(),
+    bikeReadyMessage: getBikeReadySmsMessage(job),
+    shopName,
+    statusUrl,
+    billUrl,
+  };
+
+  return { ok: true, message: mergeTemplateVariables(body, vars) };
+}
+
+export async function sendJobSms(
+  templateSlug: string,
+  phoneNumber: string,
+  job: JobForSms,
+  shopHint?: ShopSmsContext,
+  bikeScope?: BikeScopedSend
+): Promise<{ ok: boolean; message?: string; error?: string }> {
+  const built = await buildJobSmsMessage(templateSlug, job, shopHint, bikeScope);
+  if (!built.ok || !built.message) {
+    return { ok: false, error: built.error };
+  }
+
+  const result = await sendSms(phoneNumber, built.message);
+  if (!result.ok) {
+    return { ok: false, error: result.error };
+  }
+
+  const normalized = normalizePhone(phoneNumber);
+  if (!normalized) {
+    return { ok: false, error: "Invalid phone number" };
+  }
+
+  const { prisma } = await import("./db");
+
+  try {
+    await prisma.jobSms.create({
+      data: {
+        shopId: job.shopId,
+        jobId: job.id,
+        jobBikeId: bikeScope?.jobBikeId ?? null,
+        templateSlug,
+        recipient: normalized,
+      },
+    });
+
+    return { ok: true, message: built.message };
+  } catch (e) {
+    const err = e instanceof Error ? e.message : "Unknown error";
+    console.error("SMS persistence error:", err);
+    return { ok: false, error: err };
+  }
+}
+
+const CHAT_SMS_MAX_LEN = 1500;
+
+/** Staff chat → customer phone. Plain text, no footer; truncates if needed. */
+export async function sendChatStaffSms(
+  phoneNumber: string,
+  messageText: string,
+  opts?: {
+    attachmentOnly?: boolean;
+    includeChatUrl?: boolean;
+    shopSubdomain?: string;
+    messageId?: string;
+    jobId?: string;
+    shopId?: string;
+    attachments?: MmsAttachment[];
+  }
+): Promise<SmsSendResult> {
+  const chatUrl =
+    opts?.jobId && opts?.shopId
+      ? getCustomerChatUrl(opts.jobId, opts.shopId, opts.shopSubdomain)
+      : "";
+  const chatUrlLine =
+    opts?.includeChatUrl && chatUrl ? `\n\nOpen chat: ${chatUrl}` : "";
+
+  const mediaUrls = opts?.attachments?.length
+    ? resolveOutboundMmsMediaUrls(opts.attachments, opts.shopSubdomain)
+    : [];
+
+  const hasVideoAttachment = (opts?.attachments ?? []).some((a) =>
+    a.mimeType.startsWith("video/")
+  );
+  const attachmentOnlyLabel = hasVideoAttachment
+    ? "We sent you a video in chat."
+    : "We sent you a photo in chat.";
+
+  const buildTextOnlyBody = (): string | null => {
+    if (opts?.attachmentOnly) {
+      return `${attachmentOnlyLabel}${chatUrlLine}`;
+    }
+    const trimmed = messageText.trim();
+    if (!trimmed) {
+      return null;
+    }
+    return `${trimmed}${chatUrlLine}`;
+  };
+
+  const buildMmsBody = (): string => {
+    if (opts?.attachmentOnly) {
+      return "";
+    }
+    return messageText.trim();
+  };
+
+  const truncate = (body: string) =>
+    body.length > CHAT_SMS_MAX_LEN
+      ? body.slice(0, CHAT_SMS_MAX_LEN - 3) + "..."
+      : body;
+
+  if (mediaUrls.length > 0) {
+    const mmsBody = truncate(buildMmsBody());
+    const mmsResult = await sendSms(phoneNumber, mmsBody, mediaUrls);
+    if (mmsResult.ok) {
+      return mmsResult;
+    }
+    console.warn(
+      "[sms] MMS send failed, falling back to text-only:",
+      mmsResult.error
+    );
+  }
+
+  const body = buildTextOnlyBody();
+  if (!body) {
+    return { ok: false, error: "Empty message" };
+  }
+
+  const result = await sendSms(phoneNumber, truncate(body));
+  if (!result.ok) {
+    console.error("Chat SMS send error:", result.error);
+  }
+  return result;
+}
+
+/** One-off test send (no JobSms row). Uses the configured SMS provider sender. */
+export async function sendSmsTest(
+  phoneNumber: string
+): Promise<{ ok: boolean; error?: string; externalMessageId?: string }> {
+  const shopName = process.env.SHOP_NAME || "Basement Bike Mechanic";
+  const body = `${shopName}\n\nSMS test - if you received this, your configured SMS provider is working.`;
+  return sendSms(phoneNumber, body);
+}
+
+/** Direct SMS send for system replies like STOP/HELP confirmations. */
+export async function sendPlainSms(
+  phoneNumber: string,
+  body: string
+): Promise<{ ok: boolean; error?: string }> {
+  const result = await sendSms(phoneNumber, body);
+  return result.ok ? { ok: true } : { ok: false, error: result.error };
+}

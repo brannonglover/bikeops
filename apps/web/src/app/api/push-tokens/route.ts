@@ -1,0 +1,141 @@
+import { NextRequest, NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
+import { z } from "zod";
+import { prisma } from "@/lib/db";
+import { authOptions } from "@/lib/auth";
+import { getCustomerFromSession } from "@/lib/chat-session";
+import { getShopForHost } from "@/lib/shop";
+import { requestHost } from "@/lib/request-host";
+import { getStaffToken } from "@/lib/api-auth";
+
+const registerSchema = z.object({
+  token: z.string().min(1),
+  platform: z.enum(["ios", "android"]),
+});
+
+/**
+ * Determines who is making the request.
+ * Staff: validated via NextAuth session (JWT cookie).
+ * Customer: validated via chat_session cookie.
+ * Returns the identity or null if unauthenticated.
+ */
+async function resolveIdentity(
+  req: NextRequest
+): Promise<
+  | { kind: "staff"; userId: string; shopId: string }
+  | { kind: "customer"; customerId: string; shopId: string }
+  | null
+> {
+  // Try the JWT first: getToken accepts both the plain and __Secure- cookie variants,
+  // which makes it compatible with the mobile app regardless of which name it stored.
+  const jwtToken = await getStaffToken(req);
+  if (jwtToken?.id && jwtToken.shopId) {
+    return { kind: "staff", userId: jwtToken.id as string, shopId: jwtToken.shopId as string };
+  }
+
+  // Fall back to getServerSession for any browser-based staff sessions.
+  const session = await getServerSession(authOptions);
+  if (session?.user?.id && session.user.shopId) {
+    return { kind: "staff", userId: session.user.id, shopId: session.user.shopId };
+  }
+
+  const customerId = await getCustomerFromSession();
+  if (customerId) {
+    const shop = await getShopForHost(requestHost(req.headers));
+    if (!shop) return null;
+    return { kind: "customer", customerId, shopId: shop.id };
+  }
+
+  return null;
+}
+
+/** POST /api/push-tokens — register a push token for the current user. */
+export async function POST(request: NextRequest) {
+  const identity = await resolveIdentity(request);
+  if (!identity) {
+    // Never log the cookie or Authorization values: they carry session tokens.
+    console.warn("[push-tokens] POST — no staff or customer session", {
+      hasCookie: Boolean(request.headers.get("cookie")),
+      hasAuthorization: Boolean(request.headers.get("authorization")),
+    });
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  console.log("[push-tokens] POST — identity resolved:", identity.kind, identity.kind === "staff" ? identity.userId : identity.customerId);
+
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+
+  const parsed = registerSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+  }
+
+  const { token, platform } = parsed.data;
+
+  try {
+    await prisma.pushToken.upsert({
+      where: { token },
+      update: {
+        shopId: identity.shopId,
+        platform,
+        ...(identity.kind === "staff"
+          ? { userId: identity.userId, customerId: null }
+          : { customerId: identity.customerId, userId: null }),
+        updatedAt: new Date(),
+      },
+      create: {
+        shopId: identity.shopId,
+        token,
+        platform,
+        ...(identity.kind === "staff"
+          ? { userId: identity.userId }
+          : { customerId: identity.customerId }),
+      },
+    });
+
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    console.error("POST /api/push-tokens error:", err);
+    return NextResponse.json({ error: "Failed to save push token" }, { status: 500 });
+  }
+}
+
+/**
+ * DELETE /api/push-tokens?token=... — unregister a push token.
+ *
+ * Only the caller's own registration is removed. If the device has since been
+ * registered to someone else (sign-out, then sign-in as another account), the
+ * old owner's delete is a no-op rather than unsubscribing the new owner. The
+ * reply is the same either way, so it says nothing about other tokens.
+ */
+export async function DELETE(request: NextRequest) {
+  const identity = await resolveIdentity(request);
+  if (!identity) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const token = request.nextUrl.searchParams.get("token");
+  if (!token) {
+    return NextResponse.json({ error: "token query param required" }, { status: 400 });
+  }
+
+  try {
+    await prisma.pushToken.deleteMany({
+      where: {
+        token,
+        shopId: identity.shopId,
+        ...(identity.kind === "staff"
+          ? { userId: identity.userId }
+          : { customerId: identity.customerId }),
+      },
+    });
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /api/push-tokens error:", err);
+    return NextResponse.json({ error: "Failed to delete push token" }, { status: 500 });
+  }
+}

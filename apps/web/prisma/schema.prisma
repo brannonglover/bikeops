@@ -1,0 +1,1369 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Shop {
+  id                          String    @id @default(cuid())
+  name                        String
+  subdomain                   String    @unique
+  /// Public street address for directory / nearby search.
+  address                     String?
+  latitude                    Float?
+  longitude                   Float?
+  billingStatus               String    @default("trialing")
+  trialEndsAt                 DateTime?
+  stripeCustomerId            String?   @unique
+  stripeSubscriptionId        String?   @unique
+  stripePriceId               String?
+  stripeCurrentPeriodEnd      DateTime?
+  stripeCancelAtPeriodEnd     Boolean   @default(false)
+  stripeSubscriptionUpdatedAt DateTime?
+  billingProvider             String?
+  appleOriginalTransactionId  String?   @unique
+  appleProductId              String?
+  appleCurrentPeriodEnd       DateTime?
+  appleSubscriptionUpdatedAt  DateTime?
+  createdAt                   DateTime  @default(now())
+  updatedAt                   DateTime  @updatedAt
+
+  customers                   Customer[]
+  bikes                       Bike[]
+  jobs                        Job[]
+  jobBikes                    JobBike[]
+  jobBikeComponentOverrides   JobBikeComponentOverride[]
+  bikeInstalledComponents     BikeInstalledComponent[]
+  payments                    Payment[]
+  services                    Service[]
+  jobServices                 JobService[]
+  emailTemplates              EmailTemplate[]
+  jobEmails                   JobEmail[]
+  jobSms                      JobSms[]
+  products                    Product[]
+  jobProducts                 JobProduct[]
+  jobEstimates                JobEstimate[]
+  jobEstimateItems            JobEstimateItem[]
+  mechanics                   Mechanic[]
+  conversations               Conversation[]
+  messages                    Message[]
+  calls                       Call[]
+  messageReactions            MessageReaction[]
+  chatReminders               ChatReminderEmail[]
+  messageAttachments          MessageAttachment[]
+  blobAssets                  BlobAsset[]
+  users                       User[]
+  pushTokens                  PushToken[]
+  magicLinkTokens             MagicLinkToken[]
+  chatSessions                ChatSession[]
+  reviewSettings              ReviewSettings[]
+  appSettings                 AppSettings[]
+  waitlistEntries             WaitlistEntry[]
+  waitlistBikes               WaitlistBike[]
+  reviewRequests              ReviewRequest[]
+  importedRevenue             ImportedRevenue[]
+  rentalBikes                 RentalBike[]
+  rentalRates                 RentalRate[]
+  rentalAddons                RentalAddon[]
+  rentalReservations          RentalReservation[]
+  rentalActivities            RentalActivity[]
+  emailBroadcasts             EmailBroadcast[]
+  /// Resend Marketing segment for consented email-update customers (Broadcasts).
+  resendEmailUpdatesSegmentId String?
+}
+
+model Customer {
+  id                           String              @id @default(cuid())
+  shopId                       String
+  shop                         Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  firstName                    String
+  lastName                     String?
+  email                        String?
+  phone                        String?
+  emailUpdatesConsent          Boolean             @default(true)
+  emailUpdatesConsentSource    String?
+  emailUpdatesConsentUpdatedAt DateTime?
+  smsConsent                   Boolean             @default(false)
+  smsConsentSource             String?
+  smsConsentUpdatedAt          DateTime?
+  /// Staff user id who attested verbal consent taken on a call (PHONE_VERBAL).
+  smsConsentCapturedBy         String?
+  /// Auto-created to hold a text from a number not on file. firstName is a
+  /// placeholder (the formatted number) until staff fill in the real details
+  /// with "Create contact" in the inbox, which clears this.
+  provisional                  Boolean             @default(false)
+  /// When staff first opened this provisional contact's thread. Drops the "New"
+  /// badge from the inbox once seen, without waiting for the contact to be
+  /// named. Kept separate from Conversation.staffLastReadAt, which is only
+  /// written when there is a customer message to mark read — a thread opened
+  /// from a call has none.
+  provisionalSeenAt            DateTime?
+  address                      String?
+  notes                        String?
+  imageUrl                     String?
+  bikes                        Bike[]
+  jobs                         Job[]
+  conversations                Conversation[]
+  calls                        Call[]
+  waitlistEntries              WaitlistEntry[]     @relation("WaitlistCustomer")
+  magicLinkTokens              MagicLinkToken[]
+  chatSessions                 ChatSession[]
+  pushTokens                   PushToken[]
+  reviewRequests               ReviewRequest[]
+  rentalReservations           RentalReservation[]
+  createdAt                    DateTime            @default(now())
+  updatedAt                    DateTime            @updatedAt
+
+  @@index([shopId])
+}
+
+model Bike {
+  id            String    @id @default(cuid())
+  shopId        String
+  shop          Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  make          String
+  model         String?
+  year          Int?
+  /// null = infer regular vs e-bike from make/model when needed
+  bikeType      BikeType?
+  nickname      String?
+  imageUrl      String?
+  /// The catalog build sheet for this bike. Set only when a mechanic confirms
+  /// the build (model + trim) on a job; reused on every later visit.
+  catalogBikeId         String?
+  catalogConfirmedAt    DateTime?
+  catalogConfirmedBy    String?
+  catalogConfirmedJobId String?
+  installedComponents   BikeInstalledComponent[]
+  customerId    String
+  customer      Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  jobBikes      JobBike[]
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([customerId])
+  @@index([shopId])
+  @@index([catalogBikeId])
+}
+
+model JobBike {
+  id                 String                     @id @default(cuid())
+  shopId             String
+  shop               Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  jobId              String
+  job                Job                        @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  make               String
+  model              String?
+  year               Int?
+  /// null = use linked customer bike or infer from make/model
+  bikeType           BikeType?
+  nickname           String?
+  imageUrl           String?
+  bikeId             String?
+  bike               Bike?                      @relation(fields: [bikeId], references: [id], onDelete: SetNull)
+  sortOrder          Int                        @default(0)
+  completedAt        DateTime?
+  waitingOnPartsAt   DateTime?
+  /// Matched row in the separate bike-catalog database
+  catalogBikeId      String?
+  catalogMatchedAt   DateTime?
+  /// When the background catalog lookup (local match, then web search) reached
+  /// an outcome for this bike. Null = still owed one; the cron sweep picks it up.
+  catalogLookupAt       DateTime?
+  /// Lookups for this bike that errored; the sweep stops after a few.
+  catalogLookupAttempts Int                     @default(0)
+  /// Owed lookups wait until this time (backoff, budget reset, another search).
+  catalogLookupNextAt   DateTime?
+  createdAt          DateTime                   @default(now())
+  workingOnJob       Job?                       @relation("WorkingOnBike")
+  jobEmails          JobEmail[]
+  jobSmses           JobSms[]
+  jobServices        JobService[]
+  jobProducts        JobProduct[]
+  estimateItems      JobEstimateItem[]
+  componentOverrides JobBikeComponentOverride[]
+
+  @@index([jobId])
+  @@index([shopId])
+  @@index([catalogBikeId])
+}
+
+/// Per-job notes on one factory part slot (does not mutate the global catalog).
+/// `confirmation` is what the mechanic saw on the bike; `replacement*` is work
+/// on this job. Neither reaches the customer's bike record until the work is
+/// complete — see BikeInstalledComponent.
+model JobBikeComponentOverride {
+  id           String                @id @default(cuid())
+  shopId       String
+  shop         Shop                  @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  jobBikeId    String
+  jobBike      JobBike               @relation(fields: [jobBikeId], references: [id], onDelete: Cascade)
+  /// Matches CatalogComponentSlot values in bike-catalog
+  slot         String
+  confirmation ComponentConfirmation @default(UNREVIEWED)
+  /// When confirmation is CUSTOMIZED, the part actually on this bike
+  customValue  String?
+  notes        String?
+  /// PLANNED: proposed, quoted or ordered — not on the bike. INSTALLED: the
+  /// mechanic confirmed it's fitted.
+  replacementState       ComponentReplacementState @default(NONE)
+  replacementValue       String?
+  replacementInstalledAt DateTime?
+  /// Staff user (name or email) who last changed this row
+  updatedBy    String?
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+
+  @@unique([jobBikeId, slot])
+  @@index([shopId])
+  @@index([jobBikeId])
+}
+
+enum ComponentReplacementState {
+  NONE
+  PLANNED
+  INSTALLED
+}
+
+/// What is on a customer's bike, as confirmed on completed jobs. One row per
+/// confirmation (history); the newest per slot is what's on the bike now.
+/// Written only from a job bike whose work is complete on a job that isn't
+/// cancelled or awaiting approval; withdrawn if that stops being true.
+/// Separate from the catalog's factory spec, which it never changes.
+model BikeInstalledComponent {
+  id          String                  @id @default(cuid())
+  shopId      String
+  shop        Shop                    @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  bikeId      String
+  bike        Bike                    @relation(fields: [bikeId], references: [id], onDelete: Cascade)
+  slot        String
+  value       String
+  kind        BikeComponentRecordKind
+  notes       String?
+  jobId       String?
+  job         Job?                    @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  jobBikeId   String?
+  /// The JobBikeComponentOverride this came from — one record per override,
+  /// so applying is idempotent and withdrawing is exact.
+  overrideId  String                  @unique
+  confirmedBy String?
+  /// When the work was confirmed complete
+  recordedAt  DateTime
+  createdAt   DateTime                @default(now())
+  updatedAt   DateTime                @updatedAt
+
+  @@index([bikeId, slot])
+  @@index([shopId])
+  @@index([jobId])
+}
+
+enum BikeComponentRecordKind {
+  /// Fitted by the shop on this job
+  INSTALLED
+  /// Already on the bike when it came in (not factory)
+  OBSERVED
+}
+
+enum ComponentConfirmation {
+  UNREVIEWED
+  MATCHES_CATALOG
+  CUSTOMIZED
+}
+
+model Job {
+  id                          String          @id @default(cuid())
+  shopId                      String
+  shop                        Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  bikeMake                    String // Legacy / summary – first bike or "Multiple"
+  bikeModel                   String // Legacy / summary
+  jobBikes                    JobBike[]
+  installedComponents         BikeInstalledComponent[]
+  workingOnJobBikeId          String?         @unique
+  workingOnJobBike            JobBike?        @relation("WorkingOnBike", fields: [workingOnJobBikeId], references: [id], onDelete: SetNull)
+  stage                       Stage           @default(BOOKED_IN)
+  deliveryType                DeliveryType    @default(DROP_OFF_AT_SHOP)
+  dropOffDate                 DateTime?
+  pickupDate                  DateTime?
+  collectionAddress           String?
+  collectionWindowStart       String?
+  collectionWindowEnd         String?
+  collectionReturnWindowStart String?
+  collectionReturnWindowEnd   String?
+  customerId                  String?
+  customer                    Customer?       @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  mechanicId                  String?
+  mechanic                    Mechanic?       @relation(fields: [mechanicId], references: [id], onDelete: SetNull)
+  notes                       String?
+  internalNotes               String?
+  customerNotes               String?
+  /** Internal record of why the job was cancelled. Staff-only — never sent to customers. */
+  cancellationReason          String?
+  /** Optional customer-facing explanation. The only cancellation text customers see. */
+  customerCancellationMessage String?
+  completedAt                 DateTime?
+  receivedAt                  DateTime?
+  archivedAt                  DateTime?
+  columnSortOrder             Float?
+  /// Sales tax, copied from the shop's settings when the job is created (and
+  /// re-copied while the job has no payments), so changing the shop rate never
+  /// changes what a paid job owed. 8.25 means 8.25%.
+  taxRatePercent              Decimal         @default(0) @db.Decimal(6, 3)
+  /// Whether labor (service lines) and parts (product lines) are taxed.
+  taxServices                 Boolean         @default(false)
+  taxProducts                 Boolean         @default(false)
+  /// Staff marked this job tax-exempt (e.g. a resale or nonprofit customer).
+  taxExempt                   Boolean         @default(false)
+  /// Job-level discount, taken off before tax. AMOUNT is dollars; PERCENT is
+  /// 0-100. Null type means no discount.
+  discountType                DiscountType?
+  discountValue               Decimal         @default(0) @db.Decimal(10, 2)
+  discountReason              String?
+  paymentStatus               PaymentStatus   @default(UNPAID)
+  sentEmails                  JobEmail[]
+  sentSms                     JobSms[]
+  jobServices                 JobService[]
+  jobProducts                 JobProduct[]
+  estimates                   JobEstimate[]
+  payments                    Payment[]
+  conversations               Conversation[]
+  /// The conversation this job was created from, when staff built it out of a
+  /// chat thread. Deliberately NOT `Conversation.jobId`: a general thread is
+  /// identified by `jobId: null` everywhere, so pointing that at a job hides
+  /// the thread from the inbox and starts an empty replacement. This is a
+  /// separate link that answers "why is this job here?" without touching it.
+  createdFromConversationId   String?
+  createdFromConversation     Conversation?   @relation("JobCreatedFromConversation", fields: [createdFromConversationId], references: [id], onDelete: SetNull)
+  reviewRequests              ReviewRequest[]
+  promotedWaitlistEntries     WaitlistEntry[] @relation("WaitlistPromotedJob")
+  createdAt                   DateTime        @default(now())
+  updatedAt                   DateTime        @updatedAt
+
+  @@index([shopId])
+  @@index([shopId, archivedAt, stage])
+  @@index([mechanicId])
+}
+
+model Payment {
+  id                    String   @id @default(cuid())
+  shopId                String
+  shop                  Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  jobId                 String
+  job                   Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  stripePaymentIntentId String?
+  amount                Decimal  @db.Decimal(10, 2)
+  currency              String   @default("usd")
+  status                String
+  paymentMethod         String?
+  createdAt             DateTime @default(now())
+
+  @@unique([shopId, stripePaymentIntentId])
+  @@index([shopId])
+  @@index([jobId])
+}
+
+enum PaymentStatus {
+  UNPAID
+  PENDING
+  PAID
+  REFUNDED
+}
+
+enum BikeType {
+  REGULAR
+  E_BIKE
+}
+
+model Service {
+  id          String       @id @default(cuid())
+  shopId      String
+  shop        Shop         @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  price       Decimal      @db.Decimal(10, 2)
+  /// Stable id for system-managed line items (e.g. collection fee)
+  slug        String?
+  isSystem    Boolean      @default(false)
+  isHidden    Boolean      @default(false)
+  jobServices JobService[]
+  estimateItems JobEstimateItem[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@unique([shopId, slug])
+  @@index([shopId])
+}
+
+model JobService {
+  id                String   @id @default(cuid())
+  shopId            String
+  shop              Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  jobId             String
+  job               Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  serviceId         String?
+  service           Service? @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  /// Name for ad-hoc line items not linked to the service catalog
+  customServiceName String?
+  quantity          Int      @default(1)
+  unitPrice         Decimal  @db.Decimal(10, 2)
+  notes             String?
+  /// Optional: which bike in the job this service is for
+  jobBikeId         String?
+  jobBike           JobBike? @relation(fields: [jobBikeId], references: [id], onDelete: SetNull)
+  createdAt         DateTime @default(now())
+
+  @@index([shopId])
+  @@index([jobId])
+}
+
+enum Stage {
+  PENDING_APPROVAL
+  BOOKED_IN
+  RECEIVED
+  WORKING_ON
+  WAITING_ON_CUSTOMER
+  WAITING_ON_PARTS
+  BIKE_READY
+  COMPLETED
+  CANCELLED
+}
+
+enum DiscountType {
+  AMOUNT
+  PERCENT
+}
+
+enum DeliveryType {
+  DROP_OFF_AT_SHOP
+  COLLECTION_SERVICE
+}
+
+model EmailTemplate {
+  id           String        @id @default(cuid())
+  shopId       String
+  shop         Shop          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  slug         String
+  name         String
+  subject      String
+  bodyHtml     String
+  triggerType  String
+  stage        Stage?
+  deliveryType DeliveryType?
+  delayDays    Int?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@unique([shopId, slug])
+  @@index([shopId])
+}
+
+/// Staff-composed news/update emails sent via Resend Marketing Broadcasts.
+model EmailBroadcast {
+  id                String   @id @default(cuid())
+  shopId            String
+  shop              Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  /// Subject as composed (may include {{merge}} fields).
+  subject           String
+  /// Inner HTML as composed (may include {{merge}} fields).
+  bodyHtml          String
+  recipientCount    Int
+  failedCount       Int      @default(0)
+  skippedCount      Int      @default(0)
+  resendBroadcastId String?
+  sentAt            DateTime @default(now())
+  createdAt         DateTime @default(now())
+
+  @@index([shopId, sentAt])
+}
+
+model JobEmail {
+  id           String   @id @default(cuid())
+  shopId       String
+  shop         Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  jobId        String
+  job          Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  /// Set for bike-level sends (one bike of a multi-bike job); null for job-level sends.
+  jobBikeId    String?
+  jobBike      JobBike? @relation(fields: [jobBikeId], references: [id], onDelete: SetNull)
+  templateSlug String
+  sentAt       DateTime @default(now())
+  recipient    String
+
+  @@index([shopId])
+  @@index([jobBikeId])
+}
+
+model JobSms {
+  id           String   @id @default(cuid())
+  shopId       String
+  shop         Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  jobId        String
+  job          Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  /// Set for bike-level sends (one bike of a multi-bike job); null for job-level sends.
+  jobBikeId    String?
+  jobBike      JobBike? @relation(fields: [jobBikeId], references: [id], onDelete: SetNull)
+  templateSlug String
+  sentAt       DateTime @default(now())
+  recipient    String
+
+  @@index([shopId])
+  @@index([jobBikeId])
+}
+
+model Product {
+  id            String       @id @default(cuid())
+  shopId        String
+  shop          Shop         @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  name          String
+  description   String?
+  imageUrl      String?
+  price         Decimal      @db.Decimal(10, 2)
+  stockQuantity Int          @default(0)
+  supplier      String?
+  jobProducts   JobProduct[]
+  estimateItems JobEstimateItem[]
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@index([shopId])
+}
+
+model Mechanic {
+  id        String    @id @default(cuid())
+  shopId    String
+  shop      Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  fullName  String
+  email     String?
+  phone     String?
+  birthdate DateTime? @db.Date
+  imageUrl  String?
+  jobs      Job[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([shopId])
+}
+
+model JobProduct {
+  id        String   @id @default(cuid())
+  shopId    String
+  shop      Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  jobId     String
+  job       Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  quantity  Int      @default(1)
+  /// Units this line has taken out of Product.stockQuantity and not yet returned.
+  /// 0 for lines on cancelled jobs and for lines added before stock tracking.
+  stockDeductedQty Int @default(0)
+  unitPrice Decimal  @db.Decimal(10, 2)
+  notes     String?
+  /// Optional: which bike in the job this product is for
+  jobBikeId String?
+  jobBike   JobBike? @relation(fields: [jobBikeId], references: [id], onDelete: SetNull)
+  createdAt DateTime @default(now())
+
+  @@index([shopId])
+  @@index([jobId])
+}
+
+/// Work the shop proposes and the customer approves or declines line by line.
+/// Nothing on an estimate counts toward the job's bill until the customer
+/// approves it: each approved item then becomes an ordinary JobService or
+/// JobProduct line. Declined items stay here as "recommended for later".
+model JobEstimate {
+  id               String            @id @default(cuid())
+  shopId           String
+  shop             Shop              @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  jobId            String
+  job              Job               @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  status           EstimateStatus    @default(SENT)
+  /// Note from the shop shown above the items ("Found a worn chain...").
+  message          String?
+  /// Stage the job left for WAITING_ON_CUSTOMER when this was sent; the job
+  /// returns there once the customer answers. Null when the job was not moved.
+  resumeStage      Stage?
+  sentAt           DateTime          @default(now())
+  sentBySms        Boolean           @default(false)
+  sentByEmail      Boolean           @default(false)
+  sentByPush       Boolean           @default(false)
+  respondedAt      DateTime?
+  /// True when staff recorded the answer (e.g. the customer approved by phone).
+  respondedByStaff Boolean           @default(false)
+  customerComment  String?
+  items            JobEstimateItem[]
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  @@index([shopId])
+  @@index([jobId])
+}
+
+model JobEstimateItem {
+  id          String               @id @default(cuid())
+  shopId      String
+  shop        Shop                 @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  estimateId  String
+  estimate    JobEstimate          @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  kind        EstimateItemKind
+  serviceId   String?
+  service     Service?             @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  productId   String?
+  product     Product?             @relation(fields: [productId], references: [id], onDelete: SetNull)
+  /// Name and price as quoted, so later catalog edits don't rewrite the estimate.
+  name        String
+  description String?
+  quantity    Int                  @default(1)
+  unitPrice   Decimal              @db.Decimal(10, 2)
+  jobBikeId   String?
+  jobBike     JobBike?             @relation(fields: [jobBikeId], references: [id], onDelete: SetNull)
+  decision    EstimateItemDecision @default(PENDING)
+  /// The job line an approval created (JobService.id or JobProduct.id).
+  jobLineId   String?
+  sortOrder   Int                  @default(0)
+  createdAt   DateTime             @default(now())
+
+  @@index([shopId])
+  @@index([estimateId])
+}
+
+enum EstimateStatus {
+  SENT
+  RESPONDED
+  CANCELLED
+}
+
+enum EstimateItemKind {
+  SERVICE
+  PRODUCT
+  CUSTOM
+}
+
+enum EstimateItemDecision {
+  PENDING
+  APPROVED
+  DECLINED
+}
+
+model Conversation {
+  id                 String              @id @default(cuid())
+  shopId             String
+  shop               Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  customerId         String
+  customer           Customer            @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  jobId              String?
+  job                Job?                @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  /// Jobs staff created out of this thread. The inverse of
+  /// `Job.createdFromConversation`; unrelated to `jobId` above.
+  createdJobs        Job[]               @relation("JobCreatedFromConversation")
+  messages           Message[]
+  calls              Call[]
+  chatReminderEmails ChatReminderEmail[]
+  archived           Boolean             @default(false)
+  /// Last time the customer sent a typing heartbeat (staff UI treats as “typing” if recent).
+  customerTypingAt   DateTime?
+  /// When staff last opened this thread (GET messages). Used for unread badge vs customer messages.
+  staffLastReadAt    DateTime?
+  /// When the customer last opened this thread (GET messages). Used for "Viewed" indicator on staff messages.
+  customerLastReadAt DateTime?
+  /// Whether the AI assistant is handling this thread. See AiAssistantState.
+  aiAssistantState   AiAssistantState    @default(OFF)
+  /// What the assistant learned before it handed off, in one staff-facing line.
+  /// Written only on the handoff turn, so its presence means "ready for you".
+  aiAssistantSummary String?
+  /// Everything the assistant collected from this conversation, structured:
+  /// who the customer is, what they ride, what they say is wrong and what they
+  /// have asked for. See src/lib/conversation-context/ai-collected.ts.
+  ///
+  /// This is the record that a detail came from the conversation rather than
+  /// from the customer's file. Writing the name onto the customer row (which
+  /// still happens, because the inbox and every email read it) flattens that
+  /// away, and nothing else can reconstruct it: "the contact is provisional"
+  /// is a close-enough guess for a name and no guess at all for a symptom the
+  /// customer described.
+  aiCollectedContext Json?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  @@index([shopId])
+}
+
+model Message {
+  id                           String              @id @default(cuid())
+  shopId                       String
+  shop                         Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  conversationId               String
+  conversation                 Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender                       MessageSender
+  body                         String?
+  /// Twilio inbound MessageSid — dedupes webhook retries
+  smsSid                       String?
+  smsProvider                  String?
+  smsDeliveryStatus            String?
+  smsDeliveryStatusName        String?
+  smsDeliveryStatusDescription String?
+  smsDeliveryError             String?
+  smsDeliveredAt               DateTime?
+  attachments                  MessageAttachment[]
+  reactions                    MessageReaction[]
+  chatReminderEmails           ChatReminderEmail[]
+  /// Written by the AI assistant rather than a person. Sent as STAFF so the
+  /// customer sees one voice from the shop, but staff see a badge — and a
+  /// genuine staff reply is what pauses the assistant, so the two must differ.
+  aiGenerated                  Boolean             @default(false)
+  createdAt                    DateTime            @default(now())
+  editedAt                     DateTime?
+
+  @@unique([shopId, smsSid])
+  @@index([shopId])
+  @@index([conversationId, createdAt])
+}
+
+model MessageReaction {
+  id          String        @id @default(cuid())
+  shopId      String
+  shop        Shop          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  messageId   String
+  message     Message       @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  emoji       String
+  reactorType MessageSender
+  createdAt   DateTime      @default(now())
+
+  @@unique([messageId, reactorType])
+  @@index([messageId])
+  @@index([shopId])
+}
+
+/// One nudge email per conversation + message + kind (so we do not repeat while that message is still last).
+model ChatReminderEmail {
+  id             String           @id @default(cuid())
+  shopId         String
+  shop           Shop             @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  conversationId String
+  conversation   Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  messageId      String
+  message        Message          @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  kind           ChatReminderKind
+  sentAt         DateTime         @default(now())
+
+  @@unique([conversationId, messageId, kind])
+  @@index([conversationId])
+  @@index([shopId])
+}
+
+enum ChatReminderKind {
+  NUDGE_CUSTOMER
+  NUDGE_STAFF
+}
+
+model MessageAttachment {
+  id        String   @id @default(cuid())
+  shopId    String
+  shop      Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  messageId String?
+  message   Message? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  url       String
+  filename  String
+  mimeType  String
+  createdAt DateTime @default(now())
+
+  @@index([shopId])
+  @@index([messageId])
+}
+
+/// Who owns a file in the private Blob store. /api/blob authorizes against
+/// this row, never against the pathname, so a guessed or copied path is
+/// useless outside the owning shop. Written at upload from the server-side
+/// identity; legacy files are registered the first time they're requested.
+model BlobAsset {
+  id         String   @id @default(cuid())
+  pathname   String   @unique
+  shopId     String
+  shop       Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  /// bike, customer-upload, chat, product, mechanic, logo, voicemail-greeting
+  kind       String
+  /// Set when the file belongs to one customer: they may fetch it too.
+  customerId String?
+  /// Explicitly public (logo, mechanic headshot, product photo).
+  isPublic   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@index([shopId])
+}
+
+enum MessageSender {
+  STAFF
+  CUSTOMER
+  SYSTEM
+}
+
+/// Per-conversation kill switch for the AI assistant.
+enum AiAssistantState {
+  /// Never engaged here, or the thread predates the feature.
+  OFF
+  /// Answering the customer.
+  ACTIVE
+  /// Staff took over — explicitly, or by sending a message themselves.
+  /// Only staff resume it.
+  PAUSED
+  /// Got what it needed and handed off. Terminal; staff resume to reopen.
+  DONE
+}
+
+model Call {
+  id                  String        @id @default(cuid())
+  shopId              String
+  shop                Shop          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  customerId          String?
+  customer            Customer?     @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  conversationId      String?
+  conversation        Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  direction           CallDirection
+  status              CallStatus
+  fromNumber          String
+  toNumber            String
+  /// CallSid of the leg that initiated this logical call (inbound PSTN leg,
+  /// or the Voice-SDK-initiated leg for outbound). Stable correlation key.
+  twilioParentCallSid String
+  /// CallSid of the <Dial>'d leg (to <Client> for inbound, to <Number> for
+  /// outbound). Filled in once Twilio creates it; absent if never dialed out.
+  twilioChildCallSid  String?
+  startedAt           DateTime?
+  answeredAt          DateTime?
+  endedAt             DateTime?
+  durationSeconds     Int?
+  /// The staff leg that won the race to answer, when staff are rung with real
+  /// Twilio invites rather than a notification. Set by a conditional update, so
+  /// it is the claim itself: exactly one leg can ever bridge to the caller.
+  ///
+  /// Deliberately not `answeredAt`, which is stamped by /answered on the
+  /// *caller's* leg at the instant of bridging — far too late to arbitrate
+  /// between two devices that both picked up.
+  claimedByLegId      String?       @unique
+  legs                CallLeg[]
+  /// When staff opened this call in the log. Drops the "New" badge from a call
+  /// with no contact once seen; the call itself carries the flag because an
+  /// unidentified caller has no customer record to hang it on.
+  staffSeenAt         DateTime?
+  recordingSid        String?
+  recordingUrl        String?
+  recordingStatus     String?
+  /// Voicemail transcript from Twilio's <Record transcribe>. Provider-agnostic
+  /// on purpose — swapping in a better STT later stays a backend change.
+  transcriptionText   String?
+  /// Twilio's TranscriptionStatus ("completed" | "failed"), or "in-progress"
+  /// while we're waiting on the callback. Null means never requested.
+  transcriptionStatus String?
+  /// When the AI assistant texted this caller back. Set once, and checked
+  /// before sending: voicemail, recording, and status callbacks can all land
+  /// for one missed call, and the caller must only be texted once.
+  aiOutreachAt        DateTime?
+  /// When the AI phone assistant picked this call up. Set on the caller's
+  /// first moment with it, and never cleared: a call the assistant spoke on is
+  /// never a missed call, whatever happened after.
+  aiAnsweredAt        DateTime?
+  /// Set while a caller the assistant handed off is holding for staff, and
+  /// cleared when they come back to it. Outside that window an AI-answered call
+  /// is mid-conversation, and nothing that answers or declines a held caller
+  /// may touch it.
+  aiHandoffAt         DateTime?
+  /// ElevenLabs conversation id of the latest stretch with the assistant.
+  aiConversationId    String?
+  /// Staff-facing summary of what the caller told the assistant.
+  aiSummary           String?
+  /// Plain-text transcript of the assistant's side of the call, one line per turn.
+  aiTranscript        String?
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  @@unique([shopId, twilioParentCallSid])
+  @@index([shopId])
+  @@index([shopId, twilioChildCallSid])
+  @@index([conversationId])
+  @@index([shopId, customerId])
+}
+
+/// One staff device being rung for an inbound call. A call fans out to every
+/// registered staff identity, so cancelling the others the moment one answers
+/// — and knowing which have already declined — needs a row per device.
+model CallLeg {
+  id        String        @id @default(cuid())
+  callId    String
+  call      Call          @relation(fields: [callId], references: [id], onDelete: Cascade)
+  /// Twilio Client identity this leg rings — buildStaffIdentity(shopId, userId).
+  identity  String
+  /// CallSid of the staff leg. Null between creating the row and Twilio
+  /// returning a SID, which is the one window in which a leg cannot be
+  /// cancelled; `timeout` on the leg itself covers it.
+  callSid   String?       @unique
+  status    CallLegStatus @default(PENDING)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  @@index([callId, status])
+}
+
+enum CallLegStatus {
+  /// Row created; the Twilio call does not exist yet.
+  PENDING
+  /// Twilio reports the device has the invite.
+  RINGING
+  /// Won the claim and bridged to the caller.
+  ANSWERED
+  /// The person on this device rejected it. Never cancelled afterwards —
+  /// a cancel with no matching invite crashes the iOS SDK (upstream #722).
+  DECLINED
+  /// We have decided to cancel it; the REST call may not have landed yet.
+  CANCELING
+  /// Terminal, whatever the reason.
+  ENDED
+}
+
+enum CallDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum CallStatus {
+  QUEUED
+  RINGING
+  IN_PROGRESS
+  COMPLETED
+  BUSY
+  FAILED
+  NO_ANSWER
+  CANCELED
+  VOICEMAIL
+}
+
+model User {
+  id                  String               @id @default(cuid())
+  shopId              String
+  shop                Shop                 @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  email               String
+  passwordHash        String
+  /// Stamped into every session JWT at sign-in; bumping it (on a password
+  /// reset) makes every session issued before then stop working.
+  sessionVersion      Int                  @default(0)
+  name                String?
+  pushTokens          PushToken[]
+  passwordResetTokens PasswordResetToken[]
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  @@unique([shopId, email])
+  @@index([shopId])
+}
+
+/// One-time "forgot password" link. Only a SHA-256 of the token is stored, so a
+/// leaked database row can't be turned back into a working link.
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model PendingSignup {
+  id           String   @id @default(cuid())
+  token        String   @unique
+  shopName     String
+  subdomain    String
+  ownerName    String
+  email        String
+  passwordHash String
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  @@index([subdomain])
+  @@index([email])
+  @@index([expiresAt])
+}
+
+model PushToken {
+  id         String    @id @default(cuid())
+  shopId     String
+  shop       Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  token      String    @unique
+  platform   String
+  userId     String?
+  user       User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  customerId String?
+  customer   Customer? @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([customerId])
+  @@index([shopId])
+}
+
+model MagicLinkToken {
+  id         String   @id @default(cuid())
+  shopId     String
+  shop       Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  token      String   @unique
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([shopId])
+}
+
+model ChatSession {
+  id         String   @id @default(cuid())
+  shopId     String
+  shop       Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  token      String   @unique
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([shopId])
+}
+
+model ReviewSettings {
+  id                String  @id @default(cuid())
+  shopId            String
+  shop              Shop    @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  googleReviewUrl   String?
+  yelpReviewUrl     String?
+  googlePlaceId     String?
+  googleRating      Float?
+  googleReviewCount Int?
+  yelpRating        Float?
+  yelpReviewCount   Int?
+  featuredReviews   Json    @default("[]")
+
+  @@unique([shopId])
+  @@index([shopId])
+}
+
+model AppSettings {
+  id                       String    @id @default(cuid())
+  shopId                   String
+  shop                     Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  /// When false: new booking requests go to the waitlist instead of creating a job.
+  bookingsEnabled          Boolean   @default(true)
+  /// Maximum number of bikes allowed to be active (RECEIVED + WORKING_ON) before new bookings are waitlisted.
+  maxActiveBikes           Int       @default(5)
+  /// Array of closed calendar dates ({ date: "YYYY-MM-DD", reason?: string }) that cannot be booked.
+  closedDates              Json      @default("[]")
+  collectionServiceEnabled Boolean   @default(true)
+  /// Collection eligibility radius, in miles
+  collectionRadiusMiles    Float     @default(5)
+  /// Collection fee (standard bike), USD
+  collectionFeeRegular     Decimal   @default(20) @db.Decimal(10, 2)
+  /// Collection fee (e-bike), USD
+  collectionFeeEbike       Decimal   @default(30) @db.Decimal(10, 2)
+  notifyCustomerEnabled    Boolean   @default(true)
+  chatEnabled              Boolean   @default(true)
+  voiceEnabled             Boolean   @default(false)
+  /// When true, inbound calls ring staff with real Twilio Client invites, so
+  /// the OS shows its own incoming-call screen and rings until answered. When
+  /// false, the previous behaviour: a repeated push notification per ring.
+  /// Off by default so the new path is opted into per shop and can be turned
+  /// back off without a redeploy.
+  voiceNativeRingEnabled   Boolean   @default(false)
+  reviewsEnabled           Boolean   @default(true)
+  /// When false: hide Rentals nav and block rental APIs.
+  rentalsEnabled           Boolean   @default(true)
+  /// When true, show status filter pills on the job board to narrow visible columns.
+  jobBoardFiltersEnabled   Boolean   @default(false)
+  /// IANA timezone for shop scheduling (e.g. America/New_York).
+  timezone                 String    @default("America/New_York")
+  /// Staff email for booking, payment, chat, and waitlist notifications.
+  staffNotifyEmail         String?
+  /// Public shop phone shown to customers (e.g. call button on job status).
+  shopPhone                String?
+  logoUrl                  String?
+  /// Recorded voicemail greeting played to callers instead of the default
+  /// synthesized <Say>. Must be a format Twilio's <Play> accepts (mp3/wav).
+  voicemailGreetingUrl     String?
+  /// When true, the AI assistant texts callers who miss us and answers customer
+  /// texts until staff take over. Off by default: it speaks as the shop.
+  aiAssistantEnabled       Boolean   @default(false)
+  /// Shop website the service description was imported from. Kept so the
+  /// "import from site" button has somewhere to go back to.
+  aiAssistantWebsiteUrl    String?
+  /// What the assistant is allowed to say the shop offers. Imported from the
+  /// website once, then owned by staff — the assistant never re-fetches on its
+  /// own, so nothing a site edit introduces reaches a customer unreviewed.
+  aiAssistantKnowledge     String?
+  aiAssistantKnowledgeAt   DateTime?
+  /// When true, the AI assistant answers inbound calls by voice (through an
+  /// ElevenLabs agent) and rings staff only when the caller asks for a person.
+  /// Off by default, and inert until the ElevenLabs env vars are set.
+  aiVoiceEnabled           Boolean   @default(false)
+  /// The name the phone assistant introduces itself with. Null: no name.
+  aiVoiceName              String?
+  /// Sales tax rate for new jobs; 8.25 means 8.25%. 0 means no sales tax.
+  salesTaxRatePercent      Decimal   @default(0) @db.Decimal(6, 3)
+  /// Whether labor (services) is taxed. Varies by state.
+  taxServices              Boolean   @default(false)
+  /// Whether parts (products) are taxed.
+  taxProducts              Boolean   @default(true)
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+
+  @@unique([shopId])
+  @@index([shopId])
+}
+
+enum WaitlistStatus {
+  WAITING
+  PROMOTED
+  CANCELLED
+  /// Booking request the spam scorer held back. Never shown on the waitlist —
+  /// it is not queued for capacity, it is queued for a human to look at.
+  HELD_FOR_REVIEW
+}
+
+model WaitlistEntry {
+  id                          String         @id @default(cuid())
+  shopId                      String
+  shop                        Shop           @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  status                      WaitlistStatus @default(WAITING)
+  customerId                  String?
+  customer                    Customer?      @relation("WaitlistCustomer", fields: [customerId], references: [id], onDelete: SetNull)
+  /// Snapshot of contact details from the booking request.
+  firstName                   String
+  lastName                    String
+  email                       String
+  phone                       String
+  address                     String?
+  deliveryType                DeliveryType   @default(DROP_OFF_AT_SHOP)
+  dropOffDate                 DateTime?
+  pickupDate                  DateTime?
+  collectionAddress           String?
+  collectionWindowStart       String?
+  collectionWindowEnd         String?
+  collectionReturnWindowStart String?
+  collectionReturnWindowEnd   String?
+  customerNotes               String?
+  /// Array of Service ids selected in the booking widget (catalog items only).
+  serviceIds                  Json?          @default("[]")
+  bikes                       WaitlistBike[]
+  promotedJobId               String?
+  promotedJob                 Job?           @relation("WaitlistPromotedJob", fields: [promotedJobId], references: [id], onDelete: SetNull)
+  promotedAt                  DateTime?
+  /// Total from `assessBookingForSpam`, set only on HELD_FOR_REVIEW entries.
+  spamScore                   Int?
+  /// The individual signals behind `spamScore`, so the review screen can say
+  /// why a booking was held rather than asking staff to take it on trust.
+  spamSignals                 Json?
+  /// Submission origin, kept for rate limiting and for spotting a repeat
+  /// offender across several held bookings.
+  submittedIp                 String?
+  submittedUserAgent          String?
+  reviewedAt                  DateTime?
+  archivedAt                  DateTime?
+  createdAt                   DateTime       @default(now())
+  updatedAt                   DateTime       @updatedAt
+
+  @@index([shopId, status, createdAt])
+  @@index([status, createdAt])
+  @@index([customerId])
+  @@index([shopId])
+}
+
+model WaitlistBike {
+  id              String        @id @default(cuid())
+  shopId          String
+  shop            Shop          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  waitlistEntryId String
+  waitlistEntry   WaitlistEntry @relation(fields: [waitlistEntryId], references: [id], onDelete: Cascade)
+  make            String
+  model           String?
+  bikeType        BikeType?
+  sortOrder       Int           @default(0)
+  createdAt       DateTime      @default(now())
+
+  @@index([waitlistEntryId])
+  @@index([shopId])
+}
+
+model ReviewRequest {
+  id              String    @id @default(cuid())
+  shopId          String
+  shop            Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  token           String    @unique @default(cuid())
+  customerId      String?
+  customer        Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  jobId           String?
+  job             Job?      @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  recipientEmail  String
+  recipientName   String?
+  sentAt          DateTime  @default(now())
+  googleClickedAt DateTime?
+  yelpClickedAt   DateTime?
+
+  @@index([shopId])
+}
+
+/// Historical revenue from outside the app (e.g. Square exports) for reporting and taxes.
+model ImportedRevenue {
+  id          String   @id @default(cuid())
+  shopId      String
+  shop        Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  source      String   @default("SQUARE")
+  occurredAt  DateTime
+  amount      Decimal  @db.Decimal(10, 2)
+  description String?
+  /// Square payment id or other stable id — avoids duplicate rows on re-import
+  externalId  String?
+  createdAt   DateTime @default(now())
+
+  @@unique([shopId, externalId])
+  @@index([occurredAt])
+  @@index([source])
+  @@index([shopId])
+}
+
+/// Production release notes (draft → admin approve → public changelog).
+model PlatformRelease {
+  id          String                @id @default(cuid())
+  /// Calendar version, e.g. 2026.07.25 or 2026.07.25.2
+  version     String                @unique
+  /// Production git commit SHA this release documents
+  gitSha      String
+  title       String?
+  /// Shop-facing bullet list
+  bullets     String[]
+  status      PlatformReleaseStatus @default(draft)
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+  publishedAt DateTime?
+
+  @@index([gitSha])
+  @@index([status, publishedAt])
+}
+
+enum PlatformReleaseStatus {
+  draft
+  published
+  discarded
+}
+
+enum RentalCategory {
+  MOUNTAIN
+  HYBRID
+  ROAD
+  ELECTRIC
+  OTHER
+}
+
+enum RentalReservationStatus {
+  REQUESTED
+  SCHEDULED
+  CONFIRMED
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+/// Shop-owned bike available for customer rental (not a customer-owned Bike).
+model RentalBike {
+  id           String              @id @default(cuid())
+  shopId       String
+  shop         Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  make         String
+  model        String
+  category     RentalCategory      @default(MOUNTAIN)
+  size         String?
+  description  String?
+  imageUrl     String?
+  /// How many units of this bike are in the rental fleet
+  quantity     Int                 @default(1)
+  isActive     Boolean             @default(true)
+  reservations RentalReservation[]
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  @@index([shopId])
+  @@index([shopId, category])
+}
+
+/// Duration-based rental pricing (e.g. 1 day = $45, 3 days = $120).
+model RentalRate {
+  id        String          @id @default(cuid())
+  shopId    String
+  shop      Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  name      String
+  days      Int
+  price     Decimal         @db.Decimal(10, 2)
+  /// null = rate applies to all categories
+  category  RentalCategory?
+  isActive  Boolean         @default(true)
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  @@index([shopId])
+}
+
+model RentalAddon {
+  id            String   @id @default(cuid())
+  shopId        String
+  shop          Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  name          String
+  description   String?
+  price         Decimal  @db.Decimal(10, 2)
+  stockQuantity Int      @default(0)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([shopId])
+}
+
+model RentalReservation {
+  id            String                  @id @default(cuid())
+  shopId        String
+  shop          Shop                    @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  customerId    String?
+  customer      Customer?               @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  customerName  String
+  customerEmail String?
+  customerPhone String?
+  rentalBikeId  String
+  rentalBike    RentalBike              @relation(fields: [rentalBikeId], references: [id], onDelete: Restrict)
+  startDate     DateTime                @db.Date
+  endDate       DateTime                @db.Date
+  days          Int
+  unitPrice     Decimal                 @db.Decimal(10, 2)
+  totalPrice    Decimal                 @db.Decimal(10, 2)
+  status        RentalReservationStatus @default(REQUESTED)
+  pickupTime    String?
+  notes         String?
+  checkedOutAt  DateTime?
+  checkedInAt   DateTime?
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+
+  @@index([shopId])
+  @@index([rentalBikeId])
+  @@index([customerId])
+  @@index([shopId, startDate, endDate])
+  @@index([shopId, status])
+}
+
+model RentalActivity {
+  id        String   @id @default(cuid())
+  shopId    String
+  shop      Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  message   String
+  createdAt DateTime @default(now())
+
+  @@index([shopId, createdAt])
+}

@@ -1,0 +1,1873 @@
+"use client";
+
+import Image from "next/image";
+import { isPrivateFileUrl } from "@/lib/image-src";
+import Link from "next/link";
+import { useState, useEffect, useRef, useCallback, useLayoutEffect, useMemo, Suspense } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
+import type { Conversation, ChatMessage, Customer, ThreadCall } from "@/lib/types";
+import { useChatNotifications, CHAT_PAGE_CONVERSATIONS_POLL_MS } from "@/hooks/useChatNotifications";
+import { useChatEventSource } from "@/hooks/useChatEventSource";
+import { useChatRealtime } from "@/hooks/useChatRealtime";
+import { useVisibilityAwarePolling } from "@/hooks/useVisibilityAwarePolling";
+import type { StaffConversationMessagesPayload } from "@/lib/chat/staff-conversation-messages";
+import { ChatMessageBubble } from "@/components/chat/ChatMessageBubble";
+import { ConversationListRow } from "@/components/chat/ConversationListRow";
+import { AiAssistantBanner } from "@/components/chat/AiAssistantBanner";
+import { ThreadCallCard } from "@/components/chat/ThreadCallCard";
+import { CreateContactModal } from "@/components/chat/CreateContactModal";
+import { CreateJobModal } from "@/components/chat/CreateJobModal";
+import { mergeChatMessagesWithServer } from "@/lib/chat-messages";
+import {
+  clearChatPreviewMessage,
+  getChatPreviewSeed,
+} from "@/lib/chat-preview-cache";
+import {
+  readCachedConversations,
+  readCachedMessages,
+  writeCachedConversations,
+  writeCachedMessages,
+} from "@/lib/chat-message-store";
+import { isCustomerTypingRecently } from "@/lib/chat-typing";
+import { isChatVideoFile, uploadChatVideoFile } from "@/lib/chat-video-upload";
+import { ChatPageSkeleton, SkeletonPulse } from "@/components/ui/Skeleton";
+
+const POLL_INTERVAL_MS = 3000;
+
+// Only the newest page is fetched on open; older messages load on scroll.
+// Loading full thread history was the single largest chunk of open latency.
+const INITIAL_MESSAGE_LIMIT = 40;
+const OLDER_PAGE_SIZE = 40;
+
+// Vercel's serverless body limit is ~4.5 MB. Compress phone photos client-side
+// so they always come in under the wire, and convert HEIC → JPEG along the way.
+const UPLOAD_MAX_MB = 4;
+
+async function compressImage(file: File): Promise<File> {
+  const maxBytes = UPLOAD_MAX_MB * 1024 * 1024;
+  const isHeic = /^image\/(heic|heif)$/i.test(file.type);
+
+  // HEIC cannot be decoded by non-Safari browsers natively; use heic2any first.
+  // Also detect by extension because iOS sometimes sets an empty MIME type.
+  const isHeicByExt = /\.(heic|heif)$/i.test(file.name);
+  let sourceFile = file;
+  if (isHeic || isHeicByExt) {
+    // heic2any is a UMD module — the function is the export, not under .default
+    const mod = await import("heic2any");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const heic2any = (mod as any).default ?? mod;
+    const converted = await heic2any({ blob: file, toType: "image/jpeg", quality: 0.85 });
+    const blob = Array.isArray(converted) ? converted[0] : converted;
+    const safeName = file.name.replace(/\.(heic|heif)$/i, ".jpg");
+    sourceFile = new File([blob], safeName, { type: "image/jpeg" });
+  }
+
+  if (sourceFile.size <= maxBytes) return sourceFile;
+
+  return new Promise((resolve) => {
+    const img = new window.Image();
+    const objectUrl = URL.createObjectURL(sourceFile);
+
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      const canvas = document.createElement("canvas");
+      const MAX_DIM = 2048;
+      let { width, height } = img;
+      if (width > MAX_DIM || height > MAX_DIM) {
+        const ratio = Math.min(MAX_DIM / width, MAX_DIM / height);
+        width = Math.round(width * ratio);
+        height = Math.round(height * ratio);
+      }
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) { resolve(sourceFile); return; }
+      ctx.drawImage(img, 0, 0, width, height);
+
+      let quality = 0.85;
+      const tryExport = () => {
+        canvas.toBlob((blob) => {
+          if (!blob) { resolve(sourceFile); return; }
+          if (blob.size <= maxBytes || quality <= 0.3) {
+            resolve(new File([blob], sourceFile.name, { type: "image/jpeg" }));
+          } else {
+            quality = Math.round((quality - 0.1) * 10) / 10;
+            tryExport();
+          }
+        }, "image/jpeg", quality);
+      };
+      tryExport();
+    };
+
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      // Can't decode in canvas — resolve with the source file and let the
+      // server validate; the upload may still succeed if it's within limits.
+      console.warn("compressImage: canvas decode failed, uploading original");
+      resolve(sourceFile);
+    };
+
+    img.src = objectUrl;
+  });
+}
+
+const CHAT_DRAFT_STORAGE_PREFIX = "bikeops:chat-draft:";
+
+type ChatComposerDraft = {
+  text: string;
+  pendingImages: { id: string; url: string; filename: string; mimeType?: string }[];
+};
+
+function chatDraftKey(convId: string) {
+  return `${CHAT_DRAFT_STORAGE_PREFIX}${convId}`;
+}
+
+function loadChatDraft(convId: string): ChatComposerDraft | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(chatDraftKey(convId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as unknown;
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      typeof (parsed as { text?: unknown }).text !== "string" ||
+      !Array.isArray((parsed as { pendingImages?: unknown }).pendingImages)
+    ) {
+      return null;
+    }
+    const pendingImages = (parsed as ChatComposerDraft).pendingImages.filter(
+      (p): p is ChatComposerDraft["pendingImages"][number] =>
+        typeof p === "object" &&
+        p !== null &&
+        typeof (p as { id?: unknown }).id === "string" &&
+        typeof (p as { url?: unknown }).url === "string" &&
+        typeof (p as { filename?: unknown }).filename === "string"
+    );
+    return { text: (parsed as ChatComposerDraft).text, pendingImages };
+  } catch {
+    return null;
+  }
+}
+
+function saveChatDraft(convId: string, draft: ChatComposerDraft) {
+  if (typeof window === "undefined") return;
+  const empty = !draft.text.trim() && draft.pendingImages.length === 0;
+  if (empty) {
+    sessionStorage.removeItem(chatDraftKey(convId));
+  } else {
+    sessionStorage.setItem(chatDraftKey(convId), JSON.stringify(draft));
+  }
+}
+
+function CustomerName({ conv }: { conv: Conversation }) {
+  const name = conv.customer.lastName
+    ? `${conv.customer.firstName} ${conv.customer.lastName}`
+    : conv.customer.firstName;
+  const jobLabel = conv.job
+    ? ` · ${conv.job.bikeMake} ${conv.job.bikeModel}`
+    : "";
+  return (
+    <span className="truncate">
+      {name}
+      {jobLabel}
+    </span>
+  );
+}
+
+type InviteStatus = "idle" | "pending" | "active" | "sms-active";
+
+function InviteButton({ customerId }: { customerId: string }) {
+  const [sending, setSending] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [daysLeft, setDaysLeft] = useState<number | null>(null);
+  const [status, setStatus] = useState<InviteStatus>("idle");
+
+  const refetchSession = useCallback(() => {
+    fetch(`/api/chat/session-status?customerId=${encodeURIComponent(customerId)}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.activeJobSmsAccess) {
+          setDaysLeft(null);
+          setStatus("sms-active");
+        } else if (data.expiresAt) {
+          const expires = new Date(data.expiresAt);
+          const now = new Date();
+          const ms = expires.getTime() - now.getTime();
+          const days = Math.max(0, Math.ceil(ms / (24 * 60 * 60 * 1000)));
+          setDaysLeft(days);
+          setStatus("active");
+        } else if (data.pendingInvite) {
+          setDaysLeft(null);
+          setStatus("pending");
+        } else {
+          setDaysLeft(null);
+          setStatus("idle");
+        }
+      })
+      .catch(() => {
+        setDaysLeft(null);
+        setStatus("idle");
+      });
+  }, [customerId]);
+
+  useVisibilityAwarePolling(refetchSession, 10_000, { hiddenIntervalMs: 60_000 });
+
+  const handleClick = async () => {
+    setSending(true);
+    setMessage(null);
+    try {
+      const res = await fetch("/api/chat/send-invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customerId }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setMessage(data.message ?? "Invite sent!");
+        refetchSession();
+      } else {
+        setMessage(data.error ?? "Failed to send");
+      }
+    } catch {
+      setMessage("Failed to send");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const buttonLabel =
+    sending
+      ? "Sending…"
+      : status === "active" && daysLeft !== null && daysLeft > 0
+        ? `${daysLeft} day${daysLeft === 1 ? "" : "s"} left`
+        : status === "pending"
+          ? "Invited — awaiting reply"
+          : "Invite to chat";
+
+  const buttonStyle =
+    status === "pending"
+      ? "px-3 py-1.5 text-xs font-medium text-amber-700 bg-amber-50 rounded-lg hover:bg-amber-100 disabled:opacity-50"
+      : status === "active"
+        ? "px-3 py-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 rounded-lg hover:bg-emerald-100 disabled:opacity-50"
+        : "px-3 py-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 rounded-lg hover:bg-emerald-100 disabled:opacity-50";
+
+  if (status === "sms-active") {
+    return (
+      <div
+        className="flex items-center gap-1.5 flex-shrink-0 px-3 py-1.5 text-xs font-medium text-emerald-800 bg-emerald-50 rounded-lg border border-emerald-200"
+        title="This customer has SMS consent and an active job. They can reply to your texts directly — no web chat invite is needed."
+      >
+        <svg className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
+        </svg>
+        <span>SMS replies enabled</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2 flex-shrink-0">
+      {message && <span className="text-xs text-slate-500">{message}</span>}
+      <button
+        type="button"
+        onClick={handleClick}
+        disabled={sending}
+        className={buttonStyle}
+      >
+        {buttonLabel}
+      </button>
+    </div>
+  );
+}
+
+function ChatPageContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const customerIdFromUrl = searchParams.get("customer");
+  const conversationIdFromUrl = searchParams.get("conversation");
+  const deepLinkCustomerRef = useRef<string | null>(null);
+  const deepLinkConversationRef = useRef<string | null>(null);
+
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [threadCalls, setThreadCalls] = useState<ThreadCall[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [inputText, setInputText] = useState("");
+  const [pendingImages, setPendingImages] = useState<{ id: string; url: string; filename: string; mimeType?: string }[]>([]);
+  const [showNewConvModal, setShowNewConvModal] = useState(false);
+  const [showCreateContact, setShowCreateContact] = useState(false);
+  const [showCreateJob, setShowCreateJob] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
+  const [archivedConvs, setArchivedConvs] = useState<Conversation[]>([]);
+  const [archivedLoading, setArchivedLoading] = useState(false);
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [customerSearch, setCustomerSearch] = useState("");
+  const [chatSearch, setChatSearch] = useState("");
+  const [debouncedChatSearch, setDebouncedChatSearch] = useState("");
+  const [searchResults, setSearchResults] = useState<Conversation[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const sendingRef = useRef(false);
+  const hasPendingOptimisticRef = useRef(false);
+  const deliveryTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  useEffect(() => {
+    sendingRef.current = sending;
+  }, [sending]);
+
+  useEffect(() => {
+    hasPendingOptimisticRef.current = messages.some((m) => m.id.startsWith("temp-"));
+  }, [messages]);
+
+  useEffect(() => {
+    return () => {
+      for (const t of Object.values(deliveryTimeoutsRef.current)) clearTimeout(t);
+      deliveryTimeoutsRef.current = {};
+    };
+  }, []);
+
+  const clearClientDeliveryStateLater = useCallback((messageId: string, delayMs = 2000) => {
+    const existing = deliveryTimeoutsRef.current[messageId];
+    if (existing) clearTimeout(existing);
+    deliveryTimeoutsRef.current[messageId] = setTimeout(() => {
+      setMessages((prev) =>
+        prev.map((m) => (m.id === messageId ? { ...m, clientDeliveryState: undefined } : m))
+      );
+      delete deliveryTimeoutsRef.current[messageId];
+    }, delayMs);
+  }, []);
+
+  const mergeServerMessages = useCallback((serverMessages: ChatMessage[]) => {
+    setMessages((prev) => mergeChatMessagesWithServer(prev, serverMessages));
+  }, []);
+  const messagesScrollRef = useRef<HTMLDivElement>(null);
+  const editingCountRef = useRef(0);
+  const [showScrollDown, setShowScrollDown] = useState(false);
+  const isAtBottomRef = useRef(true);
+  const [contextMenu, setContextMenu] = useState<{
+    convId: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [swipeOpenId, setSwipeOpenId] = useState<string | null>(null);
+  const [customerTypingAt, setCustomerTypingAt] = useState<string | null>(null);
+  const [customerLastReadAt, setCustomerLastReadAt] = useState<string | null>(null);
+  const [, setTypingTick] = useState(0);
+  const [messagesLoading, setMessagesLoading] = useState(false);
+  const [hasMoreMessages, setHasMoreMessages] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const loadingOlderRef = useRef(false);
+  const hasMoreMessagesRef = useRef(false);
+  hasMoreMessagesRef.current = hasMoreMessages;
+
+  // Calls sit in the thread at the moment they happened. While older messages
+  // are still unloaded, a call from before the oldest loaded one is held back
+  // until scrolling up reaches it, so it never floats above a gap.
+  const timeline = useMemo(() => {
+    type Entry = { kind: "message"; msg: ChatMessage } | { kind: "call"; call: ThreadCall };
+    const entries: Entry[] = messages.map((msg) => ({ kind: "message", msg }));
+    if (threadCalls.length === 0) return entries;
+    const oldestLoaded = messages[0] ? new Date(messages[0].createdAt).getTime() : null;
+    const at = (entry: Entry) =>
+      new Date(entry.kind === "message" ? entry.msg.createdAt : entry.call.createdAt).getTime();
+    for (const call of threadCalls) {
+      const callAt = new Date(call.createdAt).getTime();
+      if (hasMoreMessages && oldestLoaded !== null && callAt < oldestLoaded) continue;
+      entries.push({ kind: "call", call });
+    }
+    return entries.sort((a, b) => at(a) - at(b));
+  }, [messages, threadCalls, hasMoreMessages]);
+  const selectedIdRef = useRef<string | null>(null);
+  const conversationsRef = useRef(conversations);
+  conversationsRef.current = conversations;
+  const messageCacheRef = useRef(new Map<string, ChatMessage[]>());
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  const [customerActiveJobId, setCustomerActiveJobId] = useState<string | null>(null);
+
+  useLayoutEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
+
+  const prevSelectedIdForDraftRef = useRef<string | null>(null);
+  const composerDraftRef = useRef<ChatComposerDraft>({ text: "", pendingImages: [] });
+  composerDraftRef.current = { text: inputText, pendingImages };
+
+  useEffect(() => {
+    const prev = prevSelectedIdForDraftRef.current;
+    if (selectedId === prev) return;
+
+    if (prev != null) {
+      saveChatDraft(prev, { text: inputText, pendingImages });
+    }
+    if (selectedId) {
+      const d = loadChatDraft(selectedId);
+      setInputText(d?.text ?? "");
+      setPendingImages(d?.pendingImages ?? []);
+    } else {
+      setInputText("");
+      setPendingImages([]);
+    }
+    prevSelectedIdForDraftRef.current = selectedId;
+    // Intentionally only when `selectedId` changes — text/images here are the draft for the thread being left.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
+
+  useEffect(() => {
+    return () => {
+      const id = selectedIdRef.current;
+      if (id) {
+        saveChatDraft(id, composerDraftRef.current);
+      }
+    };
+  }, []);
+
+  const applyConversations = useCallback((data: Conversation[]) => {
+    writeCachedConversations(data);
+    setConversations((prev) => {
+      const selected = selectedIdRef.current;
+      const pinned = selected ? prev.find((c) => c.id === selected) : undefined;
+      if (pinned && !data.some((c) => c.id === pinned.id)) {
+        return [pinned, ...data];
+      }
+      return data;
+    });
+  }, []);
+
+  const fetchConversations = useCallback(async () => {
+    const res = await fetch("/api/conversations", { cache: "no-store" });
+    if (res.ok) {
+      const data = (await res.json()) as Conversation[];
+      applyConversations(data);
+    }
+  }, [applyConversations]);
+
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      setDebouncedChatSearch(chatSearch.trim());
+    }, 250);
+    return () => window.clearTimeout(id);
+  }, [chatSearch]);
+
+  useEffect(() => {
+    if (!debouncedChatSearch) {
+      setSearchResults([]);
+      setSearchLoading(false);
+      return;
+    }
+
+    const ac = new AbortController();
+    setSearchLoading(true);
+    fetch(`/api/conversations?q=${encodeURIComponent(debouncedChatSearch)}`, {
+      signal: ac.signal,
+    })
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data) => {
+        if (ac.signal.aborted) return;
+        setSearchResults(Array.isArray(data) ? data : []);
+      })
+      .catch((e: unknown) => {
+        if (
+          e &&
+          typeof e === "object" &&
+          "name" in e &&
+          (e as { name: string }).name === "AbortError"
+        ) {
+          return;
+        }
+        setSearchResults([]);
+      })
+      .finally(() => {
+        if (!ac.signal.aborted) setSearchLoading(false);
+      });
+
+    return () => ac.abort();
+  }, [debouncedChatSearch]);
+
+  const applyMessagesPayload = useCallback(
+    (data: StaffConversationMessagesPayload, convId: string) => {
+      if (selectedIdRef.current !== convId) return;
+      mergeServerMessages(data.messages);
+      if (Array.isArray(data.calls)) setThreadCalls(data.calls);
+      if (typeof data.hasMore === "boolean") setHasMoreMessages(data.hasMore);
+      setCustomerTypingAt(data.customerTypingAt ?? null);
+      setCustomerLastReadAt(data.customerLastReadAt ?? null);
+      if (typeof data.staffLastReadAt === "string") {
+        setConversations((prev) => {
+          if (prev.length === 0) return prev;
+          const idx = prev.findIndex((c) => c.id === convId);
+          if (idx === -1) return prev;
+          const next = [...prev];
+          next[idx] = { ...next[idx], staffLastReadAt: data.staffLastReadAt };
+          return next;
+        });
+      }
+    },
+    [mergeServerMessages]
+  );
+
+  const fetchMessages = useCallback(async (convId: string, options?: { signal?: AbortSignal }) => {
+    let res: Response;
+    try {
+      res = await fetch(
+        `/api/conversations/${convId}/messages?limit=${INITIAL_MESSAGE_LIMIT}`,
+        { signal: options?.signal }
+      );
+    } catch (e: unknown) {
+      if (e && typeof e === "object" && "name" in e && (e as { name: string }).name === "AbortError") {
+        return;
+      }
+      throw e;
+    }
+    if (!res.ok) return;
+    const data = await res.json();
+    if (selectedIdRef.current !== convId) return;
+    if (Array.isArray(data)) {
+      applyMessagesPayload(
+        {
+          messages: data,
+          customerTypingAt: null,
+          staffLastReadAt: null,
+          customerLastReadAt: null,
+        },
+        convId
+      );
+    } else {
+      applyMessagesPayload(data as StaffConversationMessagesPayload, convId);
+    }
+    clearChatPreviewMessage(convId);
+  }, [applyMessagesPayload]);
+
+  // Paint the last-known inbox before the network responds. This must be a
+  // layout effect, not a lazy `useState` initialiser: the page is still
+  // server-rendered, and reading localStorage during render would produce
+  // markup the server never emitted and break hydration.
+  useLayoutEffect(() => {
+    const cached = readCachedConversations<Conversation>();
+    if (cached.length === 0) return;
+    setConversations((prev) => (prev.length > 0 ? prev : cached));
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    fetchConversations().finally(() => setLoading(false));
+  }, [fetchConversations]);
+
+  useEffect(() => {
+    deepLinkCustomerRef.current = null;
+  }, [customerIdFromUrl]);
+
+  useEffect(() => {
+    deepLinkConversationRef.current = null;
+  }, [conversationIdFromUrl]);
+
+  // Open the thread immediately from deep links so preview cache can render before inbox loads.
+  useEffect(() => {
+    if (conversationIdFromUrl) {
+      setSelectedId(conversationIdFromUrl);
+    }
+  }, [conversationIdFromUrl]);
+
+  useEffect(() => {
+    if (loading || !conversationIdFromUrl) return;
+
+    const existing = conversations.find((c) => c.id === conversationIdFromUrl);
+    if (existing) {
+      deepLinkConversationRef.current = conversationIdFromUrl;
+      router.replace("/chat", { scroll: false });
+      return;
+    }
+
+    if (deepLinkConversationRef.current === conversationIdFromUrl) return;
+    deepLinkConversationRef.current = conversationIdFromUrl;
+  }, [loading, conversationIdFromUrl, conversations, router]);
+
+  // Select an existing general thread when the inbox list catches up to ?customer=.
+  useEffect(() => {
+    if (!customerIdFromUrl) return;
+
+    const existing = conversations.find(
+      (c) => c.customerId === customerIdFromUrl && !c.jobId
+    );
+    if (!existing) return;
+
+    setSelectedId(existing.id);
+    deepLinkCustomerRef.current = customerIdFromUrl;
+    router.replace("/chat", { scroll: false });
+  }, [customerIdFromUrl, conversations, router]);
+
+  // Lazily create a general thread for ?customer= (do not depend on `conversations`:
+  // list polls re-run that effect and cancel the in-flight POST via cleanup).
+  useEffect(() => {
+    if (loading || !customerIdFromUrl) return;
+
+    const existing = conversationsRef.current.find(
+      (c) => c.customerId === customerIdFromUrl && !c.jobId
+    );
+    if (existing) return;
+
+    if (deepLinkCustomerRef.current === customerIdFromUrl) return;
+
+    deepLinkCustomerRef.current = customerIdFromUrl;
+    const requestCustomerId = customerIdFromUrl;
+
+    void (async () => {
+      try {
+        const res = await fetch("/api/conversations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          cache: "no-store",
+          body: JSON.stringify({ customerId: requestCustomerId }),
+        });
+        if (deepLinkCustomerRef.current !== requestCustomerId) return;
+        if (res.ok) {
+          const newConv = (await res.json()) as Conversation;
+          setConversations((prev) => {
+            if (prev.some((c) => c.id === newConv.id)) return prev;
+            return [newConv, ...prev];
+          });
+          setSelectedId(newConv.id);
+          router.replace("/chat", { scroll: false });
+        } else {
+          deepLinkCustomerRef.current = null;
+        }
+      } catch {
+        if (deepLinkCustomerRef.current === requestCustomerId) {
+          deepLinkCustomerRef.current = null;
+        }
+      }
+    })();
+  }, [loading, customerIdFromUrl, router]);
+
+  useEffect(() => {
+    const currentId = selectedId;
+    setThreadCalls([]);
+    if (!currentId) {
+      setMessages([]);
+      setCustomerTypingAt(null);
+      setCustomerLastReadAt(null);
+      setMessagesLoading(false);
+      return;
+    }
+    // Paint order, fastest first: in-memory cache (same session) → durable
+    // localStorage tail (survives app close) → single-message preview seed.
+    const cached =
+      messageCacheRef.current.get(currentId) ?? readCachedMessages(currentId);
+    const conv = conversationsRef.current.find((c) => c.id === currentId);
+    const seed = getChatPreviewSeed(currentId, conv?.messages);
+    if (cached && cached.length > 0) {
+      const cachedIds = new Set(cached.map((m) => m.id));
+      const newFromSeed = seed.filter((m) => !cachedIds.has(m.id));
+      if (newFromSeed.length > 0) {
+        setMessages(
+          [...cached, ...newFromSeed].sort((a, b) => {
+            const ta = new Date(a.createdAt).getTime();
+            const tb = new Date(b.createdAt).getTime();
+            if (ta !== tb) return ta - tb;
+            return a.id.localeCompare(b.id);
+          })
+        );
+      } else {
+        setMessages(cached);
+      }
+      setMessagesLoading(false);
+    } else {
+      setMessages(seed);
+      setMessagesLoading(seed.length === 0);
+    }
+    setCustomerTypingAt(null);
+    setCustomerLastReadAt(null);
+    setHasMoreMessages(false);
+    setLoadingOlder(false);
+    loadingOlderRef.current = false;
+    const ac = new AbortController();
+    fetchMessages(currentId, { signal: ac.signal }).finally(() => {
+      if (!ac.signal.aborted) setMessagesLoading(false);
+    });
+    return () => {
+      ac.abort();
+      const msgs = messagesRef.current;
+      if (msgs.length > 0) {
+        messageCacheRef.current.set(currentId, msgs);
+        writeCachedMessages(currentId, msgs);
+      }
+    };
+  }, [selectedId, fetchMessages]);
+
+  // Keep the durable cache warm while the thread is open, so a hard app close
+  // (or a crash) still leaves the next open something to paint immediately.
+  useEffect(() => {
+    if (!selectedId) return;
+    if (messages.length === 0) return;
+    const id = window.setTimeout(() => {
+      writeCachedMessages(selectedId, messages);
+    }, 500);
+    return () => window.clearTimeout(id);
+  }, [selectedId, messages]);
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ conversationId?: string; messageId?: string }>).detail;
+      const conversationId = detail?.conversationId;
+      if (!conversationId) return;
+      setSelectedId(conversationId);
+      if (detail.messageId) {
+        const params = new URLSearchParams(window.location.search);
+        params.set("conversation", conversationId);
+        params.set("messageId", detail.messageId);
+        router.replace(`/chat?${params.toString()}`, { scroll: false });
+      } else {
+        router.replace(`/chat?conversation=${encodeURIComponent(conversationId)}`, {
+          scroll: false,
+        });
+      }
+    };
+    window.addEventListener("bikeops:chat-open-conversation", handler);
+    return () => window.removeEventListener("bikeops:chat-open-conversation", handler);
+  }, [router]);
+
+  useChatEventSource<StaffConversationMessagesPayload>({
+    url: selectedId
+      ? `/api/conversations/${encodeURIComponent(selectedId)}/messages/stream?limit=${INITIAL_MESSAGE_LIMIT}`
+      : null,
+    enabled: !!selectedId,
+    onUpdate: (data) => {
+      if (!selectedId) return;
+      if (sendingRef.current) return;
+      if (hasPendingOptimisticRef.current) return;
+      applyMessagesPayload(data, selectedId);
+    },
+    fallbackPoll: () => {
+      if (selectedId) void fetchMessages(selectedId);
+    },
+    fallbackIntervalMs: POLL_INTERVAL_MS,
+  });
+
+  useChatEventSource<Conversation[]>({
+    url: "/api/conversations/stream",
+    onUpdate: applyConversations,
+    fallbackPoll: fetchConversations,
+    fallbackIntervalMs: CHAT_PAGE_CONVERSATIONS_POLL_MS,
+  });
+
+  // Realtime is what makes an arriving message land immediately; the streams
+  // above stay as the safety net when a broadcast is missed or Realtime is
+  // not configured. Both funnel into the same fetchers, so a duplicate
+  // notification costs one extra request and nothing else.
+  useChatRealtime({
+    onChange: (conversationIds) => {
+      void fetchConversations();
+      const selected = selectedIdRef.current;
+      if (!selected) return;
+      // `null` means we reconnected and may have missed events.
+      if (conversationIds && !conversationIds.has(selected)) return;
+      // Same guard the stream uses: never clobber a send in flight.
+      if (sendingRef.current || hasPendingOptimisticRef.current) return;
+      void fetchMessages(selected);
+    },
+  });
+
+  useChatNotifications(conversations, fetchConversations, selectedId, false);
+
+  useEffect(() => {
+    const customerId = conversations.find((c) => c.id === selectedId)?.customerId;
+    if (!customerId) {
+      setCustomerActiveJobId(null);
+      return;
+    }
+    let cancelled = false;
+    fetch(`/api/jobs?customerId=${encodeURIComponent(customerId)}&summary=1`)
+      .then((r) => r.json())
+      .then((data: unknown) => {
+        if (cancelled) return;
+        const jobs = Array.isArray(data) ? (data as { id: string; stage: string }[]) : [];
+        const active = jobs.find(
+          (j) => j.stage !== "CANCELLED" && j.stage !== "COMPLETED"
+        );
+        setCustomerActiveJobId(active?.id ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setCustomerActiveJobId(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // Only re-fetch when the selected conversation changes, not on every conversations poll.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setContextMenu(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [contextMenu]);
+
+  const archiveConversation = useCallback(
+    async (id: string) => {
+      try {
+        const res = await fetch(`/api/conversations/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ archived: true }),
+        });
+        if (res.ok) {
+          setConversations((prev) => prev.filter((c) => c.id !== id));
+          setSearchResults((prev) => prev.filter((c) => c.id !== id));
+          setSelectedId((cur) => (cur === id ? null : cur));
+          setSwipeOpenId(null);
+        } else {
+          const err = await res.json().catch(() => ({}));
+          alert(typeof err.error === "string" ? err.error : "Failed to archive");
+        }
+      } catch {
+        alert("Failed to archive");
+      }
+    },
+    []
+  );
+
+  // A provisional contact that has just been filled in should stop reading as an
+  // unknown number straight away, in the open thread and in the list behind it.
+  const handleContactSaved = useCallback(
+    (customer: Customer) => {
+      const applyCustomer = (list: Conversation[]) =>
+        list.map((conv) =>
+          conv.customerId === customer.id
+            ? { ...conv, customer: { ...conv.customer, ...customer } }
+            : conv
+        );
+      setConversations(applyCustomer);
+      setSearchResults(applyCustomer);
+      setShowCreateContact(false);
+      fetchConversations();
+    },
+    [fetchConversations]
+  );
+
+  // A job created from the thread opens straight away: staff almost always
+  // want to set a date or add parts next, and the job card is where that
+  // happens.
+  const handleJobCreated = useCallback((job: { id: string }) => {
+    setShowCreateJob(false);
+    window.location.href = `/calendar?openJob=${encodeURIComponent(job.id)}`;
+  }, []);
+
+  const fetchArchived = useCallback(async () => {
+    setArchivedLoading(true);
+    try {
+      const res = await fetch("/api/conversations?archived=true", {
+        cache: "no-store",
+      });
+      if (res.ok) setArchivedConvs(await res.json());
+    } catch {
+      // Leave whatever was already listed; the toggle can be retried.
+    } finally {
+      setArchivedLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (showArchived) void fetchArchived();
+  }, [showArchived, fetchArchived]);
+
+  const unarchiveConversation = useCallback(
+    async (id: string) => {
+      try {
+        const res = await fetch(`/api/conversations/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ archived: false }),
+        });
+        if (res.ok) {
+          setArchivedConvs((prev) => prev.filter((c) => c.id !== id));
+          fetchConversations();
+        }
+      } catch {
+        alert("Failed to restore");
+      }
+    },
+    [fetchConversations]
+  );
+
+  const selectedConv =
+    conversations.find((c) => c.id === selectedId) ??
+    archivedConvs.find((c) => c.id === selectedId);
+  const visibleConversations = showArchived
+    ? archivedConvs
+    : debouncedChatSearch
+      ? searchResults
+      : conversations;
+  const typingSignal =
+    customerTypingAt ?? selectedConv?.customerTypingAt ?? null;
+  const showCustomerTyping =
+    Boolean(selectedId) && isCustomerTypingRecently(typingSignal);
+  const latestMessage = messages[messages.length - 1] ?? null;
+  const latestMessageKey = latestMessage
+    ? `${messages.length}:${latestMessage.id}:${latestMessage.createdAt}:${latestMessage.editedAt ?? ""}`
+    : "empty";
+
+  useEffect(() => {
+    if (!typingSignal) return;
+    const id = setInterval(() => setTypingTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [typingSignal]);
+
+  useEffect(() => {
+    if (editingCountRef.current > 0) return;
+    if (!isAtBottomRef.current) return;
+    const el = messagesScrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [latestMessageKey, showCustomerTyping]);
+
+  const loadOlderMessages = useCallback(async () => {
+    const convId = selectedIdRef.current;
+    if (!convId) return;
+    if (loadingOlderRef.current) return;
+    if (!hasMoreMessagesRef.current) return;
+
+    const oldest = messagesRef.current.find((m) => !m.id.startsWith("temp-"));
+    if (!oldest) return;
+
+    loadingOlderRef.current = true;
+    setLoadingOlder(true);
+
+    // Anchor on distance from the bottom, not from the top: it stays correct
+    // no matter what gets added or removed above the viewport (prepended page,
+    // the loading row appearing and disappearing).
+    const el = messagesScrollRef.current;
+    const prevDistanceFromBottom = el ? el.scrollHeight - el.scrollTop : 0;
+
+    try {
+      const res = await fetch(
+        `/api/conversations/${convId}/messages?limit=${OLDER_PAGE_SIZE}&before=${encodeURIComponent(oldest.id)}`
+      );
+      if (!res.ok) return;
+      const data = (await res.json()) as StaffConversationMessagesPayload;
+      if (selectedIdRef.current !== convId) return;
+
+      const older = Array.isArray(data.messages) ? data.messages : [];
+      setHasMoreMessages(data.hasMore === true);
+      if (older.length === 0) return;
+
+      setMessages((prev) => {
+        const known = new Set(prev.map((m) => m.id));
+        const additions = older.filter((m) => !known.has(m.id));
+        if (additions.length === 0) return prev;
+        return [...additions, ...prev];
+      });
+
+      requestAnimationFrame(() => {
+        const node = messagesScrollRef.current;
+        if (!node) return;
+        node.scrollTop = node.scrollHeight - prevDistanceFromBottom;
+      });
+    } catch {
+      // Leave hasMore as-is so the user can retry by scrolling again.
+    } finally {
+      loadingOlderRef.current = false;
+      setLoadingOlder(false);
+    }
+  }, []);
+
+  const handleMessagesScroll = useCallback(() => {
+    const el = messagesScrollRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    isAtBottomRef.current = atBottom;
+    setShowScrollDown(!atBottom);
+
+    if (el.scrollTop < 240) {
+      void loadOlderMessages();
+    }
+  }, [loadOlderMessages]);
+
+  const scrollToBottom = useCallback(() => {
+    const el = messagesScrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  }, []);
+
+  const openNewConvModal = () => {
+    setShowNewConvModal(true);
+    setCustomerSearch("");
+    fetch("/api/customers")
+      .then((r) => r.json())
+      .then((data) => setCustomers(Array.isArray(data) ? data : []))
+      .catch(() => setCustomers([]));
+  };
+
+  const handleSelectCustomer = useCallback(
+    async (customerId: string) => {
+      const existing = conversations.find((c) => c.customerId === customerId && !c.jobId);
+      if (existing) {
+        setSelectedId(existing.id);
+        setShowNewConvModal(false);
+        return;
+      }
+      try {
+        const res = await fetch("/api/conversations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ customerId }),
+        });
+        if (res.ok) {
+          const newConv = await res.json();
+          setConversations((prev) => [newConv, ...prev]);
+          setSelectedId(newConv.id);
+          setShowNewConvModal(false);
+        } else {
+          const err = await res.json();
+          alert(err.error ?? "Failed to create conversation");
+        }
+      } catch {
+        alert("Failed to create conversation");
+      }
+    },
+    [conversations]
+  );
+
+  const filteredCustomers = customers.filter((c) => {
+    const q = customerSearch.toLowerCase();
+    const name = `${c.firstName} ${c.lastName || ""}`.toLowerCase();
+    const email = (c.email || "").toLowerCase();
+    const phone = (c.phone || "").toLowerCase();
+    return name.includes(q) || email.includes(q) || phone.includes(q);
+  });
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+
+    try {
+      if (isChatVideoFile(file)) {
+        const att = await uploadChatVideoFile(file);
+        setPendingImages((prev) => [
+          ...prev,
+          {
+            id: att.id,
+            url: att.url,
+            filename: att.filename,
+            mimeType: att.mimeType,
+          },
+        ]);
+        return;
+      }
+
+      const isHeicFile =
+        /^image\/(heic|heif)$/i.test(file.type) ||
+        /\.(heic|heif)$/i.test(file.name);
+      let uploadFile: File;
+      try {
+        uploadFile = await compressImage(file);
+      } catch (err) {
+        console.error("compressImage failed:", err);
+        if (isHeicFile) {
+          alert(
+            "Failed to process image. Please convert it to JPEG first and try again."
+          );
+          return;
+        }
+        uploadFile = file;
+      }
+
+      const formData = new FormData();
+      formData.append("file", uploadFile);
+      const res = await fetch("/api/chat/upload", { method: "POST", body: formData });
+      if (res.ok) {
+        const att = await res.json();
+        setPendingImages((prev) => [
+          ...prev,
+          {
+            id: att.id,
+            url: att.url,
+            filename: att.filename,
+            mimeType: att.mimeType,
+          },
+        ]);
+      } else {
+        const data = await res.json();
+        alert(data.error ?? "Failed to upload");
+      }
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Failed to upload media");
+    }
+  };
+
+  const removePendingImage = (id: string) => {
+    setPendingImages((prev) => prev.filter((p) => p.id !== id));
+  };
+
+  const handleBubbleEditingChange = useCallback((isEditing: boolean) => {
+    editingCountRef.current += isEditing ? 1 : -1;
+  }, []);
+
+  const patchStaffMessage = useCallback(
+    async (messageId: string, body: string | null) => {
+      if (!selectedId) return false;
+      const res = await fetch(`/api/conversations/${selectedId}/messages/${messageId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body }),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setMessages((prev) => prev.map((m) => (m.id === messageId ? updated : m)));
+        fetchConversations();
+        return true;
+      }
+      const err = await res.json().catch(() => ({}));
+      alert(typeof err.error === "string" ? err.error : "Failed to update message");
+      return false;
+    },
+    [selectedId, fetchConversations]
+  );
+
+  const deleteStaffMessage = useCallback(
+    async (messageId: string) => {
+      if (!selectedId) return false;
+      const res = await fetch(`/api/conversations/${selectedId}/messages/${messageId}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        setMessages((prev) => prev.filter((m) => m.id !== messageId));
+        fetchConversations();
+        return true;
+      }
+      const err = await res.json().catch(() => ({}));
+      alert(typeof err.error === "string" ? err.error : "Failed to delete message");
+      return false;
+    },
+    [selectedId, fetchConversations]
+  );
+
+  const toggleReaction = useCallback(
+    async (messageId: string, emoji: string) => {
+      if (!selectedId) return;
+      const msg = messages.find((m) => m.id === messageId);
+      const myReaction = (msg?.reactions ?? []).find(
+        (r) => r.reactorType === "STAFF"
+      );
+      try {
+        // Optimistically update so the UI doesn't wait on network/DB latency.
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (m.id !== messageId) return m;
+            const existing = (m.reactions ?? []).find((r) => r.reactorType === "STAFF") ?? null;
+            const withoutMine = (m.reactions ?? []).filter((r) => r.reactorType !== "STAFF");
+            if (existing?.emoji === emoji) {
+              return { ...m, reactions: withoutMine };
+            }
+            const optimistic = {
+              id: existing?.id ?? `temp-reaction-${messageId}-staff`,
+              messageId,
+              emoji,
+              reactorType: "STAFF" as const,
+              createdAt: existing?.createdAt ?? new Date().toISOString(),
+            };
+            return { ...m, reactions: [...withoutMine, optimistic] };
+          })
+        );
+
+        if (myReaction?.emoji === emoji) {
+          const res = await fetch(
+            `/api/conversations/${selectedId}/messages/${messageId}/reactions`,
+            { method: "DELETE" }
+          );
+          if (!res.ok) {
+            fetchMessages(selectedId);
+          }
+        } else {
+          const res = await fetch(
+            `/api/conversations/${selectedId}/messages/${messageId}/reactions`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ emoji }),
+            }
+          );
+          if (res.ok) {
+            const reaction = await res.json().catch(() => null);
+            if (reaction && typeof reaction === "object") {
+              setMessages((prev) =>
+                prev.map((m) => {
+                  if (m.id !== messageId) return m;
+                  const withoutMine = (m.reactions ?? []).filter((r) => r.reactorType !== "STAFF");
+                  return { ...m, reactions: [...withoutMine, reaction] };
+                })
+              );
+            }
+          } else {
+            fetchMessages(selectedId);
+          }
+        }
+      } catch {
+        fetchMessages(selectedId);
+      }
+    },
+    [selectedId, messages, fetchMessages]
+  );
+
+  const removeStaffAttachment = useCallback(
+    async (messageId: string, attachmentId: string) => {
+      if (!selectedId) return false;
+      const res = await fetch(
+        `/api/conversations/${selectedId}/messages/${messageId}/attachments/${attachmentId}`,
+        { method: "DELETE" }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        if (data.messageDeleted) {
+          setMessages((prev) => prev.filter((m) => m.id !== messageId));
+        } else {
+          setMessages((prev) =>
+            prev.map((m) => (m.id === messageId ? data.message : m))
+          );
+        }
+        fetchConversations();
+        return true;
+      }
+      const err = await res.json().catch(() => ({}));
+      alert(typeof err.error === "string" ? err.error : "Failed to remove image");
+      return false;
+    },
+    [selectedId, fetchConversations]
+  );
+
+  const handleSend = async () => {
+    if (!selectedId) return;
+    const textToSend = inputText.trim();
+    const imagesToSend = [...pendingImages];
+    const hasText = textToSend.length > 0;
+    const hasImages = imagesToSend.length > 0;
+    if (!hasText && !hasImages) return;
+
+    // Optimistically append the message immediately so the UI feels instant
+    const tempId = `temp-${Date.now()}`;
+    const optimisticMsg: ChatMessage = {
+      id: tempId,
+      conversationId: selectedId,
+      sender: "STAFF",
+      body: textToSend || null,
+      clientDeliveryState: "SENDING",
+      attachments: imagesToSend.map((img) => ({
+        id: img.id,
+        url: img.url,
+        filename: img.filename,
+        mimeType: img.mimeType ?? "",
+        createdAt: new Date().toISOString(),
+      })),
+      reactions: [],
+      createdAt: new Date().toISOString(),
+    };
+
+    hasPendingOptimisticRef.current = true;
+    sendingRef.current = true;
+    setMessages((prev) => [...prev, optimisticMsg]);
+    saveChatDraft(selectedId, { text: "", pendingImages: [] });
+    setInputText("");
+    setPendingImages([]);
+    if (composerTextareaRef.current) {
+      composerTextareaRef.current.style.height = "auto";
+    }
+    setSending(true);
+
+    try {
+      const res = await fetch(`/api/conversations/${selectedId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sender: "STAFF",
+          body: textToSend || null,
+          attachmentIds: imagesToSend.map((p) => p.id),
+        }),
+      });
+      if (res.ok) {
+        const newMsg = (await res.json()) as ChatMessage;
+        const deliveredMsg: ChatMessage = { ...newMsg, clientDeliveryState: "DELIVERED" };
+        // Replace the optimistic placeholder with the confirmed server message
+        setMessages((prev) => {
+          const replaced = prev.map((m) => (m.id === tempId ? deliveredMsg : m));
+          const byId = new Map<string, ChatMessage>();
+          for (const msg of replaced) byId.set(msg.id, msg);
+          return [...byId.values()].sort((a, b) => {
+            const ta = new Date(a.createdAt).getTime();
+            const tb = new Date(b.createdAt).getTime();
+            if (ta !== tb) return ta - tb;
+            return a.id.localeCompare(b.id);
+          });
+        });
+        hasPendingOptimisticRef.current = false;
+        clearClientDeliveryStateLater(deliveredMsg.id);
+        fetchConversations();
+      } else {
+        const data = await res.json();
+        // Roll back the optimistic message on failure
+        hasPendingOptimisticRef.current = false;
+        setMessages((prev) => prev.filter((m) => m.id !== tempId));
+        alert(data.error ?? "Failed to send");
+      }
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
+    }
+  };
+
+  // Only block on the very first open with a cold cache and no target thread.
+  // A deep link paints its thread from the durable cache straight away.
+  if (loading && !selectedId) {
+    return <ChatPageSkeleton />;
+  }
+
+  return (
+    <div className="flex flex-col h-[calc(100vh-8rem)] min-h-0 md:h-[calc(100vh-5rem)] -mx-4 -mb-6 sm:-mx-6 sm:-mb-6 md:mx-0 md:mb-0 md:rounded-xl md:border md:border-slate-200 md:shadow-soft bg-white overflow-hidden">
+      <div className="flex flex-1 min-h-0">
+        {/* Conversation list */}
+        <aside
+          className={`flex flex-col w-full md:w-72 lg:w-80 border-r border-slate-200 flex-shrink-0 bg-slate-50 ${
+            selectedId ? "hidden md:flex" : "flex"
+          }`}
+        >
+          <div className="p-3 border-b border-slate-200 flex-shrink-0">
+            <h2 className="text-lg font-semibold text-slate-900">Chat</h2>
+            <div className="relative mt-2">
+              <input
+                type="search"
+                value={chatSearch}
+                onChange={(e) => setChatSearch(e.target.value)}
+                placeholder="Search chats"
+                aria-label="Search chats by customer name or message words"
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 pr-9 text-sm text-slate-900 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+              />
+              {chatSearch && (
+                <button
+                  type="button"
+                  onClick={() => setChatSearch("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                  aria-label="Clear chat search"
+                >
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={openNewConvModal}
+              className="mt-2 w-full px-3 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors"
+            >
+              + New conversation
+            </button>
+            <div className="mt-2 flex gap-1">
+              {([false, true] as const).map((archived) => (
+                <button
+                  key={String(archived)}
+                  type="button"
+                  onClick={() => {
+                    setShowArchived(archived);
+                    setSelectedId(null);
+                  }}
+                  className={`flex-1 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                    showArchived === archived
+                      ? "bg-slate-800 text-white"
+                      : "bg-white text-slate-600 border border-slate-300 hover:bg-slate-50"
+                  }`}
+                >
+                  {archived ? "Archived" : "Active"}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            {showArchived && archivedLoading ? (
+              <p className="p-4 text-slate-500 text-sm">Loading archived…</p>
+            ) : searchLoading ? (
+              <p className="p-4 text-slate-500 text-sm">Searching…</p>
+            ) : visibleConversations.length === 0 ? (
+              <p className="p-4 text-slate-500 text-sm">
+                {showArchived
+                  ? "Nothing archived. Threads you archive show up here."
+                  : debouncedChatSearch
+                    ? `No chats found for "${debouncedChatSearch}".`
+                    : "No conversations yet. Start one above."}
+              </p>
+            ) : (
+              <ul className="divide-y divide-slate-200">
+                {visibleConversations.map((conv) => (
+                  <ConversationListRow
+                    key={conv.id}
+                    conv={conv}
+                    selected={selectedId === conv.id}
+                    onSelect={() => {
+                      setSwipeOpenId(null);
+                      setSelectedId(conv.id);
+                    }}
+                    onArchive={() => archiveConversation(conv.id)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setSwipeOpenId(null);
+                      setContextMenu({ convId: conv.id, x: e.clientX, y: e.clientY });
+                    }}
+                    swipeOpenId={swipeOpenId}
+                    onSwipeOpenChange={setSwipeOpenId}
+                  />
+                ))}
+              </ul>
+            )}
+          </div>
+        </aside>
+
+        {/* Message thread */}
+        <section
+          className={`flex flex-col flex-1 min-h-0 min-w-0 bg-white ${
+            selectedId ? "flex" : "hidden md:flex"
+          }`}
+        >
+          {selectedId ? (
+            <>
+              {/* Header sits outside the scroll view so iOS rubber-band overscroll doesn’t stretch it */}
+              <header className="flex shrink-0 items-center gap-3 px-4 py-3 border-b border-slate-200 bg-white">
+                <button
+                  type="button"
+                  onClick={() => setSelectedId(null)}
+                  className="md:hidden p-2 -ml-2 rounded-lg text-slate-500 hover:bg-slate-100"
+                  aria-label="Back to conversations"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                  </svg>
+                </button>
+                <div className="flex-1 min-w-0">
+                  <h3 className="font-semibold text-slate-900">
+                    {selectedConv ? (
+                      <Link
+                        href={`/customers?edit=${encodeURIComponent(selectedConv.customerId)}`}
+                        className="block truncate hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-inset rounded"
+                        title="View customer profile"
+                      >
+                        <CustomerName conv={selectedConv} />
+                      </Link>
+                    ) : (
+                      "Loading…"
+                    )}
+                  </h3>
+                  {selectedConv?.customer.email && (
+                    <p className="text-xs text-slate-500 truncate">{selectedConv.customer.email}</p>
+                  )}
+                  {selectedConv?.customer.phone && (
+                    <p
+                      className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                        selectedConv.customer.smsConsent
+                          ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                          : "bg-slate-100 text-slate-600 border border-slate-200"
+                      }`}
+                    >
+                      SMS {selectedConv.customer.smsConsent ? "consented" : "not consented"}
+                    </p>
+                  )}
+                </div>
+                {customerActiveJobId && (
+                  <a
+                    href={`/calendar?openJob=${encodeURIComponent(customerActiveJobId)}`}
+                    className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-indigo-700 bg-indigo-50 rounded-lg hover:bg-indigo-100 transition-colors"
+                    title="Open job details"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} aria-hidden>
+                      <rect x="3" y="3" width="7" height="7" />
+                      <rect x="14" y="3" width="7" height="7" />
+                      <rect x="3" y="14" width="7" height="7" />
+                      <rect x="14" y="14" width="7" height="7" />
+                    </svg>
+                    Job card
+                  </a>
+                )}
+                {selectedConv && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      showArchived
+                        ? unarchiveConversation(selectedConv.id)
+                        : archiveConversation(selectedConv.id)
+                    }
+                    className="flex flex-shrink-0 items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-50"
+                    title={
+                      showArchived
+                        ? "Move back to active conversations"
+                        : "Archive this conversation"
+                    }
+                  >
+                    <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} aria-hidden>
+                      <path d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+                    </svg>
+                    {showArchived ? "Restore" : "Archive"}
+                  </button>
+                )}
+                {selectedConv?.customer.provisional && (
+                  <button
+                    type="button"
+                    onClick={() => setShowCreateContact(true)}
+                    className="flex flex-shrink-0 items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-emerald-700"
+                    title="Fill in this contact from the conversation"
+                  >
+                    <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} aria-hidden>
+                      <path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2" />
+                      <circle cx="9" cy="7" r="4" />
+                      <path d="M19 8v6M22 11h-6" />
+                    </svg>
+                    Create contact
+                  </button>
+                )}
+                {selectedConv && (
+                  <button
+                    type="button"
+                    onClick={() => setShowCreateJob(true)}
+                    className="flex flex-shrink-0 items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-50"
+                    title="Start a job from what this conversation says"
+                  >
+                    <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} aria-hidden>
+                      <rect x="3" y="4" width="18" height="16" rx="2" />
+                      <path d="M12 9v6M9 12h6" />
+                    </svg>
+                    Create job
+                  </button>
+                )}
+                {selectedConv?.customer.email && (
+                  <InviteButton customerId={selectedConv.customerId} />
+                )}
+              </header>
+
+              {selectedConv && (
+                <AiAssistantBanner
+                  conversation={selectedConv}
+                  onChange={(updated) => {
+                    const merge = (prev: Conversation[]) =>
+                      prev.map((c) =>
+                        c.id === updated.id
+                          ? {
+                              ...c,
+                              aiAssistantState: updated.aiAssistantState,
+                              aiAssistantSummary: updated.aiAssistantSummary,
+                            }
+                          : c
+                      );
+                    setConversations(merge);
+                    setArchivedConvs(merge);
+                  }}
+                />
+              )}
+
+              {/* Clip scroll overscroll so elastic bounce doesn’t distort the composer below */}
+              <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+                <div
+                  ref={messagesScrollRef}
+                  onScroll={handleMessagesScroll}
+                  className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain touch-pan-y"
+                >
+                  <div className="p-4 space-y-3">
+                    {loadingOlder ? (
+                      <p
+                        className="py-2 text-center text-xs text-slate-400"
+                        aria-live="polite"
+                      >
+                        Loading earlier messages…
+                      </p>
+                    ) : null}
+                    {messagesLoading && messages.length === 0 ? (
+                      <div className="space-y-3 py-2" aria-busy="true" aria-label="Loading messages">
+                        <SkeletonPulse className="ml-auto h-12 w-2/3 max-w-sm rounded-2xl" />
+                        <SkeletonPulse className="h-12 w-1/2 max-w-xs rounded-2xl" />
+                        <SkeletonPulse className="ml-auto h-16 w-3/5 max-w-md rounded-2xl" />
+                        <SkeletonPulse className="h-12 w-2/5 max-w-xs rounded-2xl" />
+                      </div>
+                    ) : null}
+                    {timeline.map((entry) => {
+                      if (entry.kind === "call") {
+                        return <ThreadCallCard key={`call:${entry.call.id}`} call={entry.call} />;
+                      }
+                      const msg = entry.msg;
+                      const isSystem = msg.sender === "SYSTEM";
+                      return (
+                        <ChatMessageBubble
+                          key={msg.id}
+                          msg={msg}
+                          isOwn={msg.sender === "STAFF"}
+                          align={msg.sender === "STAFF" ? "end" : "start"}
+                          bubbleClassName={
+                            msg.sender === "STAFF"
+                              ? "bg-emerald-600 text-white rounded-br-md"
+                              : isSystem
+                                ? "border border-slate-200 bg-slate-50 text-slate-700 rounded-bl-md font-mono text-[13px]"
+                                : "bg-slate-100 text-slate-900 rounded-bl-md"
+                          }
+                          metaClassName={msg.sender === "STAFF" ? "text-emerald-200" : "text-slate-500"}
+                          linkClassName={msg.sender === "STAFF" ? "text-emerald-100" : "text-emerald-700"}
+                          actionMutedClassName={
+                            msg.sender === "STAFF"
+                              ? "text-emerald-200/90 hover:text-white"
+                              : "text-slate-500 hover:text-slate-700"
+                          }
+                          saveEditButtonClassName={
+                            msg.sender === "STAFF"
+                              ? "text-xs font-medium text-white hover:text-emerald-100"
+                              : undefined
+                          }
+                          viewed={
+                            msg.sender === "STAFF" && customerLastReadAt != null
+                              ? new Date(msg.createdAt).getTime() <= new Date(customerLastReadAt).getTime()
+                              : undefined
+                          }
+                          role="STAFF"
+                          onPatch={msg.sender === "STAFF" ? patchStaffMessage : undefined}
+                          onDelete={msg.sender === "STAFF" ? deleteStaffMessage : undefined}
+                          onRemoveAttachment={msg.sender === "STAFF" ? removeStaffAttachment : undefined}
+                          onEditingChange={handleBubbleEditingChange}
+                          onToggleReaction={isSystem ? undefined : toggleReaction}
+                        />
+                      );
+                    })}
+                    {showCustomerTyping && (
+                      <p className="text-sm text-slate-500 italic" aria-live="polite">
+                        Customer is typing…
+                      </p>
+                    )}
+                  </div>
+                </div>
+                {showScrollDown && (
+                  <button
+                    type="button"
+                    onClick={scrollToBottom}
+                    className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-white shadow-md border border-slate-200 text-slate-700 hover:bg-slate-50 transition-opacity"
+                    aria-label="Scroll to latest message"
+                  >
+                    <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" aria-hidden>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+                )}
+              </div>
+
+              <footer className="shrink-0 border-t border-slate-200 bg-slate-50 p-4 isolate">
+                {pendingImages.length > 0 && (
+                  <div className="flex gap-2 mb-2 flex-wrap">
+                    {pendingImages.map((p) => (
+                      <div key={p.id} className="relative group">
+                        {p.mimeType?.startsWith("video/") ? (
+                          <div className="relative h-20 w-20 overflow-hidden rounded-lg border border-slate-200 bg-black">
+                            <video
+                              src={p.url}
+                              className="h-full w-full object-cover"
+                              muted
+                              preload="metadata"
+                            />
+                            <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-white text-xs font-medium">
+                              ▶
+                            </span>
+                          </div>
+                        ) : (
+                          <Image
+                            src={p.url} unoptimized={isPrivateFileUrl(p.url)}
+                            alt={p.filename}
+                            width={80}
+                            height={80}
+                            className="h-20 w-20 object-cover rounded-lg border border-slate-200"
+                          />
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => removePendingImage(p.id)}
+                          className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-red-500 text-white text-xs flex items-center justify-center hover:bg-red-600"
+                          aria-label="Remove"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="flex gap-2">
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    accept="image/jpeg,image/png,image/gif,image/webp,image/heic,image/heif,video/mp4,video/quicktime"
+                    className="hidden"
+                    onChange={handleFileChange}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="p-2 rounded-lg text-slate-500 hover:bg-slate-200 hover:text-slate-700 transition-colors flex-shrink-0"
+                    aria-label="Add image"
+                  >
+                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}>
+                      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                      <circle cx="8.5" cy="8.5" r="1.5" />
+                      <polyline points="21 15 16 10 5 21" />
+                    </svg>
+                  </button>
+                  <textarea
+                    ref={composerTextareaRef}
+                    value={inputText}
+                    rows={1}
+                    onChange={(e) => setInputText(e.target.value)}
+                    onInput={(e) => {
+                      const el = e.currentTarget;
+                      el.style.height = "auto";
+                      el.style.height = `${el.scrollHeight}px`;
+                    }}
+                    onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && (e.preventDefault(), handleSend())}
+                    placeholder="Type a message…"
+                    className="flex-1 px-4 py-2.5 rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent resize-none overflow-hidden leading-normal"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleSend}
+                    disabled={sending || (!inputText.trim() && pendingImages.length === 0)}
+                    className="px-4 py-2.5 rounded-lg bg-emerald-600 text-white font-medium hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {sending ? "Sending…" : "Send"}
+                  </button>
+                </div>
+              </footer>
+            </>
+          ) : (
+            <div className="flex-1 flex items-center justify-center text-slate-500">
+              <p>Select a conversation or start a new one</p>
+            </div>
+          )}
+        </section>
+      </div>
+
+      {contextMenu && (
+        <>
+          <button
+            type="button"
+            className="fixed inset-0 z-[60] cursor-default bg-transparent border-0 p-0"
+            aria-label="Close menu"
+            onClick={() => setContextMenu(null)}
+          />
+          <div
+            role="menu"
+            className="fixed z-[70] min-w-[160px] rounded-lg border border-slate-200 bg-white py-1 shadow-lg"
+            style={{
+              left: Math.max(
+                8,
+                Math.min(contextMenu.x, (typeof window !== "undefined" ? window.innerWidth : 400) - 172)
+              ),
+              top: Math.max(
+                8,
+                Math.min(contextMenu.y, (typeof window !== "undefined" ? window.innerHeight : 400) - 48)
+              ),
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              className="w-full px-4 py-2.5 text-left text-sm text-slate-800 hover:bg-slate-100"
+              onClick={() => {
+                archiveConversation(contextMenu.convId);
+                setContextMenu(null);
+              }}
+            >
+              Archive
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* Fill in a contact auto-created for an inbound text from an unknown number */}
+      {showCreateContact && selectedId && (
+        <CreateContactModal
+          conversationId={selectedId}
+          onClose={() => setShowCreateContact(false)}
+          onSaved={handleContactSaved}
+        />
+      )}
+
+      {/* Review what the thread says, then put it on the board */}
+      {showCreateJob && selectedId && (
+        <CreateJobModal
+          conversationId={selectedId}
+          onClose={() => setShowCreateJob(false)}
+          onCreated={handleJobCreated}
+        />
+      )}
+
+      {/* New conversation modal */}
+      {showNewConvModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/50"
+          onClick={() => setShowNewConvModal(false)}
+        >
+          <div
+            className="bg-white rounded-t-2xl sm:rounded-2xl w-full max-w-md max-h-[85vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-4 border-b border-slate-200">
+              <h3 className="text-lg font-semibold text-slate-900">Start conversation</h3>
+              <p className="text-sm text-slate-500 mt-1">Select a customer</p>
+              <input
+                type="text"
+                value={customerSearch}
+                onChange={(e) => setCustomerSearch(e.target.value)}
+                placeholder="Search by name, email, or phone…"
+                className="mt-3 w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+            </div>
+            <div className="flex-1 overflow-y-auto max-h-64">
+              {filteredCustomers.length === 0 ? (
+                <p className="p-4 text-slate-500 text-sm">No customers found</p>
+              ) : (
+                <ul className="divide-y divide-slate-200">
+                  {filteredCustomers.map((c) => {
+                    const name = c.lastName ? `${c.firstName} ${c.lastName}` : c.firstName;
+                    return (
+                      <li key={c.id}>
+                        <button
+                          type="button"
+                          onClick={() => handleSelectCustomer(c.id)}
+                          className="w-full text-left p-3 hover:bg-slate-50 transition-colors"
+                        >
+                          <span className="font-medium text-slate-900">{name}</span>
+                          {c.email && (
+                            <p className="text-xs text-slate-500 truncate">{c.email}</p>
+                          )}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+            <div className="p-4 border-t border-slate-200">
+              <button
+                type="button"
+                onClick={() => setShowNewConvModal(false)}
+                className="w-full px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function ChatPage() {
+  return (
+    <Suspense fallback={<ChatPageSkeleton />}>
+      <ChatPageContent />
+    </Suspense>
+  );
+}

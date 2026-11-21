@@ -1,0 +1,1095 @@
+import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/db";
+import { z } from "zod";
+import { requireStaffShop } from "@/lib/api-auth";
+import { sendBikeReadyInvoiceEmail, sendJobEmail, getTemplateForStage, sendBookingDeclinedEmail } from "@/lib/email";
+import { sendJobSms, getTemplateSlugForStage } from "@/lib/sms";
+import { syncCollectionJobService } from "@/lib/collection-fee";
+import { releaseStockForJob, takeStockForJob } from "@/lib/product-stock";
+import { getAppFeatures } from "@/lib/app-settings";
+import {
+  computeJobTotal,
+  computeJobTotals,
+  computeTotalPaid,
+  getJobPaymentSummary,
+} from "@/lib/job-payments";
+import { getEffectiveEmailUpdatesConsent, getEffectiveSmsConsent } from "@/lib/sms-consent";
+import { hasJobReadAccess, hasStaffJobAccess } from "@/lib/job-customer-access";
+import { getShopForHost } from "@/lib/shop";
+import { SIGNED_TTL, signBlobUrl } from "@/lib/blob-signing";
+import { mirrorJobStageToCustomerChat } from "@/lib/system-chat";
+import { resolveProfileBikeForJobBike } from "@/lib/resolve-profile-bike";
+import {
+  findBikeEnteringPartsHold,
+  notifyBikeWaitingOnParts,
+} from "@/lib/job-bike-notifications";
+import { normalizeJobCollectionWindowsForStorage } from "@/lib/normalize-job-collection-windows";
+import { withPrismaRetry } from "@/lib/prisma-retry";
+import { optionalTrimmedString } from "@/lib/zod-helpers";
+import { getJobQueueInfo } from "@/lib/job-queue-position";
+import { customerHasPushTokens, sendPushToCustomer } from "@/lib/push";
+import { publishJobEvent } from "@/lib/realtime/publish-job-event";
+import { scheduleCatalogLookup } from "@/lib/bike-catalog-lookup";
+import {
+  assertNoRepairHistory,
+  reconcileInstalledComponentsSafely,
+} from "@/lib/bike-installed-components";
+import { planJobBikeReplacement, RepairHistoryConflictError } from "@/lib/job-bike-replacement";
+import {
+  enrichJobBikesWithCatalogThumbnails,
+  matchCatalogFieldsForJobBike,
+} from "@/lib/bike-catalog-client";
+import { requestHost } from "@/lib/request-host";
+
+// Catalog lookups scheduled here keep running after the response
+// (LOOKUP_TIME_BUDGET_MS fits inside this).
+export const maxDuration = 300;
+
+const bikeSchema = z.object({
+  /** The job bike this row edits. Kept so edits update it in place (see job-bike-replacement.ts). */
+  id: z.string().optional().nullable(),
+  make: z.string().min(1),
+  model: optionalTrimmedString,
+  year: z.number().int().min(1980).max(2100).optional().nullable(),
+  nickname: z.string().optional().nullable(),
+  imageUrl: z.string().optional().nullable(),
+  bikeId: z.string().optional().nullable(),
+  bikeType: z.enum(["REGULAR", "E_BIKE"]).optional(),
+});
+
+const updateJobSchema = z.object({
+  stage: z.enum(["BOOKED_IN", "RECEIVED", "WORKING_ON", "WAITING_ON_CUSTOMER", "WAITING_ON_PARTS", "BIKE_READY", "COMPLETED", "CANCELLED"]).optional(),
+  /** Archive/unarchive a job. When true, sets archivedAt; when false, clears it. */
+  archived: z.boolean().optional(),
+  /** When false, skip customer email and SMS for this update (stage / pending rejection). Defaults to true if omitted. */
+  notifyCustomer: z.boolean().optional(),
+  /** When true, send stage notification even if one was already sent for this stage. */
+  resendNotification: z.boolean().optional(),
+  cancellationReason: z.string().min(1).optional(),
+  /** Optional customer-facing explanation. Empty means the customer sees only the
+   *  neutral cancelled state, never the internal reason. */
+  customerCancellationMessage: z.string().optional().nullable(),
+  bikeMake: z.string().min(1).optional(),
+  bikeModel: optionalTrimmedString,
+  bikes: z.array(bikeSchema).optional(),
+  /** Append a single bike to the job without touching existing JobBike workflow state. */
+  addBike: bikeSchema.optional(),
+  /** Remove one JobBike from the job without replacing the full bikes list. */
+  removeJobBikeId: z.string().min(1).optional(),
+  /** Update image on one JobBike row without replacing the full bikes list. */
+  updateJobBikeImageUrl: z
+    .object({
+      jobBikeId: z.string().min(1),
+      imageUrl: z.string().nullable(),
+    })
+    .optional(),
+  workingOnJobBikeId: z.string().optional().nullable(),
+  completeJobBikeId: z.string().optional(),
+  uncompleteJobBikeId: z.string().optional(),
+  waitForPartsJobBikeId: z.string().optional(),
+  unwaitForPartsJobBikeId: z.string().optional(),
+  /** Job-level stage move (board drag / stage picker): drop every bike's parts hold.
+   * Bike-level actions omit this so one bike's hold survives work on another. */
+  clearBikePartsHolds: z.boolean().optional(),
+  customerId: z.string().optional().nullable(),
+  mechanicId: z.string().optional().nullable(),
+  deliveryType: z.enum(["DROP_OFF_AT_SHOP", "COLLECTION_SERVICE"]).optional(),
+  dropOffDate: z.string().datetime().optional().nullable(),
+  pickupDate: z.string().datetime().optional().nullable(),
+  collectionAddress: z.string().optional().nullable(),
+  collectionWindowStart: z.string().optional().nullable(),
+  collectionWindowEnd: z.string().optional().nullable(),
+  collectionReturnWindowStart: z.string().optional().nullable(),
+  collectionReturnWindowEnd: z.string().optional().nullable(),
+  notes: z.string().optional().nullable(),
+  internalNotes: z.string().optional().nullable(),
+});
+
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const { id } = params;
+    const hostHeader =
+      requestHost(request.headers);
+    const shop = await getShopForHost(hostHeader);
+    if (!shop) {
+      return NextResponse.json({ error: "Shop not found" }, { status: 404 });
+    }
+
+    const job = await prisma.job.findFirst({
+      where: { id, shopId: shop.id },
+      include: {
+        customer: { include: { bikes: true } },
+        mechanic: { select: { id: true, fullName: true, imageUrl: true } },
+        jobBikes: { include: { bike: true }, orderBy: { sortOrder: "asc" } },
+        jobServices: { include: { service: true, jobBike: { select: { id: true, make: true, model: true, nickname: true } } } },
+        jobProducts: { include: { product: true, jobBike: { select: { id: true, make: true, model: true, nickname: true } } } },
+        payments: { select: { amount: true, status: true, stripePaymentIntentId: true, paymentMethod: true } },
+      },
+    });
+    if (!job) {
+      return NextResponse.json({ error: "Job not found" }, { status: 404 });
+    }
+
+    const isStaff = await hasStaffJobAccess(request, shop.id);
+    if (!isStaff && !(await hasJobReadAccess(request, shop.id, id, job.customerId))) {
+      return NextResponse.json(
+        {
+          error: "access_required",
+          message:
+            "Use the full tracking link from your booking confirmation email or SMS, or ask the shop for a new link.",
+        },
+        { status: 403 }
+      );
+    }
+
+    const subtotal = computeJobTotal(job);
+    const totalPaid = computeTotalPaid(job.payments);
+    const paymentSummary = getJobPaymentSummary({
+      currentStatus: job.paymentStatus,
+      subtotal,
+      totalPaid,
+    });
+    const customer =
+      job.customer
+        ? {
+            ...job.customer,
+            emailUpdatesConsent: getEffectiveEmailUpdatesConsent(job.customer),
+            smsConsent: getEffectiveSmsConsent(job.customer),
+          }
+        : null;
+    /**
+     * Customer-link readers get the job minus staff-only fields. The cancellation
+     * reason is an internal record; customerCancellationMessage is the half meant
+     * for them.
+     */
+    const jobWithoutPayments = isStaff
+      ? { ...job, payments: undefined }
+      : {
+          ...job,
+          payments: undefined,
+          cancellationReason: undefined,
+          internalNotes: undefined,
+        };
+    const queueInfo = await getJobQueueInfo(prisma, shop.id, job);
+    const enrichedJobBikes = await enrichJobBikesWithCatalogThumbnails(job.jobBikes ?? []);
+    // A tracking-link reader has no session for /api/blob, so their bike
+    // photos come back as short-lived signed URLs.
+    const image = <T extends string | null | undefined>(url: T): T =>
+      (url && !isStaff ? signBlobUrl(url, SIGNED_TTL.trackingPage) : url) as T;
+    const res = NextResponse.json({
+      ...jobWithoutPayments,
+      jobBikes: enrichedJobBikes.map((b) => ({
+        ...b,
+        imageUrl: image(b.imageUrl),
+        bike: b.bike ? { ...b.bike, imageUrl: image(b.bike.imageUrl) } : b.bike,
+      })),
+      customer: customer
+        ? {
+            ...customer,
+            imageUrl: image(customer.imageUrl),
+            bikes: customer.bikes.map((b) => ({ ...b, imageUrl: image(b.imageUrl) })),
+          }
+        : customer,
+      paymentStatus: paymentSummary.paymentStatus,
+      totalPaid,
+      totals: computeJobTotals(job),
+      queueInfo,
+    });
+    res.headers.set("Cache-Control", "no-store");
+    return res;
+  } catch (error) {
+    console.error("GET /api/jobs/[id] error:", error);
+    return NextResponse.json(
+      { error: "Failed to fetch job" },
+      { status: 500 }
+    );
+  }
+}
+
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  const auth = await requireStaffShop(request);
+  if (!auth.ok) return auth.response;
+  const shop = auth.shop;
+
+  try {
+    const features = await getAppFeatures(shop.id);
+    const { id } = params;
+    const body = await request.json();
+    const data = updateJobSchema.parse(body);
+
+    if (data.deliveryType === "COLLECTION_SERVICE" && !features.collectionServiceEnabled) {
+      return NextResponse.json(
+        { error: "Collection service is currently disabled." },
+        { status: 400 }
+      );
+    }
+
+    if (data.stage === "CANCELLED" && (!data.cancellationReason || data.cancellationReason.trim() === "")) {
+      return NextResponse.json(
+        { error: "Cancellation reason is required when cancelling a job" },
+        { status: 400 }
+      );
+    }
+
+    const existingJob = await prisma.job.findFirst({
+      where: { id, shopId: shop.id },
+      include: {
+        customer: true,
+        jobBikes: {
+          select: {
+            id: true,
+            completedAt: true,
+            waitingOnPartsAt: true,
+            bikeId: true,
+            make: true,
+            model: true,
+            year: true,
+            sortOrder: true,
+          },
+        },
+      },
+    });
+    if (!existingJob) {
+      return NextResponse.json({ error: "Job not found" }, { status: 404 });
+    }
+
+    if (data.removeJobBikeId !== undefined) {
+      const target = (existingJob.jobBikes ?? []).find((b) => b.id === data.removeJobBikeId);
+      if (!target) {
+        return NextResponse.json({ error: "Bike not found on this job" }, { status: 400 });
+      }
+    }
+
+    // A job can only be assigned to this shop's customer.
+    if (data.customerId) {
+      const customer = await prisma.customer.findFirst({
+        where: { id: data.customerId, shopId: shop.id },
+        select: { id: true },
+      });
+      if (!customer) {
+        return NextResponse.json({ error: "Customer not found" }, { status: 400 });
+      }
+    }
+
+    if (data.mechanicId) {
+      const mechanic = await prisma.mechanic.findFirst({
+        where: { id: data.mechanicId, shopId: shop.id },
+        select: { id: true },
+      });
+      if (!mechanic) {
+        return NextResponse.json(
+          { error: "Mechanic not found" },
+          { status: 400 }
+        );
+      }
+    }
+
+    /**
+     * A single bike going on hold must not drag the whole card into Waiting on parts
+     * while another bike is still workable — the column follows the active work.
+     */
+    if (data.stage === "WAITING_ON_PARTS" && data.waitForPartsJobBikeId) {
+      const stillWorkable = (existingJob.jobBikes ?? []).some(
+        (b) =>
+          b.id !== data.waitForPartsJobBikeId &&
+          !b.completedAt &&
+          !b.waitingOnPartsAt
+      );
+      if (stillWorkable) data.stage = undefined;
+    }
+
+    const stageChanged =
+      data.stage !== undefined && data.stage !== existingJob.stage;
+
+    /**
+     * Bike status drives bike-specific customer notifications; job stage drives board
+     * behavior. Resolved before the write from the same conditions the transaction uses
+     * to stamp the hold, and it replaces the job-level Waiting on parts notification so
+     * the last workable bike going on hold does not notify twice.
+     */
+    const bikeEnteringPartsHoldId = findBikeEnteringPartsHold({
+      existingJob,
+      data,
+    });
+    const bikeNotificationReplacesStageNotification =
+      bikeEnteringPartsHoldId !== null && data.stage === "WAITING_ON_PARTS";
+
+    const updateData: Record<string, unknown> = {};
+    if (data.stage !== undefined) updateData.stage = data.stage;
+    if (data.archived !== undefined) updateData.archivedAt = data.archived ? new Date() : null;
+    if (data.cancellationReason !== undefined) updateData.cancellationReason = data.cancellationReason;
+    if (data.customerCancellationMessage !== undefined) {
+      const customerMsg = data.customerCancellationMessage?.trim();
+      updateData.customerCancellationMessage = customerMsg ? customerMsg : null;
+    }
+    if (data.bikeMake !== undefined) updateData.bikeMake = data.bikeMake;
+    if (data.bikeModel !== undefined) updateData.bikeModel = data.bikeModel ?? "";
+    if (data.customerId !== undefined) updateData.customerId = data.customerId;
+    if (data.mechanicId !== undefined) updateData.mechanicId = data.mechanicId;
+    if (data.deliveryType !== undefined) updateData.deliveryType = data.deliveryType;
+    if (data.dropOffDate !== undefined) updateData.dropOffDate = data.dropOffDate ? new Date(data.dropOffDate) : null;
+    if (data.pickupDate !== undefined) updateData.pickupDate = data.pickupDate ? new Date(data.pickupDate) : null;
+    if (data.collectionAddress !== undefined) updateData.collectionAddress = data.collectionAddress;
+    const hasWindowUpdate =
+      data.collectionWindowStart !== undefined ||
+      data.collectionWindowEnd !== undefined ||
+      data.collectionReturnWindowStart !== undefined ||
+      data.collectionReturnWindowEnd !== undefined;
+
+    if (hasWindowUpdate) {
+      const refDrop =
+        data.dropOffDate !== undefined
+          ? data.dropOffDate
+            ? new Date(data.dropOffDate)
+            : null
+          : existingJob.dropOffDate;
+      const refPickup =
+        data.pickupDate !== undefined
+          ? data.pickupDate
+            ? new Date(data.pickupDate)
+            : null
+          : existingJob.pickupDate;
+
+      const normalized = await normalizeJobCollectionWindowsForStorage(
+        shop.id,
+        {
+          collectionWindowStart: data.collectionWindowStart,
+          collectionWindowEnd: data.collectionWindowEnd,
+          collectionReturnWindowStart: data.collectionReturnWindowStart,
+          collectionReturnWindowEnd: data.collectionReturnWindowEnd,
+        },
+        { dropOffDate: refDrop, pickupDate: refPickup }
+      );
+
+      if (data.collectionWindowStart !== undefined) {
+        updateData.collectionWindowStart = normalized.collectionWindowStart;
+      }
+      if (data.collectionWindowEnd !== undefined) {
+        updateData.collectionWindowEnd = normalized.collectionWindowEnd;
+      }
+      if (data.collectionReturnWindowStart !== undefined) {
+        updateData.collectionReturnWindowStart = normalized.collectionReturnWindowStart;
+      }
+      if (data.collectionReturnWindowEnd !== undefined) {
+        updateData.collectionReturnWindowEnd = normalized.collectionReturnWindowEnd;
+      }
+    }
+    if (data.notes !== undefined) updateData.notes = data.notes;
+    if (data.internalNotes !== undefined) updateData.internalNotes = data.internalNotes;
+    if (data.workingOnJobBikeId !== undefined) updateData.workingOnJobBikeId = data.workingOnJobBikeId;
+
+    /** When moving to Working on, pick the only open bike automatically; multiple bikes need an explicit tap in the job modal. */
+    let autoWorkingOnJobBikeId: string | null = null;
+    if (
+      data.stage === "WORKING_ON" &&
+      data.workingOnJobBikeId === undefined
+    ) {
+      const incomplete = (existingJob.jobBikes ?? []).filter((b) => !b.completedAt);
+      if (incomplete.length === 1) {
+        autoWorkingOnJobBikeId = incomplete[0].id;
+        updateData.workingOnJobBikeId = incomplete[0].id;
+      }
+    }
+
+    /** Single-bike jobs: marking Bike Ready also marks that bike Done. */
+    let autoCompleteJobBikeId: string | null = null;
+    if (
+      stageChanged &&
+      data.stage === "BIKE_READY" &&
+      !data.completeJobBikeId
+    ) {
+      const bikes = existingJob.jobBikes ?? [];
+      if (bikes.length === 1 && !bikes[0].completedAt) {
+        autoCompleteJobBikeId = bikes[0].id;
+      }
+    }
+
+    const workingOnBikeIdToClearWaiting: string | null =
+      data.workingOnJobBikeId !== undefined
+        ? data.workingOnJobBikeId
+        : autoWorkingOnJobBikeId;
+    const jobBikeIdToComplete = data.completeJobBikeId ?? autoCompleteJobBikeId;
+
+    if (stageChanged) {
+      updateData.completedAt = data.stage === "COMPLETED" ? new Date() : null;
+      updateData.columnSortOrder = null;
+      if (data.stage === "RECEIVED") {
+        updateData.receivedAt = new Date();
+      }
+      // Reopening a completed job brings it back to the active board and payment flows.
+      if (
+        data.archived === undefined &&
+        existingJob.stage === "COMPLETED" &&
+        data.stage &&
+        data.stage !== "COMPLETED" &&
+        data.stage !== "CANCELLED"
+      ) {
+        updateData.archivedAt = null;
+      }
+      // Uncancelling clears the cancellation and puts the job back on the board.
+      if (
+        existingJob.stage === "CANCELLED" &&
+        data.stage &&
+        data.stage !== "CANCELLED"
+      ) {
+        updateData.cancellationReason = null;
+        updateData.customerCancellationMessage = null;
+        if (data.archived === undefined) {
+          updateData.archivedAt = null;
+        }
+      }
+    }
+
+    if (!stageChanged && data.stage !== undefined) {
+      delete updateData.stage;
+    }
+
+    if (data.bikes !== undefined) {
+      const bikes =
+        data.bikes.length > 0
+          ? data.bikes
+          : [{ make: existingJob.bikeMake, model: existingJob.bikeModel }];
+      updateData.bikeMake = bikes.length === 1 ? bikes[0].make : "Multiple";
+      updateData.bikeModel =
+        bikes.length === 1 ? (bikes[0].model ?? "") : `${bikes.length} bikes`;
+    }
+
+    if (data.addBike !== undefined) {
+      const existingCount = existingJob.jobBikes?.length ?? 0;
+      const totalCount = existingCount + 1;
+      if (totalCount === 1) {
+        updateData.bikeMake = data.addBike.make;
+        updateData.bikeModel = data.addBike.model ?? "";
+      } else {
+        updateData.bikeMake = "Multiple";
+        updateData.bikeModel = `${totalCount} bikes`;
+      }
+    }
+
+    if (data.removeJobBikeId !== undefined) {
+      const remaining = (existingJob.jobBikes ?? []).filter(
+        (b) => b.id !== data.removeJobBikeId
+      );
+      if (remaining.length === 0) {
+        updateData.bikeMake = "—";
+        updateData.bikeModel = "";
+      } else if (remaining.length === 1) {
+        updateData.bikeMake = remaining[0].make;
+        updateData.bikeModel = remaining[0].model ?? "";
+      } else {
+        updateData.bikeMake = "Multiple";
+        updateData.bikeModel = `${remaining.length} bikes`;
+      }
+    }
+
+    // Stage-only PATCHs must not write null to non-nullable Job.bikeModel.
+    if ("bikeModel" in updateData && updateData.bikeModel == null) {
+      updateData.bikeModel = "";
+    }
+
+    const job = await withPrismaRetry(() =>
+      prisma.$transaction(async (tx) => {
+      if (Object.keys(updateData).length > 0) {
+        await tx.job.update({
+          where: { id, shopId: shop.id },
+          data: updateData,
+        });
+      }
+      if (workingOnBikeIdToClearWaiting) {
+        await tx.jobBike.updateMany({
+          where: { id: workingOnBikeIdToClearWaiting, jobId: id, shopId: shop.id },
+          data: { waitingOnPartsAt: null },
+        });
+      }
+      if (data.bikes !== undefined) {
+        const bikes =
+          data.bikes.length > 0
+            ? data.bikes
+            : [{ make: existingJob.bikeMake, model: existingJob.bikeModel }];
+        const existingBikes = existingJob.jobBikes ?? [];
+
+        // Update matched bikes in place so each keeps its id, done state,
+        // services, part notes and repair history; create the rest; remove
+        // only bikes nobody sent — never one with recorded history.
+        const plan = planJobBikeReplacement(existingBikes, bikes);
+        await assertNoRepairHistory(
+          tx,
+          { jobBikeId: { in: plan.removedIds } },
+          "Parts were recorded on the customer’s bike from a bike you’re removing from this job. Un-mark that bike as done (or reopen the job) first, so its recorded parts are withdrawn deliberately."
+        );
+
+        // Determine the effective customerId (may be changing in this same PATCH).
+        const effectiveCustomerId =
+          data.customerId !== undefined ? data.customerId : existingJob.customerId;
+
+        // For each bike without a bikeId, find or create a Bike record on the customer's profile.
+        // One profile bike per bike on the job: two same-make/model bikes are two bikes.
+        const existingById = new Map(existingBikes.map((b) => [b.id, b]));
+        const claimedBikeIds = new Set<string>(
+          plan.matches
+            .map((m) => (m ? existingById.get(m)?.bikeId : null))
+            .filter((b): b is string => Boolean(b))
+        );
+        const resolvedBikes: Array<(typeof bikes)[number] & { bikeId: string | null }> = [];
+        for (const [i, b] of bikes.entries()) {
+          const matched = plan.matches[i] ? existingById.get(plan.matches[i]!) : undefined;
+          let bikeId: string | null =
+            ("bikeId" in b ? b.bikeId : null) ?? matched?.bikeId ?? null;
+          if (!bikeId && effectiveCustomerId) {
+            bikeId = await resolveProfileBikeForJobBike({
+              tx,
+              shopId: shop.id,
+              customerId: effectiveCustomerId,
+              bike: b,
+              claimedBikeIds,
+            });
+          }
+          if (bikeId) claimedBikeIds.add(bikeId);
+          resolvedBikes.push({ ...b, bikeId });
+        }
+
+        if (plan.removedIds.length > 0) {
+          await tx.jobBike.deleteMany({
+            where: { id: { in: plan.removedIds }, jobId: id, shopId: shop.id },
+          });
+        }
+
+        for (const [i, b] of resolvedBikes.entries()) {
+          const matched = plan.matches[i] ? existingById.get(plan.matches[i]!) : undefined;
+          // A bike row that doesn't send its year keeps it (older clients omit it).
+          const year = "year" in b && b.year !== undefined ? b.year ?? null : matched?.year ?? null;
+          const identityChanged =
+            !matched ||
+            matched.make !== b.make ||
+            (matched.model ?? null) !== (b.model ?? null) ||
+            (matched.year ?? null) !== year;
+          const catalogMatch = identityChanged
+            ? await matchCatalogFieldsForJobBike(b.make, b.model, year)
+            : null;
+          const fields = {
+            make: b.make,
+            model: b.model,
+            year,
+            nickname: ("nickname" in b ? b.nickname : null) ?? null,
+            imageUrl: ("imageUrl" in b ? b.imageUrl : null) ?? null,
+            bikeId: b.bikeId,
+            bikeType: ("bikeType" in b ? b.bikeType : null) ?? null,
+            sortOrder: i,
+            // A re-described bike gets a fresh catalog match and lookup.
+            ...(identityChanged
+              ? {
+                  catalogBikeId: catalogMatch?.catalogBikeId ?? null,
+                  catalogMatchedAt: catalogMatch?.catalogMatchedAt ?? null,
+                  catalogLookupAt: null,
+                }
+              : {}),
+          };
+          if (matched) {
+            await tx.jobBike.update({ where: { id: matched.id }, data: fields });
+          } else {
+            await tx.jobBike.create({ data: { ...fields, shopId: shop.id, jobId: id } });
+          }
+        }
+      }
+      if (data.addBike !== undefined) {
+        const b = data.addBike;
+        const effectiveCustomerId =
+          data.customerId !== undefined ? data.customerId : existingJob.customerId;
+        let bikeId: string | null = b.bikeId ?? null;
+        if (!bikeId && effectiveCustomerId) {
+          // Adding a second same-make/model bike must not re-claim the first one's profile row.
+          const claimedBikeIds = new Set(
+            (existingJob.jobBikes ?? [])
+              .map((jb) => jb.bikeId)
+              .filter((id): id is string => Boolean(id))
+          );
+          bikeId = await resolveProfileBikeForJobBike({
+            tx,
+            shopId: shop.id,
+            customerId: effectiveCustomerId,
+            bike: b,
+            claimedBikeIds,
+          });
+        }
+        const catalogMatch = await matchCatalogFieldsForJobBike(b.make, b.model, b.year ?? null);
+        const nextSortOrder = (existingJob.jobBikes?.length ?? 0);
+        await tx.jobBike.create({
+          data: {
+            shopId: shop.id,
+            jobId: id,
+            make: b.make,
+            model: b.model,
+            year: b.year ?? null,
+            nickname: b.nickname ?? null,
+            imageUrl: b.imageUrl ?? null,
+            bikeId,
+            bikeType: b.bikeType ?? null,
+            sortOrder: nextSortOrder,
+            catalogBikeId: catalogMatch?.catalogBikeId ?? null,
+            catalogMatchedAt: catalogMatch?.catalogMatchedAt ?? null,
+          },
+        });
+      }
+
+      if (data.removeJobBikeId !== undefined) {
+        await assertNoRepairHistory(
+          tx,
+          { jobBikeId: data.removeJobBikeId },
+          "Parts were recorded on the customer’s bike from this bike. Un-mark it as done (or reopen the job) first, so its recorded parts are withdrawn deliberately."
+        );
+        await tx.jobBike.deleteMany({
+          where: { id: data.removeJobBikeId, jobId: id, shopId: shop.id },
+        });
+      }
+
+      if (jobBikeIdToComplete) {
+        await tx.jobBike.update({
+          where: { id: jobBikeIdToComplete, jobId: id },
+          data: { completedAt: new Date(), waitingOnPartsAt: null },
+        });
+        if (existingJob.workingOnJobBikeId === jobBikeIdToComplete) {
+          await tx.job.update({ where: { id }, data: { workingOnJobBikeId: null } });
+        }
+      }
+      if (data.uncompleteJobBikeId) {
+        await tx.jobBike.update({
+          where: { id: data.uncompleteJobBikeId, jobId: id },
+          data: { completedAt: null },
+        });
+      }
+      if (data.waitForPartsJobBikeId) {
+        await tx.jobBike.update({
+          where: { id: data.waitForPartsJobBikeId, jobId: id, shopId: shop.id },
+          data: { waitingOnPartsAt: new Date() },
+        });
+        if (existingJob.workingOnJobBikeId === data.waitForPartsJobBikeId) {
+          await tx.job.update({ where: { id, shopId: shop.id }, data: { workingOnJobBikeId: null } });
+        }
+      }
+      if (data.unwaitForPartsJobBikeId) {
+        await tx.jobBike.update({
+          where: { id: data.unwaitForPartsJobBikeId, jobId: id, shopId: shop.id },
+          data: { waitingOnPartsAt: null },
+        });
+      }
+      if (data.updateJobBikeImageUrl) {
+        const { jobBikeId, imageUrl } = data.updateJobBikeImageUrl;
+        const targetJobBike = await tx.jobBike.findFirst({
+          where: { id: jobBikeId, jobId: id, shopId: shop.id },
+          select: { id: true, bikeId: true },
+        });
+        if (!targetJobBike) {
+          throw new Error("Job bike not found");
+        }
+        await tx.jobBike.update({
+          where: { id: jobBikeId },
+          data: { imageUrl },
+        });
+        if (targetJobBike.bikeId) {
+          await tx.bike.update({
+            where: { id: targetJobBike.bikeId },
+            data: { imageUrl },
+          });
+        }
+      }
+      /** Only when the job actually moves into this column — not idempotent WOP PATCHs (would re-set waiting after resume / unwait). */
+      if (
+        stageChanged &&
+        data.stage === "WAITING_ON_PARTS" &&
+        existingJob.stage !== "WAITING_ON_PARTS" &&
+        existingJob.workingOnJobBikeId &&
+        !data.unwaitForPartsJobBikeId
+      ) {
+        await tx.jobBike.update({
+          where: { id: existingJob.workingOnJobBikeId, jobId: id, shopId: shop.id },
+          data: { waitingOnPartsAt: new Date() },
+        });
+        await tx.job.update({ where: { id, shopId: shop.id }, data: { workingOnJobBikeId: null } });
+      }
+      /** Clear the active-bike pointer whenever the job leaves WORKING_ON (WAITING_ON_PARTS already handles its own branch above). */
+      if (
+        stageChanged &&
+        data.stage !== undefined &&
+        data.stage !== "WORKING_ON" &&
+        data.stage !== "WAITING_ON_PARTS" &&
+        existingJob.workingOnJobBikeId
+      ) {
+        await tx.job.update({ where: { id, shopId: shop.id }, data: { workingOnJobBikeId: null } });
+      }
+      /**
+       * Job-level moves out of Waiting on parts drop every bike's hold. Bike-level actions
+       * never sweep: starting or completing one bike must leave another bike's hold intact.
+       */
+      if (data.clearBikePartsHolds && data.stage !== "WAITING_ON_PARTS") {
+        await tx.jobBike.updateMany({
+          where: {
+            shopId: shop.id,
+            jobId: id,
+            completedAt: null,
+            waitingOnPartsAt: { not: null },
+          },
+          data: { waitingOnPartsAt: null },
+        });
+      }
+      // A cancelled job sold nothing: its products go back on the shelf, and
+      // come off again if the job is restored.
+      if (stageChanged && data.stage === "CANCELLED") {
+        await releaseStockForJob(tx, id);
+      } else if (stageChanged && existingJob.stage === "CANCELLED") {
+        await takeStockForJob(tx, id);
+      }
+      const nextDeliveryType =
+        data.deliveryType !== undefined ? data.deliveryType : existingJob.deliveryType;
+      if (
+        features.collectionServiceEnabled &&
+        (existingJob.deliveryType === "COLLECTION_SERVICE" ||
+          nextDeliveryType === "COLLECTION_SERVICE")
+      ) {
+        await syncCollectionJobService(tx, id);
+      }
+      const result = await tx.job.findUnique({
+        where: { id, shopId: shop.id },
+        include: {
+          customer: { include: { bikes: true } },
+          mechanic: { select: { id: true, fullName: true, imageUrl: true } },
+          jobBikes: { include: { bike: true }, orderBy: { sortOrder: "asc" } },
+          jobServices: { include: { service: true, jobBike: { select: { id: true, make: true, model: true, nickname: true } } } },
+          jobProducts: { include: { product: true, jobBike: { select: { id: true, make: true, model: true, nickname: true } } } },
+          payments: { select: { amount: true, status: true, stripePaymentIntentId: true, paymentMethod: true } },
+        },
+      });
+      if (!result) throw new Error("Job not found");
+      return result;
+    })
+    );
+
+    // Send booking declined email when rejecting a pending-approval widget booking
+    if (
+      data.stage === "CANCELLED" &&
+      existingJob?.stage === "PENDING_APPROVAL" &&
+      job.customer?.email &&
+      getEffectiveEmailUpdatesConsent(job.customer) &&
+      features.notifyCustomerEnabled &&
+      data.notifyCustomer !== false
+    ) {
+      const customerMessage = (
+        data.customerCancellationMessage ??
+        job.customerCancellationMessage ??
+        ""
+      ).trim();
+      sendBookingDeclinedEmail(job.customer.email, {
+        shopId: job.shopId,
+        bikeMake: job.bikeMake,
+        bikeModel: job.bikeModel,
+        customerMessage:
+          customerMessage || "We're unable to accommodate this booking at this time.",
+        customer: job.customer,
+      }).catch((e) => console.error("[Reject] Declined email failed:", e));
+    }
+
+    // Restoring a cancelled job re-enters an earlier stage the customer was already
+    // told about — the templated email/SMS would read as a fresh announcement.
+    const restoredFromCancelled =
+      stageChanged && existingJob.stage === "CANCELLED" && data.stage !== "CANCELLED";
+
+    const stageNotificationSlug =
+      stageChanged &&
+      data.stage &&
+      data.stage !== "CANCELLED" &&
+      !restoredFromCancelled &&
+      data.stage !== "COMPLETED" &&
+      !bikeNotificationReplacesStageNotification &&
+      existingJob
+        ? getTemplateSlugForStage(data.stage, existingJob.deliveryType)
+        : null;
+
+    const shopSmsContext = { name: shop.name, subdomain: shop.subdomain };
+    const shouldMirrorChat =
+      features.chatEnabled && stageNotificationSlug && job.customer?.id;
+    const shouldNotifyCustomer =
+      features.notifyCustomerEnabled &&
+      data.notifyCustomer !== false &&
+      stageChanged &&
+      data.stage &&
+      data.stage !== "CANCELLED" &&
+      data.stage !== "COMPLETED" &&
+      !restoredFromCancelled &&
+      !bikeNotificationReplacesStageNotification &&
+      existingJob;
+
+    // Bike-level hold: notify about that bike by name whether or not the job stage moved.
+    if (bikeEnteringPartsHoldId) {
+      await notifyBikeWaitingOnParts({
+        job,
+        jobBikeId: bikeEnteringPartsHoldId,
+        shopHint: shopSmsContext,
+        features,
+        notifyCustomer: data.notifyCustomer !== false,
+        resend: Boolean(data.resendNotification),
+      });
+    }
+
+    // Chat mirror is in-app history (not SMS/email); run before the response so
+    // serverless does not drop the write. SMS/email run after the response.
+    if (shouldMirrorChat && job.customer?.id) {
+      try {
+        await mirrorJobStageToCustomerChat({
+          shopId: job.shopId,
+          customerId: job.customer.id,
+          job,
+          smsTemplateSlug: stageNotificationSlug!,
+          force: Boolean(data.resendNotification),
+          shopHint: shopSmsContext,
+        });
+      } catch (e) {
+        console.error("[PATCH job] stage chat mirror failed:", {
+          jobId: id,
+          customerId: job.customer.id,
+          templateSlug: stageNotificationSlug,
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+
+    if (shouldNotifyCustomer) {
+      void (async () => {
+        try {
+          const templateSlug = data.stage === "BIKE_READY"
+            ? "bike_ready_invoice"
+            : getTemplateForStage(data.stage!, existingJob.deliveryType);
+          const smsTemplateSlug =
+            stageNotificationSlug ??
+            getTemplateSlugForStage(data.stage!, existingJob.deliveryType);
+          const customerEmail = getEffectiveEmailUpdatesConsent(job.customer)
+            ? job.customer?.email
+            : null;
+          const customerPhone = job.customer?.phone;
+          // App users get push instead of SMS (token = installed + registered).
+          const preferAppPush =
+            Boolean(job.customer?.id) &&
+            (await customerHasPushTokens(job.shopId, job.customer!.id));
+          const canSendSms =
+            !preferAppPush && getEffectiveSmsConsent(job.customer);
+
+          const emailPromise =
+            customerEmail && templateSlug
+              ? prisma.jobEmail.findFirst({
+                  where: { shopId: job.shopId, jobId: id, templateSlug },
+                })
+              : Promise.resolve(null);
+          const smsPromise =
+            canSendSms && customerPhone && smsTemplateSlug
+              ? prisma.jobSms.findFirst({
+                  where: {
+                    shopId: job.shopId,
+                    jobId: id,
+                    templateSlug: smsTemplateSlug,
+                  },
+                })
+              : Promise.resolve(null);
+          const [emailAlreadySent, smsAlreadySent] = await Promise.all([
+            emailPromise,
+            smsPromise,
+          ]);
+
+          if (
+            customerEmail &&
+            templateSlug &&
+            (!emailAlreadySent || data.resendNotification)
+          ) {
+            if (data.stage === "BIKE_READY") {
+              const totalPaid = computeTotalPaid(job.payments);
+              sendBikeReadyInvoiceEmail(job, totalPaid).catch(console.error);
+            } else {
+              sendJobEmail(templateSlug, customerEmail, job).catch(console.error);
+            }
+          }
+
+          if (
+            canSendSms &&
+            customerPhone &&
+            smsTemplateSlug &&
+            (!smsAlreadySent || data.resendNotification)
+          ) {
+            const result = await sendJobSms(
+              smsTemplateSlug,
+              customerPhone,
+              job,
+              shopSmsContext
+            );
+            if (!result.ok) {
+              console.warn("[PATCH job] SMS send failed:", {
+                jobId: id,
+                error: result.error,
+              });
+            }
+          }
+        } catch (e) {
+          console.error("[PATCH job] stage notification dedup/send failed:", e);
+        }
+      })();
+    }
+
+    // App push keeps My Repairs fresh even when email/SMS are skipped (e.g. cancelled).
+    if (
+      stageChanged &&
+      data.stage &&
+      job.customer?.id &&
+      features.notifyCustomerEnabled &&
+      data.notifyCustomer !== false &&
+      !bikeNotificationReplacesStageNotification
+    ) {
+      const stageLabels: Record<string, string> = {
+        PENDING_APPROVAL: "Pending approval",
+        BOOKED_IN: "Booked in",
+        RECEIVED: "Received",
+        WORKING_ON: "In progress",
+        WAITING_ON_CUSTOMER: "Waiting on you",
+        WAITING_ON_PARTS: "Waiting on parts",
+        BIKE_READY: "Ready for pickup",
+        COMPLETED: "Completed",
+        CANCELLED: "Cancelled",
+      };
+      const stageLabel = stageLabels[data.stage] ?? data.stage;
+      void sendPushToCustomer(job.shopId, job.customer.id, {
+        title: shop.name,
+        body: `Your repair status: ${stageLabel}`,
+        data: { type: "job_update", jobId: id },
+      }).catch((e) =>
+        console.error("[PATCH job] customer push failed:", {
+          jobId: id,
+          error: e instanceof Error ? e.message : String(e),
+        })
+      );
+    }
+
+    // A pending widget booking leaving PENDING_APPROVAL for anything other than
+    // CANCELLED is the approval itself; everything else is a plain stage move.
+    const approvalReceived =
+      stageChanged && existingJob.stage === "PENDING_APPROVAL" && data.stage !== "CANCELLED";
+    await publishJobEvent(
+      approvalReceived
+        ? "job:approval_received"
+        : stageChanged
+          ? "job:status_changed"
+          : "job:updated",
+      { jobId: job.id, shopId: shop.id }
+    );
+
+    // Parts a mechanic confirmed installed reach the customer's bike record
+    // only once the work is done — and leave it again if the job is cancelled
+    // or the bike is un-marked done.
+    if (
+      stageChanged ||
+      jobBikeIdToComplete ||
+      data.uncompleteJobBikeId ||
+      data.bikes !== undefined ||
+      data.removeJobBikeId !== undefined
+    ) {
+      await reconcileInstalledComponentsSafely(job.id);
+    }
+
+    if (data.bikes !== undefined || data.addBike !== undefined) {
+      // New bike rows got a quick catalog match above; the web search for any
+      // the catalog doesn't know yet runs after the response.
+      scheduleCatalogLookup(
+        (job.jobBikes ?? []).filter((b) => b.catalogLookupAt == null).map((b) => b.id)
+      );
+    }
+
+    const subtotal = computeJobTotal(job);
+    const totalPaid = computeTotalPaid(job.payments);
+    const paymentSummary = getJobPaymentSummary({
+      currentStatus: job.paymentStatus,
+      subtotal,
+      totalPaid,
+    });
+    const customer =
+      job.customer
+        ? {
+            ...job.customer,
+            emailUpdatesConsent: getEffectiveEmailUpdatesConsent(job.customer),
+            smsConsent: getEffectiveSmsConsent(job.customer),
+          }
+        : null;
+    const jobWithoutPayments = { ...job, payments: undefined };
+    const queueInfo = await getJobQueueInfo(prisma, shop.id, job);
+    const enrichedJobBikes = await enrichJobBikesWithCatalogThumbnails(job.jobBikes ?? []);
+    const res = NextResponse.json({
+      ...jobWithoutPayments,
+      jobBikes: enrichedJobBikes,
+      customer,
+      paymentStatus: paymentSummary.paymentStatus,
+      totalPaid,
+      totals: computeJobTotals(job),
+      queueInfo,
+    });
+    res.headers.set("Cache-Control", "no-store");
+    return res;
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json({ error: error.flatten() }, { status: 400 });
+    }
+    if (error instanceof RepairHistoryConflictError) {
+      return NextResponse.json({ error: error.message, code: "repair_history" }, { status: 409 });
+    }
+    console.error("PATCH /api/jobs/[id] error:", error);
+    return NextResponse.json(
+      { error: "Failed to update job" },
+      { status: 500 }
+    );
+  }
+}
+
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  const auth = await requireStaffShop(request);
+  if (!auth.ok) return auth.response;
+
+  try {
+    const { id } = params;
+
+    // Only this shop's job; another shop's id is simply "not found".
+    const existingJob = await prisma.job.findFirst({ where: { id, shopId: auth.shopId } });
+    if (!existingJob) {
+      return NextResponse.json({ error: "Job not found" }, { status: 404 });
+    }
+
+    // Deleting a job that recorded parts on a customer's bike would leave
+    // history pointing at nothing. Cancel it (which withdraws them) or
+    // archive it (which keeps them) instead.
+    await prisma.$transaction(async (tx) => {
+      await assertNoRepairHistory(
+        tx,
+        { jobId: id },
+        "This job recorded parts on a customer’s bike. Cancel the job first to withdraw them from the bike’s history, or archive it to keep them."
+      );
+      await releaseStockForJob(tx, id);
+      await tx.job.delete({ where: { id } });
+    });
+
+    await publishJobEvent("job:deleted", {
+      jobId: id,
+      shopId: existingJob.shopId,
+    });
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    if (error instanceof RepairHistoryConflictError) {
+      return NextResponse.json({ error: error.message, code: "repair_history" }, { status: 409 });
+    }
+    console.error("DELETE /api/jobs/[id] error:", error);
+    return NextResponse.json(
+      { error: "Failed to delete job" },
+      { status: 500 }
+    );
+  }
+}

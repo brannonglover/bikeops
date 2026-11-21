@@ -1,0 +1,48 @@
+import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
+import { prisma } from "@/lib/db";
+import { getCustomerFromSession } from "@/lib/chat-session";
+import { findOrCreateGeneralConversation } from "@/lib/conversation";
+import { isChatEnabled } from "@/lib/app-settings";
+import { requireCurrentShop } from "@/lib/shop";
+
+export const dynamic = "force-dynamic";
+
+const bodySchema = z.object({
+  active: z.boolean(),
+});
+
+/**
+ * Customer-only: heartbeat while composing so staff can show a typing indicator.
+ */
+export async function POST(request: NextRequest) {
+  const shop = await requireCurrentShop();
+  if (!(await isChatEnabled(shop.id))) {
+    return NextResponse.json({ error: "Chat is disabled" }, { status: 404 });
+  }
+  const customerId = await getCustomerFromSession();
+  if (!customerId) {
+    return NextResponse.json({ error: "Not signed in" }, { status: 401 });
+  }
+
+  let body: z.infer<typeof bodySchema>;
+  try {
+    body = bodySchema.parse(await request.json());
+  } catch {
+    return NextResponse.json({ error: "Invalid body" }, { status: 400 });
+  }
+
+  const conversation = await findOrCreateGeneralConversation(
+    shop.id,
+    customerId
+  );
+
+  await prisma.conversation.update({
+    where: { id: conversation.id },
+    data: {
+      customerTypingAt: body.active ? new Date() : null,
+    },
+  });
+
+  return NextResponse.json({ ok: true });
+}

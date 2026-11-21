@@ -1,0 +1,93 @@
+import { NextRequest, NextResponse } from "next/server";
+import { requireStaffShop } from "@/lib/api-auth";
+import { prisma } from "@/lib/db";
+import { publishChatEvent } from "@/lib/realtime/publish-chat-event";
+import { z } from "zod";
+import { getAppFeatures } from "@/lib/app-settings";
+
+export const dynamic = "force-dynamic";
+
+const createSchema = z.object({
+  emoji: z.string().min(1).max(8),
+});
+
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string; messageId: string }> }
+) {
+  try {
+    const auth = await requireStaffShop(request);
+    if (!auth.ok) return auth.response;
+    const shop = auth.shop;
+    const features = await getAppFeatures(shop.id);
+    if (!features.chatEnabled) {
+      return NextResponse.json({ error: "Chat is disabled" }, { status: 404 });
+    }
+    const { id: conversationId, messageId } = await params;
+    const json = await request.json();
+    const { emoji } = createSchema.parse(json);
+
+    const message = await prisma.message.findFirst({
+      where: { shopId: shop.id, id: messageId, conversationId },
+    });
+
+    if (!message) {
+      return NextResponse.json({ error: "Message not found" }, { status: 404 });
+    }
+
+    const reaction = await prisma.messageReaction.upsert({
+      where: { messageId_reactorType: { messageId, reactorType: "STAFF" } },
+      update: { emoji },
+      create: { shopId: shop.id, messageId, emoji, reactorType: "STAFF" },
+    });
+
+    await publishChatEvent("chat:message", {
+      shopId: shop.id,
+      conversationId: conversationId,
+      messageId,
+    });
+
+    return NextResponse.json(reaction);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json({ error: error.flatten() }, { status: 400 });
+    }
+    console.error("POST /api/conversations/[id]/messages/[messageId]/reactions error:", error);
+    return NextResponse.json({ error: "Failed to add reaction" }, { status: 500 });
+  }
+}
+
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string; messageId: string }> }
+) {
+  try {
+    const auth = await requireStaffShop(request);
+    if (!auth.ok) return auth.response;
+    const shop = auth.shop;
+    const { id: conversationId, messageId } = await params;
+
+    const message = await prisma.message.findFirst({
+      where: { shopId: shop.id, id: messageId, conversationId },
+    });
+
+    if (!message) {
+      return NextResponse.json({ error: "Message not found" }, { status: 404 });
+    }
+
+    await prisma.messageReaction.deleteMany({
+      where: { shopId: shop.id, messageId, reactorType: "STAFF" },
+    });
+
+    await publishChatEvent("chat:message", {
+      shopId: shop.id,
+      conversationId: conversationId,
+      messageId,
+    });
+
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    console.error("DELETE /api/conversations/[id]/messages/[messageId]/reactions error:", error);
+    return NextResponse.json({ error: "Failed to remove reaction" }, { status: 500 });
+  }
+}

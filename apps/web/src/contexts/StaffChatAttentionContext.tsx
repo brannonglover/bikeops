@@ -1,0 +1,104 @@
+"use client";
+
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
+import type { Conversation } from "@/lib/types";
+import { hasUnreadCustomerMessage } from "@/lib/chat-unread";
+import { useChatNotifications, NOTIFICATION_POLL_MS } from "@/hooks/useChatNotifications";
+import { useChatEventSource } from "@/hooks/useChatEventSource";
+import { useChatRealtime } from "@/hooks/useChatRealtime";
+import { useDeferredSyncEnabled } from "@/hooks/useDeferredSyncEnabled";
+
+const StaffChatAttentionContext = createContext(0);
+const StaffChatUnreadCustomerIdsContext = createContext<ReadonlySet<string>>(new Set());
+
+export function StaffChatAttentionProvider({
+  children,
+  syncEnabled,
+}: {
+  children: ReactNode;
+  /** When false (staff on /chat), stop syncing and hide the nav badge. */
+  syncEnabled: boolean;
+}) {
+  const deferredSyncEnabled = useDeferredSyncEnabled(syncEnabled);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+
+  const applyConversations = useCallback((data: Conversation[]) => {
+    setConversations(data);
+  }, []);
+
+  const fetchConversations = useCallback(async () => {
+    if (!deferredSyncEnabled) return;
+    const res = await fetch("/api/conversations", { cache: "no-store" });
+    if (res.ok) {
+      const data = await res.json();
+      applyConversations(data);
+    }
+  }, [deferredSyncEnabled, applyConversations]);
+
+  useEffect(() => {
+    if (deferredSyncEnabled) {
+      fetchConversations();
+    } else {
+      setConversations([]);
+    }
+  }, [deferredSyncEnabled, fetchConversations]);
+
+  useChatEventSource<Conversation[]>({
+    url: deferredSyncEnabled ? "/api/conversations/stream" : null,
+    enabled: deferredSyncEnabled,
+    onUpdate: applyConversations,
+    fallbackPoll: fetchConversations,
+    fallbackIntervalMs: NOTIFICATION_POLL_MS,
+  });
+
+  // Lights the nav badge — and fires the notification sound — the moment a
+  // message lands, rather than on the stream's next poll tick.
+  useChatRealtime({
+    enabled: deferredSyncEnabled,
+    onChange: () => {
+      void fetchConversations();
+    },
+  });
+
+  useChatNotifications(conversations, fetchConversations, null, false);
+
+  const waitingCount = useMemo(
+    () => (deferredSyncEnabled ? conversations.filter(hasUnreadCustomerMessage).length : 0),
+    [conversations, deferredSyncEnabled]
+  );
+
+  const unreadCustomerIds = useMemo(
+    () =>
+      new Set(
+        deferredSyncEnabled
+          ? conversations.filter(hasUnreadCustomerMessage).map((c) => c.customerId)
+          : []
+      ),
+    [conversations, deferredSyncEnabled]
+  );
+
+  return (
+    <StaffChatAttentionContext.Provider value={waitingCount}>
+      <StaffChatUnreadCustomerIdsContext.Provider value={unreadCustomerIds}>
+        {children}
+      </StaffChatUnreadCustomerIdsContext.Provider>
+    </StaffChatAttentionContext.Provider>
+  );
+}
+
+export function useStaffChatWaitingCount() {
+  return useContext(StaffChatAttentionContext);
+}
+
+/** Returns the set of customer IDs that have unread messages waiting for staff. */
+export function useUnreadChatCustomerIds() {
+  return useContext(StaffChatUnreadCustomerIdsContext);
+}

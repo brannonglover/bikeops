@@ -1,0 +1,69 @@
+import { Plus_Jakarta_Sans } from "next/font/google";
+import { unstable_noStore as noStore } from "next/cache";
+import { getServerSession } from "next-auth";
+import { AppShell } from "@/components/AppShell";
+import { AuthProvider } from "@/components/AuthProvider";
+import { PostHogProvider } from "@/components/PostHogProvider";
+import { ThemeProvider } from "@/contexts/ThemeContext";
+import { authOptions } from "@/lib/auth";
+import { getAppBranding } from "@/lib/app-settings";
+import "./globals.css";
+
+const jakarta = Plus_Jakarta_Sans({
+  subsets: ["latin"],
+  variable: "--font-jakarta",
+  display: "swap",
+});
+
+export const metadata = {
+  title: "Bike Shop Repair Management",
+  description: "Bike repair shop management – jobs, customers, payments, and automated emails",
+  icons: {
+    icon: [
+      { url: "/favicon-32x32.png", sizes: "32x32", type: "image/png" },
+      { url: "/favicon-192x192.png", sizes: "192x192", type: "image/png" },
+      { url: "/favicon-512x512.png", sizes: "512x512", type: "image/png" },
+    ],
+    apple: {
+      url: "/favicon-180x180.png",
+      sizes: "180x180",
+      type: "image/png",
+    },
+  },
+};
+
+export const viewport = {
+  width: "device-width",
+  initialScale: 1,
+};
+
+export default async function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  noStore();
+  const session = await getServerSession(authOptions);
+  const initialBranding = await getAppBranding(session?.user?.shopId);
+
+  return (
+    <html lang="en" className={jakarta.variable} suppressHydrationWarning>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var m=localStorage.getItem("bikeops_theme_preference");var mode=m==="dark"||m==="light"||m==="system"?m:"light";var d=mode==="dark"||(mode==="system"&&matchMedia("(prefers-color-scheme:dark)").matches);document.documentElement.classList.toggle("dark",d)}catch(e){}})()`,
+          }}
+        />
+      </head>
+      <body className="antialiased bg-mesh text-foreground min-h-screen font-sans flex">
+        <ThemeProvider>
+          <AuthProvider>
+            <PostHogProvider>
+              <AppShell initialBranding={initialBranding}>{children}</AppShell>
+            </PostHogProvider>
+          </AuthProvider>
+        </ThemeProvider>
+      </body>
+    </html>
+  );
+}
