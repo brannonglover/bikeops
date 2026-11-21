@@ -15,6 +15,10 @@ import {
   buildStaffVerbalSmsConsentUpdate,
   SMS_CONSENT_SOURCES,
 } from "@/lib/sms-consent";
+import {
+  PlaceholderMergeNeedsConfirmation,
+  updateCustomerFoldingPlaceholder,
+} from "@/lib/customer-merge";
 
 const updateCustomerSchema = z.object({
   firstName: z.string().min(1).optional(),
@@ -25,6 +29,11 @@ const updateCustomerSchema = z.object({
   notes: z.string().optional().nullable(),
   /** Staff-recorded consent: true attests verbal agreement, false records an opt-out. */
   smsConsent: z.boolean().optional(),
+  /**
+   * Staff agreed to fold in this placeholder (a stranger's contact already on
+   * the new number) even though it has jobs or other records of its own.
+   */
+  mergePlaceholderId: z.string().optional().nullable(),
 });
 
 export async function GET(
@@ -86,15 +95,23 @@ export async function PATCH(
     const emailFirstAdded =
       data.email !== undefined && !previousEmail && !!(data.email?.trim());
 
-    const customer = await prisma.customer.update({
-      where: { id },
-      data: {
+    const newPhone =
+      data.phone !== undefined ? coerceCustomerPhone(data.phone) : undefined;
+
+    // A number a caller's placeholder already holds folds that placeholder in,
+    // so the person's texts and calls join this customer instead of staying on
+    // a second record.
+    const { customer, mergedPlaceholderId } = await updateCustomerFoldingPlaceholder({
+      shopId: auth.shopId,
+      customerId: id,
+      previousPhone: existing.phone,
+      newPhone,
+      confirmedPlaceholderId: data.mergePlaceholderId,
+      update: {
         ...(data.firstName !== undefined && { firstName: data.firstName }),
         ...(data.lastName !== undefined && { lastName: data.lastName }),
         ...(data.email !== undefined && { email: data.email }),
-        ...(data.phone !== undefined && {
-          phone: coerceCustomerPhone(data.phone),
-        }),
+        ...(newPhone !== undefined && { phone: newPhone }),
         ...(data.address !== undefined && { address: data.address }),
         ...(data.notes !== undefined && { notes: data.notes }),
         ...consentFields,
@@ -107,8 +124,11 @@ export async function PATCH(
       );
     }
 
-    return NextResponse.json(customer);
+    return NextResponse.json({ ...customer, mergedPlaceholderId });
   } catch (error) {
+    if (error instanceof PlaceholderMergeNeedsConfirmation) {
+      return NextResponse.json(error.toJSON(), { status: 409 });
+    }
     if (error instanceof z.ZodError) {
       const flattened = error.flatten();
       const fieldErrors = Object.entries(flattened.fieldErrors ?? {})

@@ -696,18 +696,28 @@ export function CustomerDetailModal({
     if (!customer || !editFirstName.trim()) return;
     setSavingCustomer(true);
     try {
-      const res = await fetch(`/api/customers/${customer.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          firstName: editFirstName.trim(),
-          lastName: editLastName.trim() || null,
-          email: editEmail.trim() || null,
-          phone: editPhone.trim() || null,
-          address: editAddress.trim() || null,
-          notes: editNotes.trim() || null,
-        }),
-      });
+      const save = (mergePlaceholderId?: string) =>
+        fetch(`/api/customers/${customer.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            firstName: editFirstName.trim(),
+            lastName: editLastName.trim() || null,
+            email: editEmail.trim() || null,
+            phone: editPhone.trim() || null,
+            address: editAddress.trim() || null,
+            notes: editNotes.trim() || null,
+            ...(mergePlaceholderId && { mergePlaceholderId }),
+          }),
+        });
+      let res = await save();
+      if (res.status === 409) {
+        // The new number belongs to an unnamed contact with jobs or records of
+        // its own; nothing was saved, so ask before folding it in.
+        const err = await res.json();
+        if (!err.placeholder?.id || !window.confirm(err.error)) return;
+        res = await save(err.placeholder.id);
+      }
       if (res.ok) {
         const updated = await res.json();
         setEditPhone(phoneToInputValue(updated.phone));

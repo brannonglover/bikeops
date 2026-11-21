@@ -160,12 +160,23 @@ export function CreateContactModal({
       const body =
         phone === initialPhone ? rest : { ...rest, phone };
 
-      const res = await fetch(`/api/conversations/${conversationId}/contact`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const payload = await res.json();
+      const save = (mergePlaceholderId?: string) =>
+        fetch(`/api/conversations/${conversationId}/contact`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            mergePlaceholderId ? { ...body, mergePlaceholderId } : body
+          ),
+        });
+      let res = await save();
+      let payload = await res.json();
+      if (res.status === 409 && payload?.placeholder?.id) {
+        // The number belongs to another unnamed contact with jobs or records
+        // of its own; nothing was saved, so ask before folding it in.
+        if (!window.confirm(payload.error)) return;
+        res = await save(payload.placeholder.id);
+        payload = await res.json();
+      }
       if (!res.ok) {
         throw new Error(payload?.error ?? "Could not save this contact");
       }

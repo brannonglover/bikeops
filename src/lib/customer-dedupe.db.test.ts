@@ -27,6 +27,7 @@ type Prisma = typeof import("@/lib/db")["prisma"];
 let prisma: Prisma;
 let customers: typeof import("@/app/api/customers/route");
 let merge: typeof import("@/app/api/customers/[id]/merge/route");
+let customerRoute: typeof import("@/app/api/customers/[id]/route");
 let S: TestShop;
 
 const pp = (id: string) => ({ params: Promise.resolve({ id }) });
@@ -72,8 +73,8 @@ async function postCustomer(body: Record<string, unknown>) {
   return (await res.json()) as { id: string; firstName: string; provisional: boolean; email: string | null };
 }
 
-async function postMerge(targetId: string, sourceCustomerId: string) {
-  const res = await merge.POST(
+function mergeRequest(targetId: string, sourceCustomerId: string) {
+  return merge.POST(
     request("POST", `/api/customers/${targetId}/merge`, {
       host: S.host,
       as: S,
@@ -81,7 +82,24 @@ async function postMerge(targetId: string, sourceCustomerId: string) {
     }),
     pp(targetId)
   );
+}
+
+async function postMerge(targetId: string, sourceCustomerId: string) {
+  const res = await mergeRequest(targetId, sourceCustomerId);
   assert.equal(res.status, 200, await res.clone().text());
+}
+
+function patchCustomer(id: string, body: Record<string, unknown>) {
+  return customerRoute.PATCH(
+    request("PATCH", `/api/customers/${id}`, { host: S.host, as: S, body }),
+    pp(id)
+  );
+}
+
+async function activeThreads(customerId: string) {
+  return prisma.conversation.findMany({
+    where: { shopId: S.id, customerId, archived: false },
+  });
 }
 
 describe("one customer per phone", { skip: !ENABLED }, () => {
@@ -91,6 +109,7 @@ describe("one customer per phone", { skip: !ENABLED }, () => {
     ({ prisma } = await import("@/lib/db"));
     customers = await import("@/app/api/customers/route");
     merge = await import("@/app/api/customers/[id]/merge/route");
+    customerRoute = await import("@/app/api/customers/[id]/route");
     S = await createTestShop(prisma, `cdup-${RUN}`);
   });
 
@@ -220,5 +239,93 @@ describe("one customer per phone", { skip: !ENABLED }, () => {
     assert.equal(merged.firstName, "Ada");
     assert.equal(merged.lastName, "Byrne");
     assert.equal(merged.email, `ada-${RUN}@example.test`);
+  });
+  it("a second merge of the same placeholder changes nothing", async () => {
+    const phone = "+14047880306";
+    const real = await prisma.customer.create({ data: { shopId: S.id, firstName: "Twice", phone } });
+    const ph = await placeholder(phone);
+    await threadWithMessage(ph.id, "hello", new Date());
+
+    // A double tap: both requests race for the same source.
+    const [a, b] = await Promise.all([mergeRequest(real.id, ph.id), mergeRequest(real.id, ph.id)]);
+    assert.deepEqual([a.status, b.status].sort(), [200, 404]);
+    assert.equal((await activeThreads(real.id)).length, 1);
+  });
+
+  it("editing a customer's phone to a placeholder's number folds the placeholder in", async () => {
+    const phone = "+14047880307";
+    const real = await prisma.customer.create({
+      data: {
+        shopId: S.id,
+        firstName: "Edit",
+        phone: "+14047880399",
+        smsConsent: true,
+        smsConsentSource: "PHONE_VERBAL",
+        smsConsentUpdatedAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
+      },
+    });
+    await threadWithMessage(real.id, "staff: hi", new Date(Date.now() - 60 * 1000));
+    const ph = await placeholder(phone);
+    // The person on that number replied STOP after the old consent was taken.
+    await prisma.customer.update({
+      where: { id: ph.id },
+      data: { smsConsent: false, smsConsentSource: "SMS_STOP", smsConsentUpdatedAt: new Date() },
+    });
+    const phThread = await threadWithMessage(ph.id, "STOP", new Date());
+    const c = await call(ph.id, phThread.id, phone);
+
+    const res = await patchCustomer(real.id, { phone: "(404) 788-0307" });
+    assert.equal(res.status, 200, await res.clone().text());
+    const body = await res.json();
+    assert.equal(body.mergedPlaceholderId, ph.id);
+    assert.equal(body.id, real.id, "the edited customer is the one kept");
+
+    assert.equal(await prisma.customer.findUnique({ where: { id: ph.id } }), null);
+    assert.equal((await prisma.call.findUniqueOrThrow({ where: { id: c.id } })).customerId, real.id);
+    assert.equal((await activeThreads(real.id)).length, 1);
+    const after = await prisma.customer.findUniqueOrThrow({ where: { id: real.id } });
+    assert.equal(after.phone, phone);
+    assert.equal(after.firstName, "Edit");
+    assert.equal(after.smsConsent, false, "a later STOP from that number wins");
+  });
+
+  it("asks before folding in a placeholder that has a job, and saves nothing until confirmed", async () => {
+    const phone = "+14047880308";
+    const real = await prisma.customer.create({
+      data: { shopId: S.id, firstName: "Careful", phone: "+14047880398" },
+    });
+    const ph = await placeholder(phone);
+    const job = await prisma.job.create({
+      data: { shopId: S.id, customerId: ph.id, bikeMake: "Trek", bikeModel: "FX" },
+    });
+
+    const first = await patchCustomer(real.id, { phone, notes: "edited" });
+    assert.equal(first.status, 409);
+    const ask = await first.json();
+    assert.equal(ask.code, "PLACEHOLDER_MERGE_NEEDS_CONFIRMATION");
+    assert.equal(ask.placeholder.id, ph.id);
+    assert.equal(ask.placeholder.records.jobs, 1);
+    const untouched = await prisma.customer.findUniqueOrThrow({ where: { id: real.id } });
+    assert.equal(untouched.phone, "+14047880398", "the edit rolled back too");
+    assert.equal(untouched.notes, null);
+    assert.ok(await prisma.customer.findUnique({ where: { id: ph.id } }));
+
+    const confirmed = await patchCustomer(real.id, { phone, notes: "edited", mergePlaceholderId: ph.id });
+    assert.equal(confirmed.status, 200, await confirmed.clone().text());
+    assert.equal((await prisma.job.findUniqueOrThrow({ where: { id: job.id } })).customerId, real.id);
+    assert.equal(await prisma.customer.findUnique({ where: { id: ph.id } }), null);
+  });
+
+  it("never folds together two established customers on one number", async () => {
+    const phone = "+14047880309";
+    const parent = await prisma.customer.create({ data: { shopId: S.id, firstName: "Parent", phone } });
+    const kid = await prisma.customer.create({
+      data: { shopId: S.id, firstName: "Kid", phone: "+14047880397" },
+    });
+
+    const res = await patchCustomer(kid.id, { phone });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).mergedPlaceholderId, null);
+    assert.ok(await prisma.customer.findUnique({ where: { id: parent.id } }));
   });
 });

@@ -12,6 +12,10 @@ import {
   resolveStaffConversationForRead,
 } from "@/lib/conversation";
 import { coerceCustomerPhone } from "@/lib/phone";
+import {
+  PlaceholderMergeNeedsConfirmation,
+  updateCustomerFoldingPlaceholder,
+} from "@/lib/customer-merge";
 
 export const dynamic = "force-dynamic";
 
@@ -37,6 +41,8 @@ const saveSchema = z.object({
   phone: optionalText,
   address: optionalText,
   notes: optionalText,
+  /** Staff agreed to fold in this placeholder despite its own jobs or records. */
+  mergePlaceholderId: z.string().optional().nullable(),
 });
 
 /**
@@ -138,7 +144,7 @@ export async function POST(
 
     const existing = await prisma.customer.findFirst({
       where: { id: conversation.customerId, shopId: shop.id },
-      select: { id: true },
+      select: { id: true, phone: true },
     });
     if (!existing) {
       return NextResponse.json({ error: "Customer not found" }, { status: 404 });
@@ -148,9 +154,15 @@ export async function POST(
     // leaves it alone rather than clearing the only route back to the customer.
     const phone = data.phone ? coerceCustomerPhone(data.phone) : null;
 
-    const customer = await prisma.customer.update({
-      where: { id: existing.id },
-      data: {
+    // A different number that another placeholder holds folds that one in, so
+    // the person doesn't end up as two contacts.
+    await updateCustomerFoldingPlaceholder({
+      shopId: shop.id,
+      customerId: existing.id,
+      previousPhone: existing.phone,
+      newPhone: phone ?? undefined,
+      confirmedPlaceholderId: data.mergePlaceholderId,
+      update: {
         firstName: data.firstName,
         lastName: data.lastName,
         email: data.email,
@@ -159,11 +171,17 @@ export async function POST(
         notes: data.notes,
         provisional: false,
       },
+    });
+    const customer = await prisma.customer.findUniqueOrThrow({
+      where: { id: existing.id },
       select: customerSelect,
     });
 
     return NextResponse.json(customer);
   } catch (error) {
+    if (error instanceof PlaceholderMergeNeedsConfirmation) {
+      return NextResponse.json(error.toJSON(), { status: 409 });
+    }
     if (error instanceof z.ZodError) {
       const messages = Object.entries(error.flatten().fieldErrors ?? {})
         .flatMap(([field, fieldMessages]) =>
