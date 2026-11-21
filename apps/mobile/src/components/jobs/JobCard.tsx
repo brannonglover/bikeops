@@ -281,7 +281,9 @@ const styles = StyleSheet.create({
   },
   footer: {
     flexDirection: "row",
-    gap: spacing[3],
+    flexWrap: "wrap",
+    columnGap: spacing[3],
+    rowGap: spacing[1],
   },
   date: {
     ...fontSize.xs,
