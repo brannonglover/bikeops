@@ -10,9 +10,9 @@ import {
   INCOMING_CALL_SOUND,
   sendPushToAllStaff,
 } from "@/lib/push";
-// Also re-exported at the foot of this file; imported here because the ring
-// push has to tell the app when the window closes.
-import { ringDeadline } from "@/lib/voice-twiml";
+// ringDeadline is also re-exported at the foot of this file; imported here
+// because the ring push has to tell the app when the window closes.
+import { INBAND_RINGBACK_QUERY, ringDeadline } from "@/lib/voice-twiml";
 import { requestHost, requestOrigin } from "@/lib/request-host";
 
 export type VoicePlatform = "ios" | "android";
@@ -266,6 +266,51 @@ export async function redirectLiveCall(callSid: string, url: string): Promise<vo
     throw new Error("Twilio is not configured");
   }
   await Twilio(accountSid, authToken).calls(callSid).update({ url, method: "POST" });
+}
+
+/**
+ * The call message an app leg dialed with in-call ringback waits for. Its
+ * shape is the app's to read; see the app's lib/voice.ts.
+ */
+const CUSTOMER_ANSWERED_MESSAGE = JSON.stringify({ type: "customer-answered" });
+
+/**
+ * Whether a /status callback belongs to the customer's leg of a call dialed
+ * with in-call ringback — see buildOutgoingCallTwiml.
+ */
+export function isInbandRingbackCallback(request: NextRequest): boolean {
+  const [key, value] = INBAND_RINGBACK_QUERY.split("=");
+  return request.nextUrl.searchParams.get(key) === value;
+}
+
+/**
+ * Tells the staff app that the customer has picked up.
+ *
+ * A call dialed with in-call ringback is answered on the app's side from the
+ * start, so the Voice SDK has nothing to report when the customer answers:
+ * without this the app would either show the call as live while it is still
+ * ringing or never show it as live at all. This is the one signal it gets,
+ * sent as a call message down the app's own leg.
+ *
+ * Tried twice, because a lost message leaves staff talking under "Calling…"
+ * with no timer. The idempotency key keeps the retry from delivering it twice
+ * when the first attempt landed and only its response was lost.
+ */
+export async function tellAppCustomerAnswered(appCallSid: string): Promise<void> {
+  if (!accountSid || !authToken) {
+    throw new Error("Twilio is not configured");
+  }
+  const messages = Twilio(accountSid, authToken).calls(appCallSid).userDefinedMessages;
+  const send = () =>
+    messages.create({
+      content: CUSTOMER_ANSWERED_MESSAGE,
+      idempotencyKey: `customer-answered-${appCallSid}`,
+    });
+  try {
+    await send();
+  } catch {
+    await send();
+  }
 }
 
 /**

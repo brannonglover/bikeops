@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { startAssistantCallOutreach } from "@/lib/ai/call-outreach";
-import { authenticateVoiceWebhook, mapTwilioCallStatus } from "@/lib/voice";
+import {
+  authenticateVoiceWebhook,
+  isInbandRingbackCallback,
+  mapTwilioCallStatus,
+  tellAppCustomerAnswered,
+} from "@/lib/voice";
 
 export const runtime = "nodejs";
 
@@ -33,6 +38,16 @@ export async function POST(request: NextRequest) {
     return new NextResponse("ok", { status: 200 });
   }
 
+  // The customer picking up on a call dialed with in-call ringback. Started
+  // before the Call row is touched, and awaited only at the end, because the
+  // app is holding "Calling…" over a live conversation until it lands.
+  const answeredNotice =
+    parentCallSid && status === "IN_PROGRESS" && isInbandRingbackCallback(request)
+      ? tellAppCustomerAnswered(parentCallSid).catch((error) => {
+          console.error("[voice] could not tell the app the customer answered:", error);
+        })
+      : null;
+
   const call = await prisma.call.findFirst({
     where: parentCallSid
       ? { shopId: shop.id, twilioParentCallSid: parentCallSid }
@@ -40,6 +55,7 @@ export async function POST(request: NextRequest) {
   });
   if (!call) {
     console.warn("Twilio Voice /status: no matching Call", { callSid, parentCallSid });
+    await answeredNotice;
     return new NextResponse("ok", { status: 200 });
   }
 
@@ -116,5 +132,6 @@ export async function POST(request: NextRequest) {
     });
   }
 
+  await answeredNotice;
   return new NextResponse("ok", { status: 200 });
 }

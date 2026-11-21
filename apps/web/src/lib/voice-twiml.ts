@@ -288,6 +288,12 @@ export function buildDequeueTwiml(opts: {
 }
 
 /**
+ * Marks the child leg's status callbacks for a call dialed with in-call
+ * ringback, so /status knows the app is waiting to hear about the answer.
+ */
+export const INBAND_RINGBACK_QUERY = "ringback=inband";
+
+/**
  * TwiML for /outgoing: the TwiML App's Voice Request URL, hit when the
  * mobile Voice SDK places an outbound call. Dials the PSTN leg to the
  * customer, showing the shop's Twilio number as caller ID.
@@ -307,16 +313,21 @@ export function buildDequeueTwiml(opts: {
  * ringTone is pinned to "us" so a caller Twilio does generate ringback for
  * hears a familiar US tone rather than Twilio's foreign-sounding default.
  *
- * EXPERIMENT (experiment/in-band-ringback): `inbandRingback` drops
- * answerOnBridge for an app build that asks for it. The SDK's own ringback is
- * an audio player outside the call, and it stutters in the moment between
- * the customer or their voicemail picking up and the SDK reporting
- * Connected. With answerOnBridge the app's leg gets no audio at all while
- * ringing — a test build with the local ringback removed heard dead air —
- * so the ring has to come from Twilio on an answered leg instead, where it
- * and the customer's voice share one audio path. This flag exists to hear
- * whether Twilio actually plays ringTone down that leg. Builds that don't
- * send it are unaffected.
+ * `inbandRingback` is the newer arrangement, for app builds that ask for it,
+ * and it gives up answerOnBridge on purpose. The SDK's ringback above is an
+ * audio player outside the call, and it went choppy at the moment the
+ * customer or their voicemail picked up, while it and the call's audio both
+ * held the speaker. With answerOnBridge the app's leg carries no audio at all
+ * until the answer, so there is nothing to replace that player with: a build
+ * without it heard dead air. Answering the app's leg up front is what lets
+ * Twilio play ringTone down it, in the same audio path as the customer's
+ * voice, so the ring hands over to the answer cleanly.
+ *
+ * The price is the one answerOnBridge exists to avoid: the SDK reports
+ * Connected straight away. The app's statusCallbackUrl for these calls is
+ * marked (INBAND_RINGBACK_QUERY) so /status can tell the app the moment the
+ * customer really answers — see tellAppCustomerAnswered — and the app holds
+ * "Calling…" and its timer until then. Builds that don't ask are unaffected.
  */
 export function buildOutgoingCallTwiml(opts: {
   toNumber: string;
@@ -326,9 +337,12 @@ export function buildOutgoingCallTwiml(opts: {
 }): string {
   const { toNumber, callerId, statusCallbackUrl, inbandRingback = false } = opts;
   const bridge = inbandRingback ? "" : ` answerOnBridge="true"`;
+  const callbackUrl = inbandRingback
+    ? `${statusCallbackUrl}${statusCallbackUrl.includes("?") ? "&" : "?"}${INBAND_RINGBACK_QUERY}`
+    : statusCallbackUrl;
   return twiml(
     `<Dial callerId="${escapeXml(callerId)}"${bridge} ringTone="us">` +
-      `<Number statusCallback="${escapeXml(statusCallbackUrl)}" ` +
+      `<Number statusCallback="${escapeXml(callbackUrl)}" ` +
       `statusCallbackEvent="initiated ringing answered completed" statusCallbackMethod="POST">` +
       `${escapeXml(toNumber)}</Number></Dial>`
   );
