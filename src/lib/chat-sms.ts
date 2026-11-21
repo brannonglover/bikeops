@@ -59,7 +59,18 @@ export function validateTwilioWebhook(
   return Twilio.validateRequest(authToken, signature ?? "", url, params);
 }
 
-/** Match inbound SMS sender / customer.phone (stored formats vary). */
+/**
+ * Match inbound SMS sender / customer.phone (stored formats vary).
+ *
+ * More than one customer can share a number. The usual way: a stranger calls or
+ * texts, which leaves a provisional "(404) 555-…" profile, and staff then add
+ * the same person as a real customer from New Job instead of from the thread.
+ * Taking whichever row the database happened to return first sent that
+ * customer's replies to the placeholder's thread while staff were texting them
+ * in the real one. So when several match, prefer a real contact over a
+ * placeholder, then the one whose thread was active most recently — that is
+ * the conversation the reply belongs to.
+ */
 export async function findCustomerIdBySmsFrom(
   shopId: string,
   fromE164: string,
@@ -70,12 +81,31 @@ export async function findCustomerIdBySmsFrom(
     where: { shopId, phone: { not: null } },
     select: { id: true, phone: true },
   });
-  for (const c of customers) {
-    if (!c.phone) continue;
-    const n = normalizePhone(c.phone);
-    if (n === fromE164) return c.id;
-  }
-  return null;
+  const matchIds = customers
+    .filter((c) => c.phone && normalizePhone(c.phone) === fromE164)
+    .map((c) => c.id);
+  if (matchIds.length <= 1) return matchIds[0] ?? null;
+
+  const candidates = await client.customer.findMany({
+    where: { shopId, id: { in: matchIds } },
+    select: {
+      id: true,
+      provisional: true,
+      updatedAt: true,
+      conversations: {
+        orderBy: { updatedAt: "desc" },
+        take: 1,
+        select: { updatedAt: true },
+      },
+    },
+  });
+  const lastActive = (c: (typeof candidates)[number]) =>
+    Math.max(c.conversations[0]?.updatedAt.getTime() ?? 0, c.updatedAt.getTime());
+  candidates.sort((a, b) => {
+    if (a.provisional !== b.provisional) return a.provisional ? 1 : -1;
+    return lastActive(b) - lastActive(a);
+  });
+  return candidates[0]?.id ?? null;
 }
 
 /**

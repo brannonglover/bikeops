@@ -34,6 +34,7 @@
     "test:totals": "tsx --tsconfig scripts/tsconfig.scripts.json --test src/lib/job-totals.test.ts",
     "test:tax:db": "RUN_CATALOG_DB_TESTS=1 tsx --tsconfig scripts/tsconfig.route-tests.json --test --test-concurrency=1 src/lib/sales-tax.db.test.ts",
     "test:estimates:db": "RUN_CATALOG_DB_TESTS=1 tsx --tsconfig scripts/tsconfig.route-tests.json --test --test-concurrency=1 src/lib/job-estimates.db.test.ts",
+    "test:sms-match:db": "RUN_CATALOG_DB_TESTS=1 tsx --tsconfig scripts/tsconfig.route-tests.json --test --test-concurrency=1 src/lib/sms-sender-match.db.test.ts",
     "check:booking-spam": "TS_NODE_PROJECT=scripts/tsconfig.scripts.json ts-node -r tsconfig-paths/register scripts/check-booking-spam.ts",
     "check:conversation-context": "TS_NODE_PROJECT=scripts/tsconfig.scripts.json ts-node -r tsconfig-paths/register scripts/check-conversation-context.ts",
     "check:assistant-collection": "TS_NODE_PROJECT=scripts/tsconfig.scripts.json ts-node -r tsconfig-paths/register scripts/check-assistant-collection.ts",
