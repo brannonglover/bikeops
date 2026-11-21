@@ -74,7 +74,7 @@ export async function ringStaffForHeldCaller(opts: {
  * SDK (twilio-voice-react-native#722): the cancel arrives with no matching
  * invite, and the raise happens inside the PushKit delegate before its
  * completion handler, after which iOS throttles VoIP delivery to the app. The
- * patch in the mobile repo makes that survivable; not asking for it in the
+ * patch in apps/mobile makes that survivable; not asking for it in the
  * first place is what makes it rare.
  */
 export async function cancelStaffLegs(

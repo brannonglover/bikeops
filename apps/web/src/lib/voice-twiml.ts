@@ -96,7 +96,7 @@ export function fitParamValue(value: string): string {
  * machinery of the <Enqueue> path is needed.
  *
  * The <Parameter>s are what the app reads off the invite (describeInvite in
- * the mobile repo) to show the caller and open the right Call row.
+ * apps/mobile) to show the caller and open the right Call row.
  *
  * Only the staff legs carry statusCallback, so /status can stamp answeredAt
  * from the leg that actually connected.

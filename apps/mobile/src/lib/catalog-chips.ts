@@ -4,7 +4,7 @@
  * lands under a chip when its name (and, for products, its description)
  * mentions one of the chip's keywords. An item can match several chips.
  *
- * The web dashboard (~/projects/bikeopsco, src/lib/catalog-chips.ts, with
+ * The web dashboard (apps/web/src/lib/catalog-chips.ts, with
  * tests) keeps an identical copy of this file — change both together.
  */
 

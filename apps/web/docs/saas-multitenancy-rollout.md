@@ -37,7 +37,7 @@ This means existing jobs/customers/etc remain intact and are now owned by the de
 
 5. **Make sure `www` doesn’t get treated as a tenant**
    - If your apex domain redirects to `www.bikeops.co`, reserve `www` so it does **not** attempt to resolve to a `Shop.subdomain = "www"`.
-   - This repo reserves `www`, `app`, and other operational subdomains in `/Users/bglover/projects/bikeopsco/src/lib/tenant-domain.ts`.
+   - This repo reserves `www`, `app`, and other operational subdomains in `apps/web/src/lib/tenant-domain.ts`.
 
 6. **Verify shared app entry**
    - Visit `app.bikeops.co/login`.
@@ -47,7 +47,7 @@ This means existing jobs/customers/etc remain intact and are now owned by the de
 
 7. **Move the apex domain to Marketing**
    - Create a separate Vercel “Marketing” project.
-   - Use this repo with Root Directory set to `/Users/bglover/projects/bikeopsco/marketing`.
+   - Use this repo with Root Directory set to `apps/web/marketing`.
    - Assign `bikeops.co` (and optionally `www.bikeops.co`) to the Marketing project.
    - Keep the App project on `*.bikeops.co`.
 
@@ -65,7 +65,7 @@ This means existing jobs/customers/etc remain intact and are now owned by the de
 
 - “Shop not found” UX for unknown subdomains
 - Marketing Vercel project:
-  - Create a Vercel project from `/Users/bglover/projects/bikeopsco/marketing`
+  - Create a Vercel project from `apps/web/marketing`
   - Add CTAs to `app.bikeops.co/signup` and `app.bikeops.co/login`
   - Keep all tenant app traffic on `*.bikeops.co`
 - Decide payment integration strategy (Stripe/Square/etc), likely via per-shop “payment provider” settings

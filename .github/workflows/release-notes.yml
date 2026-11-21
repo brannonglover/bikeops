@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - main
+    # Release notes cover the web app only; mobile-only pushes skip this.
+    paths:
+      - "apps/web/**"
+      - ".github/workflows/release-notes.yml"
   workflow_dispatch:
 
 concurrency:
@@ -35,7 +39,7 @@ jobs:
             echo "PLATFORM_RELEASE_WEBHOOK_SECRET secret is not set; skipping."
             exit 0
           fi
-          node scripts/generate-release-notes.mjs | tee /tmp/release-notes-out.txt
+          node apps/web/scripts/generate-release-notes.mjs | tee /tmp/release-notes-out.txt
           VERSION="$(grep -E '^RELEASE_VERSION=' /tmp/release-notes-out.txt | tail -n1 | cut -d= -f2 || true)"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 

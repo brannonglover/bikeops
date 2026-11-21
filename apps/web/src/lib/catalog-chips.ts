@@ -4,7 +4,7 @@
  * lands under a chip when its name (and, for products, its description)
  * mentions one of the chip's keywords. An item can match several chips.
  *
- * The mobile app (~/projects/bikeops, src/lib/catalog-chips.ts) keeps an
+ * The mobile app (apps/mobile/src/lib/catalog-chips.ts) keeps an
  * identical copy of this file — change both together.
  */
 

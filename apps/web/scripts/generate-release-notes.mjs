@@ -60,12 +60,37 @@ const AREA_RULES = [
   { re: /^src\/.*signup|login|auth|waitlist/i, area: "Sign-in and onboarding" },
 ];
 
+/** Where the web app lives inside the monorepo. */
+const WEB_DIR = "apps/web";
+
+const REPO_ROOT = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+  encoding: "utf8",
+  stdio: ["ignore", "pipe", "pipe"],
+}).trim();
+
+// Run from the repo root so pathspecs are read against the trees we diff,
+// not against the caller's working directory.
 function runGit(args) {
   return execFileSync("git", args, {
+    cwd: REPO_ROOT,
     encoding: "utf8",
     maxBuffer: 20 * 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
+}
+
+/**
+ * The web app's tree at `rev`. Release tags cut before the monorepo move have
+ * the web app at the repo root; later ones have it under apps/web. Diffing
+ * these trees keeps paths as `src/...` either way and leaves mobile changes out.
+ */
+function webTreeAt(rev) {
+  try {
+    runGit(["cat-file", "-e", `${rev}:${WEB_DIR}`]);
+    return `${rev}:${WEB_DIR}`;
+  } catch {
+    return `${rev}^{tree}`;
+  }
 }
 
 function getPreviousReleaseTag() {
@@ -96,7 +121,7 @@ function areaForPath(path) {
 function getChangedFiles(range) {
   let raw = "";
   try {
-    raw = runGit(["diff", "--name-status", "--find-renames", range]);
+    raw = runGit(["diff", "--name-status", "--find-renames", ...range]);
   } catch {
     return [];
   }
@@ -115,14 +140,16 @@ function getChangedFiles(range) {
     .filter((f) => !isSkippablePath(f.path));
 }
 
+/** [fromTree, toTree] for `git diff`. */
 function getDiffRange(previousTag) {
-  if (previousTag) return `${previousTag}..HEAD`;
+  const head = webTreeAt("HEAD");
+  if (previousTag) return [webTreeAt(previousTag), head];
   // First release notes run: look at recent history rather than empty range.
   try {
     const base = runGit(["rev-list", "--max-count=1", "HEAD~40"]);
-    return `${base}..HEAD`;
+    return [webTreeAt(base), head];
   } catch {
-    return "HEAD";
+    return [head, head];
   }
 }
 
@@ -189,7 +216,7 @@ function getUnifiedDiff(range, files) {
       "--unified=2",
       "--no-color",
       "--ignore-space-at-eol",
-      range,
+      ...range,
       "--",
       ...ranked,
     ]);
@@ -353,8 +380,8 @@ async function main() {
   const range = getDiffRange(previousTag);
   console.log(
     previousTag
-      ? `Diff since ${previousTag} (${range})`
-      : `No prior release-* tag; using recent range (${range})`
+      ? `Diff since ${previousTag} (${range.join(" vs ")})`
+      : `No prior release-* tag; using recent range (${range.join(" vs ")})`
   );
 
   const files = getChangedFiles(range);
