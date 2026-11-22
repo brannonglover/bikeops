@@ -33,6 +33,7 @@
     "test:parts:db": "RUN_CATALOG_DB_TESTS=1 tsx --tsconfig scripts/tsconfig.route-tests.json --test --test-concurrency=1 src/lib/parts-tab.db.test.ts src/lib/db-driver.db.test.ts src/lib/product-stock.db.test.ts",
     "test:totals": "tsx --tsconfig scripts/tsconfig.scripts.json --test src/lib/job-totals.test.ts",
     "test:tax:db": "RUN_CATALOG_DB_TESTS=1 tsx --tsconfig scripts/tsconfig.route-tests.json --test --test-concurrency=1 src/lib/sales-tax.db.test.ts",
+    "test:markup:db": "RUN_CATALOG_DB_TESTS=1 tsx --tsconfig scripts/tsconfig.route-tests.json --test --test-concurrency=1 src/lib/product-markup.db.test.ts",
     "test:estimates:db": "RUN_CATALOG_DB_TESTS=1 tsx --tsconfig scripts/tsconfig.route-tests.json --test --test-concurrency=1 src/lib/job-estimates.db.test.ts",
     "test:sms-match:db": "RUN_CATALOG_DB_TESTS=1 tsx --tsconfig scripts/tsconfig.route-tests.json --test --test-concurrency=1 src/lib/sms-sender-match.db.test.ts",
     "test:customer-dedupe:db": "RUN_CATALOG_DB_TESTS=1 tsx --tsconfig scripts/tsconfig.route-tests.json --test --test-concurrency=1 src/lib/customer-dedupe.db.test.ts",

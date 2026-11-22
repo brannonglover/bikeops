@@ -6,6 +6,13 @@ import { RowActionButton } from "@/components/ui/RowActionButton";
 import { CatalogPageSkeleton } from "@/components/ui/Skeleton";
 import { CatalogChips } from "@/components/ui/CatalogChips";
 import { matchesCatalogChip } from "@/lib/catalog-chips";
+import { priceFromCost } from "@/lib/product-price";
+import {
+  ProductPricingFields,
+  ShopMarkupControl,
+  effectiveMarkup,
+  type PricingMode,
+} from "@/components/products/ProductPricingFields";
 
 const SUPPLIER_OPTIONS = ["Amazon", "Performance Bike", "Other"];
 
@@ -14,9 +21,32 @@ interface Product {
   name: string;
   description: string | null;
   imageUrl: string | null;
+  /** What customers pay. */
   price: number;
+  /** What the shop pays; null when the price was set by hand. */
+  cost: number | null;
+  /** This product's own markup; null follows the shop's. */
+  markupPercent: number | null;
   stockQuantity: number;
   supplier: string | null;
+}
+
+function toNumberOrNull(v: unknown): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = typeof v === "string" ? parseFloat(v) : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Decimal columns arrive from the API as strings. */
+function normalizeProduct(p: Record<string, unknown>): Product {
+  return {
+    ...(p as unknown as Product),
+    price: toNumberOrNull(p.price) ?? 0,
+    cost: toNumberOrNull(p.cost),
+    markupPercent: toNumberOrNull(p.markupPercent),
+    stockQuantity:
+      typeof p.stockQuantity === "string" ? parseInt(p.stockQuantity, 10) : Number(p.stockQuantity ?? 0),
+  };
 }
 
 export default function ProductsPage() {
@@ -27,6 +57,12 @@ export default function ProductsPage() {
   const [editDescription, setEditDescription] = useState("");
   const [editImageUrl, setEditImageUrl] = useState("");
   const [editPrice, setEditPrice] = useState("");
+  const [editPricingMode, setEditPricingMode] = useState<PricingMode>("cost");
+  const [editCost, setEditCost] = useState("");
+  const [editMarkup, setEditMarkup] = useState("");
+  const [shopMarkup, setShopMarkup] = useState(0);
+  const [markupNotice, setMarkupNotice] = useState<string | null>(null);
+  const [newMarkup, setNewMarkup] = useState("");
   const [editStockQuantity, setEditStockQuantity] = useState("");
   const [editSupplier, setEditSupplier] = useState("");
   const [showAddForm, setShowAddForm] = useState(false);
@@ -79,19 +115,19 @@ export default function ProductsPage() {
     fetch(url)
       .then((res) => res.json())
       .then((data) => {
-        const normalized = (Array.isArray(data) ? data : []).map(
-          (p: Product & { price?: unknown; stockQuantity?: unknown }) => ({
-            ...p,
-            price: typeof p.price === "string" ? parseFloat(p.price) : Number(p.price ?? 0),
-            stockQuantity: typeof p.stockQuantity === "string"
-              ? parseInt(p.stockQuantity, 10)
-              : Number(p.stockQuantity ?? 0),
-          })
-        );
-        setProducts(normalized);
+        setProducts((Array.isArray(data) ? data : []).map(normalizeProduct));
       })
       .finally(() => setLoading(false));
   }, [searchQuery]);
+
+  useEffect(() => {
+    fetch("/api/settings/product-markup", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && typeof data.markupPercent === "number") setShopMarkup(data.markupPercent);
+      })
+      .catch(() => {});
+  }, []);
 
   const chipTexts = useMemo(
     () => products.map((p) => `${p.name} ${p.description ?? ""}`),
@@ -113,6 +149,9 @@ export default function ProductsPage() {
     setEditDescription(product.description ?? "");
     setEditImageUrl(product.imageUrl ?? "");
     setEditPrice(String(product.price));
+    setEditPricingMode(product.cost === null ? "fixed" : "cost");
+    setEditCost(product.cost === null ? "" : String(product.cost));
+    setEditMarkup(product.markupPercent === null ? "" : String(product.markupPercent));
     setEditStockQuantity(String(product.stockQuantity));
     setEditSupplier(product.supplier ?? "");
   };
@@ -127,10 +166,22 @@ export default function ProductsPage() {
     if (!editing) return;
     const editingId = editing;
     const snapshot = products;
-    const updatedPrice = parseFloat(editPrice) || 0;
     const updatedStock = parseInt(editStockQuantity, 10) || 0;
     const updatedImageUrl = editImageUrl.trim() || null;
     const updatedSupplier = editSupplier.trim() || null;
+    const pricedFromCost = editPricingMode === "cost";
+    const updatedCost = pricedFromCost ? parseFloat(editCost) || 0 : null;
+    const updatedMarkup =
+      pricedFromCost && editMarkup.trim() !== "" && Number.isFinite(parseFloat(editMarkup))
+        ? parseFloat(editMarkup)
+        : null;
+    const updatedPrice =
+      updatedCost !== null
+        ? priceFromCost(updatedCost, effectiveMarkup(editMarkup, shopMarkup))
+        : parseFloat(editPrice) || 0;
+    const pricingBody = pricedFromCost
+      ? { cost: updatedCost, markupPercent: updatedMarkup }
+      : { price: updatedPrice };
 
     setProducts((prev) =>
       prev.map((p) =>
@@ -141,6 +192,8 @@ export default function ProductsPage() {
               description: editDescription || null,
               imageUrl: updatedImageUrl,
               price: updatedPrice,
+              cost: updatedCost,
+              markupPercent: updatedMarkup,
               stockQuantity: updatedStock,
               supplier: updatedSupplier,
             }
@@ -157,31 +210,15 @@ export default function ProductsPage() {
         name: editName,
         description: editDescription || null,
         imageUrl: updatedImageUrl,
-        price: updatedPrice,
+        ...pricingBody,
         stockQuantity: updatedStock,
         supplier: updatedSupplier,
       }),
     })
       .then(async (res) => {
         if (res.ok) {
-          const updated = await res.json();
-          setProducts((prev) =>
-            prev.map((p) =>
-              p.id === updated.id
-                ? {
-                    ...updated,
-                    price:
-                      typeof updated.price === "string"
-                        ? parseFloat(updated.price)
-                        : Number(updated.price),
-                    stockQuantity:
-                      typeof updated.stockQuantity === "string"
-                        ? parseInt(updated.stockQuantity, 10)
-                        : Number(updated.stockQuantity ?? 0),
-                  }
-                : p
-            )
-          );
+          const updated = normalizeProduct(await res.json());
+          setProducts((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
         } else {
           setProducts(snapshot);
           setEditing(editingId);
@@ -199,15 +236,21 @@ export default function ProductsPage() {
   const handleAdd = async () => {
     if (!newName.trim()) return;
     const tempId = `temp-${Date.now()}`;
+    const cost = parseFloat(newPrice) || 0;
+    const ownMarkup =
+      newMarkup.trim() !== "" && Number.isFinite(parseFloat(newMarkup)) ? parseFloat(newMarkup) : null;
     const optimistic: Product = {
       id: tempId,
       name: newName.trim(),
       description: newDescription.trim() || null,
       imageUrl: newImageUrl.trim() || null,
-      price: parseFloat(newPrice) || 0,
+      price: priceFromCost(cost, ownMarkup ?? shopMarkup),
+      cost,
+      markupPercent: ownMarkup,
       stockQuantity: parseInt(newStockQuantity, 10) || 0,
       supplier: newSupplier.trim() || null,
     };
+    setNewMarkup("");
 
     setProducts((prev) => [...prev, optimistic]);
     setShowAddForm(false);
@@ -225,31 +268,16 @@ export default function ProductsPage() {
         name: optimistic.name,
         description: optimistic.description,
         imageUrl: optimistic.imageUrl,
-        price: optimistic.price,
+        cost: optimistic.cost,
+        markupPercent: optimistic.markupPercent,
         stockQuantity: optimistic.stockQuantity,
         supplier: optimistic.supplier,
       }),
     })
       .then(async (res) => {
         if (res.ok) {
-          const created = await res.json();
-          setProducts((prev) =>
-            prev.map((p) =>
-              p.id === tempId
-                ? {
-                    ...created,
-                    price:
-                      typeof created.price === "string"
-                        ? parseFloat(created.price)
-                        : Number(created.price),
-                    stockQuantity:
-                      typeof created.stockQuantity === "string"
-                        ? parseInt(created.stockQuantity, 10)
-                        : Number(created.stockQuantity ?? 0),
-                  }
-                : p
-            )
-          );
+          const created = normalizeProduct(await res.json());
+          setProducts((prev) => prev.map((p) => (p.id === tempId ? created : p)));
         } else {
           setProducts((prev) => prev.filter((p) => p.id !== tempId));
           const err = await res.json();
@@ -312,12 +340,13 @@ export default function ProductsPage() {
   };
 
   const handleExport = () => {
-    const headers = ["name", "description", "price", "stockQuantity", "supplier"];
+    // "cost" so a re-import (which adds markup to this column) doesn't mark up twice.
+    const headers = ["name", "description", "cost", "stockQuantity", "supplier"];
     const rows = products.map((p) =>
       [
         p.name,
         p.description ?? "",
-        String(p.price),
+        String(p.cost ?? p.price),
         String(p.stockQuantity),
         p.supplier ?? "",
       ]
@@ -398,17 +427,7 @@ export default function ProductsPage() {
         fetch("/api/products")
           .then((r) => r.json())
           .then((d) => {
-            const normalized = (Array.isArray(d) ? d : []).map(
-              (p: Product & { price?: unknown; stockQuantity?: unknown }) => ({
-                ...p,
-                price: typeof p.price === "string" ? parseFloat(p.price) : Number(p.price ?? 0),
-                stockQuantity:
-                  typeof p.stockQuantity === "string"
-                    ? parseInt(p.stockQuantity, 10)
-                    : Number(p.stockQuantity ?? 0),
-              })
-            );
-            setProducts(normalized);
+            setProducts((Array.isArray(d) ? d : []).map(normalizeProduct));
           });
       } else {
         alert(data.detail ? `${data.error}\n\n${data.detail}` : data.error || "Import failed");
@@ -430,12 +449,37 @@ export default function ProductsPage() {
       <p className="text-slate-600 mb-6">
         Track products you purchase for bike installations—parts, accessories,
         and supplies. Record where you buy from (e.g. Amazon, Performance Bike)
-        and keep inventory counts. Use price for your purchase cost.{" "}
+        and keep inventory counts. Enter what each part costs you; customers
+        pay that plus your markup.{" "}
         <span className="text-slate-500">
           Import from CSV or Excel. Map columns to name, description (optional),
-          price, stock quantity, and supplier.
+          cost, stock quantity, and supplier.
         </span>
       </p>
+
+      <ShopMarkupControl
+        markup={shopMarkup}
+        onSaved={async (markup, repriced) => {
+          setShopMarkup(markup);
+          setMarkupNotice(
+            repriced > 0
+              ? `Saved. ${repriced} ${repriced === 1 ? "product was" : "products were"} re-priced.`
+              : "Saved."
+          );
+          const res = await fetch(
+            searchQuery ? `/api/products?q=${encodeURIComponent(searchQuery)}` : "/api/products"
+          );
+          if (res.ok) {
+            const data = await res.json();
+            setProducts((Array.isArray(data) ? data : []).map(normalizeProduct));
+          }
+        }}
+      />
+      {markupNotice && (
+        <p className="-mt-4 mb-6 text-sm text-emerald-700" role="status">
+          {markupNotice}
+        </p>
+      )}
 
       <div className="flex flex-wrap gap-3 mb-6 items-center">
         {!showAddForm ? (
@@ -497,7 +541,7 @@ export default function ProductsPage() {
                     type="button"
                     onClick={() => {
                       const csv =
-                        "name,description,price,stockQuantity,supplier\nChain Lube,Wet lubricant for chains,12.99,24,Amazon\nBrake Pads,Metallic brake pads,45.00,10,Performance Bike";
+                        "name,description,cost,stockQuantity,supplier\nChain Lube,Wet lubricant for chains,12.99,24,Amazon\nBrake Pads,Metallic brake pads,45.00,10,Performance Bike";
                       const blob = new Blob([csv], { type: "text/csv" });
                       const url = URL.createObjectURL(blob);
                       const a = document.createElement("a");
@@ -573,20 +617,15 @@ export default function ProductsPage() {
                 />
               </div>
             </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">
-                Purchase price ($)
-              </label>
-              <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={newPrice}
-                onChange={(e) => setNewPrice(e.target.value)}
-                className="w-full px-4 py-2 border border-slate-300 rounded-lg"
-                placeholder="0.00"
-              />
-            </div>
+            <ProductPricingFields
+              mode="cost"
+              cost={newPrice}
+              markup={newMarkup}
+              fixedPrice=""
+              shopMarkup={shopMarkup}
+              onCostChange={setNewPrice}
+              onMarkupChange={setNewMarkup}
+            />
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">
                 Image
@@ -766,7 +805,7 @@ export default function ProductsPage() {
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Price</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Cost (your price)</label>
               <select
                 value={importMapping.priceColumn}
                 onChange={(e) =>
@@ -942,6 +981,13 @@ export default function ProductsPage() {
                         <div className="mt-2 flex flex-wrap gap-3 text-sm">
                           <Price amount={Number(product.price)} />
                           <span className="text-slate-500">
+                            {product.cost !== null
+                              ? `Cost $${product.cost.toFixed(2)} + ${product.markupPercent ?? shopMarkup}%${
+                                  product.markupPercent !== null ? " (own markup)" : ""
+                                }`
+                              : "Price set by hand"}
+                          </span>
+                          <span className="text-slate-500">
                             Stock: {product.stockQuantity}
                           </span>
                           {product.supplier && (
@@ -1018,19 +1064,17 @@ export default function ProductsPage() {
                         />
                       </div>
                     </div>
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">
-                        Purchase price ($)
-                      </label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        value={editPrice}
-                        onChange={(e) => setEditPrice(e.target.value)}
-                        className="w-full px-4 py-2 border border-slate-300 rounded-lg"
-                      />
-                    </div>
+                    <ProductPricingFields
+                      mode={editPricingMode}
+                      cost={editCost}
+                      markup={editMarkup}
+                      fixedPrice={editPrice}
+                      shopMarkup={shopMarkup}
+                      onModeChange={setEditPricingMode}
+                      onCostChange={setEditCost}
+                      onMarkupChange={setEditMarkup}
+                      onFixedPriceChange={setEditPrice}
+                    />
                     <div>
                       <label className="block text-sm font-medium text-slate-700 mb-1">
                         Image

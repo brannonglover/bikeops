@@ -527,6 +527,12 @@ model Product {
   estimateItems JobEstimateItem[]
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
+  /// What the shop pays for one. When set, price is cost plus markup and is
+  /// re-worked whenever either changes (lib/product-pricing). Null: price was
+  /// entered directly and is charged as is.
+  cost          Decimal?     @db.Decimal(10, 2)
+  /// This product's markup %, overriding the shop's. Null: use the shop's.
+  markupPercent Decimal?     @db.Decimal(6, 2)
 
   @@index([shopId])
 }
@@ -1114,6 +1120,8 @@ model AppSettings {
   taxServices              Boolean   @default(false)
   /// Whether parts (products) are taxed.
   taxProducts              Boolean   @default(true)
+  /// Markup added to a product's cost to get its price; 30 means cost + 30%.
+  productMarkupPercent     Decimal   @default(0) @db.Decimal(6, 2)
   createdAt                DateTime  @default(now())
   updatedAt                DateTime  @updatedAt
 

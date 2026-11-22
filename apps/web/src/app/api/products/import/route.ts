@@ -7,6 +7,7 @@ import {
   type ProductColumnMapping,
 } from "@/lib/import-parser";
 import { requireStaffShop } from "@/lib/api-auth";
+import { getShopProductMarkup, priceFromCost } from "@/lib/product-pricing";
 
 export const runtime = "nodejs";
 
@@ -114,6 +115,8 @@ export async function POST(request: NextRequest) {
     }
 
     const created: { name: string }[] = [];
+    // The sheet's price column is what the shop pays; customers pay it plus markup.
+    const markup = await getShopProductMarkup(shop.id);
 
     for (let i = 0; i < dataRows.length; i++) {
       const row = dataRows[i];
@@ -139,7 +142,15 @@ export async function POST(request: NextRequest) {
 
       try {
         const product = await prisma.product.create({
-          data: { shopId: shop.id, name, description, price, stockQuantity: qty, supplier },
+          data: {
+            shopId: shop.id,
+            name,
+            description,
+            cost: price,
+            price: priceFromCost(price, markup),
+            stockQuantity: qty,
+            supplier,
+          },
         });
         created.push({ name: product.name });
       } catch {

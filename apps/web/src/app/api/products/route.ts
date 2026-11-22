@@ -2,12 +2,18 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { z } from "zod";
 import { requireStaffShop } from "@/lib/api-auth";
+import { ProductPricingError, resolveProductPricing } from "@/lib/product-pricing";
 
 const createProductSchema = z.object({
   name: z.string().min(1, "Name is required"),
   description: z.string().optional().nullable(),
   imageUrl: z.string().optional().nullable().transform((v) => (v?.trim() ? v : null)),
-  price: z.number().min(0, "Price must be 0 or greater"),
+  /** What the shop pays; the price is worked out as cost plus markup. */
+  cost: z.number().min(0, "Cost must be 0 or greater").nullable().optional(),
+  /** Overrides the shop's markup for this product. */
+  markupPercent: z.number().min(0).max(1000).nullable().optional(),
+  /** A hand-set price, used only when no cost is given. */
+  price: z.number().min(0, "Price must be 0 or greater").optional(),
   stockQuantity: z.number().int().min(0).optional().default(0),
   supplier: z.string().optional().nullable().transform((v) => (v?.trim() ? v : null)),
 });
@@ -53,13 +59,19 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const data = createProductSchema.parse(body);
 
+    const pricing = await resolveProductPricing(shop.id, {
+      cost: data.cost ?? null,
+      markupPercent: data.markupPercent ?? null,
+      price: data.price ?? null,
+    });
+
     const product = await prisma.product.create({
       data: {
         shopId: shop.id,
         name: data.name,
         description: data.description ?? null,
         imageUrl: data.imageUrl ?? null,
-        price: data.price,
+        ...pricing,
         stockQuantity: data.stockQuantity,
         supplier: data.supplier ?? null,
       },
@@ -67,6 +79,9 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json(product);
   } catch (error) {
+    if (error instanceof ProductPricingError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
     if (error instanceof z.ZodError) {
       const flattened = error.flatten();
       const fieldErrors = Object.entries(flattened.fieldErrors ?? {})
