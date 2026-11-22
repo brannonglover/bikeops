@@ -95,6 +95,8 @@ export interface Product {
   imageUrl: string | null;
   price: string;
   stockQuantity: number;
+  /** Staff are alerted at or below this count. Null: no alert. */
+  lowStockThreshold?: number | null;
   supplier: string | null;
   createdAt: string;
   updatedAt: string;

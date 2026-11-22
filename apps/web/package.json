@@ -30,7 +30,7 @@
     "test:chips": "tsx --tsconfig scripts/tsconfig.scripts.json --test src/lib/catalog-chips.test.ts",
     "test:voice": "tsx --tsconfig scripts/tsconfig.scripts.json --test src/lib/voice-twiml.test.ts",
     "test:stats": "tsx --tsconfig scripts/tsconfig.route-tests.json --test src/lib/stats-year-windows.test.ts",
-    "test:parts:db": "RUN_CATALOG_DB_TESTS=1 tsx --tsconfig scripts/tsconfig.route-tests.json --test --test-concurrency=1 src/lib/parts-tab.db.test.ts src/lib/db-driver.db.test.ts src/lib/product-stock.db.test.ts",
+    "test:parts:db": "RUN_CATALOG_DB_TESTS=1 tsx --tsconfig scripts/tsconfig.route-tests.json --test --test-concurrency=1 src/lib/parts-tab.db.test.ts src/lib/db-driver.db.test.ts src/lib/product-stock.db.test.ts src/lib/low-stock.db.test.ts",
     "test:totals": "tsx --tsconfig scripts/tsconfig.scripts.json --test src/lib/job-totals.test.ts",
     "test:tax:db": "RUN_CATALOG_DB_TESTS=1 tsx --tsconfig scripts/tsconfig.route-tests.json --test --test-concurrency=1 src/lib/sales-tax.db.test.ts",
     "test:estimates:db": "RUN_CATALOG_DB_TESTS=1 tsx --tsconfig scripts/tsconfig.route-tests.json --test --test-concurrency=1 src/lib/job-estimates.db.test.ts",

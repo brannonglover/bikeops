@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { z } from "zod";
 import { requireStaffShop } from "@/lib/api-auth";
+import { syncLowStockAlerts } from "@/lib/low-stock";
 
 const createProductSchema = z.object({
   name: z.string().min(1, "Name is required"),
@@ -9,6 +10,7 @@ const createProductSchema = z.object({
   imageUrl: z.string().optional().nullable().transform((v) => (v?.trim() ? v : null)),
   price: z.number().min(0, "Price must be 0 or greater"),
   stockQuantity: z.number().int().min(0).optional().default(0),
+  lowStockThreshold: z.number().int().min(0).nullable().optional(),
   supplier: z.string().optional().nullable().transform((v) => (v?.trim() ? v : null)),
 });
 
@@ -61,9 +63,13 @@ export async function POST(request: NextRequest) {
         imageUrl: data.imageUrl ?? null,
         price: data.price,
         stockQuantity: data.stockQuantity,
+        lowStockThreshold: data.lowStockThreshold ?? null,
         supplier: data.supplier ?? null,
       },
     });
+    if (product.lowStockThreshold != null) {
+      await syncLowStockAlerts(shop.id, { productIds: [product.id], notify: false });
+    }
 
     return NextResponse.json(product);
   } catch (error) {

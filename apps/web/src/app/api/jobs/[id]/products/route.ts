@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { getStaffToken } from "@/lib/api-auth";
 import { prisma } from "@/lib/db";
 import { z } from "zod";
+import { waitUntil } from "@vercel/functions";
+import { syncLowStockAlerts } from "@/lib/low-stock";
 import {
   adjustStockForQuantityChange,
   releaseStockForLine,
@@ -69,6 +71,7 @@ export async function POST(
         },
       });
     });
+    waitUntil(syncLowStockAlerts(shopId, { productIds: [product.id], notify: true }));
 
     return NextResponse.json(jobProduct);
   } catch (error) {
@@ -134,6 +137,9 @@ export async function PATCH(
       await tx.job.update({ where: { id: jobId, shopId }, data: {} });
       return line;
     });
+    if (data.quantity !== undefined) {
+      waitUntil(syncLowStockAlerts(shopId, { productIds: [existing.productId], notify: true }));
+    }
 
     return NextResponse.json(updated);
   } catch (error) {
@@ -173,10 +179,10 @@ export async function DELETE(
         where: { shopId, id: jobProductId, jobId },
         select: { id: true, productId: true, stockDeductedQty: true },
       });
-      if (!line) return false;
+      if (!line) return null;
       await releaseStockForLine(tx, line);
       const result = await tx.jobProduct.deleteMany({ where: { id: line.id } });
-      return result.count > 0;
+      return result.count > 0 ? line.productId : null;
     });
 
     if (!removed) {
@@ -185,6 +191,9 @@ export async function DELETE(
         { status: 404 }
       );
     }
+
+    // Stock went back up: re-arm the alert if it is now above the threshold.
+    waitUntil(syncLowStockAlerts(shopId, { productIds: [removed], notify: true }));
 
     return NextResponse.json({ success: true });
   } catch (error) {

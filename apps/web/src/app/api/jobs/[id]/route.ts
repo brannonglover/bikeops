@@ -6,6 +6,8 @@ import { sendBikeReadyInvoiceEmail, sendJobEmail, getTemplateForStage, sendBooki
 import { sendJobSms, getTemplateSlugForStage } from "@/lib/sms";
 import { syncCollectionJobService } from "@/lib/collection-fee";
 import { releaseStockForJob, takeStockForJob } from "@/lib/product-stock";
+import { syncLowStockAlerts } from "@/lib/low-stock";
+import { waitUntil } from "@vercel/functions";
 import { getAppFeatures } from "@/lib/app-settings";
 import {
   computeJobTotal,
@@ -798,6 +800,11 @@ export async function PATCH(
     const restoredFromCancelled =
       stageChanged && existingJob.stage === "CANCELLED" && data.stage !== "CANCELLED";
 
+    // Cancelling or restoring moved this job's products on or off the shelf.
+    if (stageChanged && (data.stage === "CANCELLED" || restoredFromCancelled)) {
+      waitUntil(syncLowStockAlerts(existingJob.shopId, { notify: true }));
+    }
+
     const stageNotificationSlug =
       stageChanged &&
       data.stage &&
@@ -1075,6 +1082,7 @@ export async function DELETE(
       await releaseStockForJob(tx, id);
       await tx.job.delete({ where: { id } });
     });
+    waitUntil(syncLowStockAlerts(existingJob.shopId, { notify: true }));
 
     await publishJobEvent("job:deleted", {
       jobId: id,

@@ -25,6 +25,16 @@ import { matchesCatalogChip } from "@/lib/catalog-chips";
 import { formatCurrency } from "@/lib/format";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 
+/** Blank means no alert. */
+function parseThreshold(value: string): number | null {
+  const n = parseInt(value, 10);
+  return Number.isNaN(n) || n < 0 ? null : n;
+}
+
+function isLow(p: Product): boolean {
+  return p.lowStockThreshold != null && p.stockQuantity <= p.lowStockThreshold;
+}
+
 export default function ProductsScreen() {
   const { theme } = useTheme();
   const layout = useResponsiveLayout();
@@ -35,6 +45,8 @@ export default function ProductsScreen() {
   const [description, setDescription] = useState("");
   const [price, setPrice] = useState("");
   const [stockQuantity, setStockQuantity] = useState("");
+  const [lowStockThreshold, setLowStockThreshold] = useState("");
+  const [lowOnly, setLowOnly] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedChip, setSelectedChip] = useState<string | null>(null);
 
@@ -100,6 +112,31 @@ export default function ProductsScreen() {
         rowDesc: { ...fontSize.xs, color: theme.textSecondary },
         rowDescTabletPortrait: { ...fontSize.sm },
         stockText: { ...fontSize.xs, color: theme.textMuted },
+        stockRow: { flexDirection: "row", alignItems: "center", gap: spacing[2] },
+        lowBadge: {
+          paddingHorizontal: spacing[2],
+          paddingVertical: 1,
+          borderRadius: borderRadius.full,
+          backgroundColor: colors.amber[100],
+        },
+        outBadge: { backgroundColor: colors.red[100] },
+        lowBadgeText: { ...fontSize.xs, fontWeight: "600", color: colors.amber[800] },
+        outBadgeText: { color: colors.red[800] },
+        lowBanner: {
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: spacing[2],
+          paddingVertical: spacing[2],
+          paddingHorizontal: spacing[3],
+          borderRadius: borderRadius.lg,
+          backgroundColor: colors.amber[50],
+          borderWidth: 1,
+          borderColor: colors.amber[200],
+        },
+        lowBannerText: { ...fontSize.sm, fontWeight: "600", color: colors.amber[800], flex: 1 },
+        lowBannerAction: { ...fontSize.sm, fontWeight: "600", color: colors.amber[700] },
+        hint: { ...fontSize.xs, color: theme.textMuted, marginTop: -spacing[2], marginBottom: spacing[3] },
         stockTextTabletPortrait: { ...fontSize.sm },
         rowPrice: {
           ...fontSize.sm,
@@ -164,13 +201,14 @@ export default function ProductsScreen() {
     () => searchedProducts.map((p) => `${p.name} ${p.description ?? ""}`),
     [searchedProducts]
   );
-  const filteredProducts = useMemo(
-    () =>
-      selectedChip
-        ? searchedProducts.filter((_, i) => matchesCatalogChip(selectedChip, chipTexts[i]))
-        : searchedProducts,
-    [searchedProducts, chipTexts, selectedChip]
-  );
+  const lowStockCount = useMemo(() => products.filter(isLow).length, [products]);
+  const showLowOnly = lowOnly && lowStockCount > 0;
+  const filteredProducts = useMemo(() => {
+    const chipped = selectedChip
+      ? searchedProducts.filter((_, i) => matchesCatalogChip(selectedChip, chipTexts[i]))
+      : searchedProducts;
+    return showLowOnly ? chipped.filter(isLow) : chipped;
+  }, [searchedProducts, chipTexts, selectedChip, showLowOnly]);
 
   const [isManualRefresh, setIsManualRefresh] = useState(false);
   const handleRefresh = useCallback(async () => {
@@ -189,6 +227,7 @@ export default function ProductsScreen() {
         description: description.trim() || null,
         price: parseFloat(price),
         stockQuantity: parseInt(stockQuantity, 10) || 0,
+        lowStockThreshold: parseThreshold(lowStockThreshold),
       };
       if (editingId) {
         await api.patch(`/api/products/${editingId}`, body);
@@ -218,6 +257,7 @@ export default function ProductsScreen() {
     setDescription("");
     setPrice("");
     setStockQuantity("0");
+    setLowStockThreshold("");
     setShowModal(true);
   };
 
@@ -227,6 +267,7 @@ export default function ProductsScreen() {
     setDescription(p.description ?? "");
     setPrice(String(parseFloat(p.price)));
     setStockQuantity(String(p.stockQuantity));
+    setLowStockThreshold(p.lowStockThreshold == null ? "" : String(p.lowStockThreshold));
     setShowModal(true);
   };
 
@@ -252,6 +293,21 @@ export default function ProductsScreen() {
           autoCorrect={false}
           containerStyle={styles.searchInput}
         />
+        {lowStockCount > 0 ? (
+          <TouchableOpacity
+            onPress={() => setLowOnly((v) => !v)}
+            style={styles.lowBanner}
+            accessibilityRole="button"
+            accessibilityState={{ selected: showLowOnly }}
+          >
+            <Text style={styles.lowBannerText}>
+              {lowStockCount === 1
+                ? "1 product is running low"
+                : `${lowStockCount} products are running low`}
+            </Text>
+            <Text style={styles.lowBannerAction}>{showLowOnly ? "Show all" : "Show"}</Text>
+          </TouchableOpacity>
+        ) : null}
         <CatalogChips texts={chipTexts} selected={selectedChip} onSelect={setSelectedChip} />
       </View>
 
@@ -302,9 +358,18 @@ export default function ProductsScreen() {
                     {item.description}
                   </Text>
                 ) : null}
-                <Text style={[styles.stockText, layout.isTabletPortrait && styles.stockTextTabletPortrait]}>
-                  Stock: {item.stockQuantity}
-                </Text>
+                <View style={styles.stockRow}>
+                  <Text style={[styles.stockText, layout.isTabletPortrait && styles.stockTextTabletPortrait]}>
+                    Stock: {item.stockQuantity}
+                  </Text>
+                  {isLow(item) ? (
+                    <View style={[styles.lowBadge, item.stockQuantity <= 0 && styles.outBadge]}>
+                      <Text style={[styles.lowBadgeText, item.stockQuantity <= 0 && styles.outBadgeText]}>
+                        {item.stockQuantity <= 0 ? "Out of stock" : "Low stock"}
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
               </View>
               <Text style={[styles.rowPrice, layout.isTabletPortrait && styles.rowPriceTabletPortrait]}>
                 {formatCurrency(item.price)}
@@ -335,6 +400,17 @@ export default function ProductsScreen() {
             <Input label="Description" value={description} onChangeText={setDescription} containerStyle={styles.inputGap} />
             <Input label="Price" value={price} onChangeText={setPrice} keyboardType="decimal-pad" containerStyle={styles.inputGap} />
             <Input label="Stock Quantity" value={stockQuantity} onChangeText={setStockQuantity} keyboardType="number-pad" containerStyle={styles.inputGap} />
+            <Input
+              label="Alert me when stock is at or below"
+              value={lowStockThreshold}
+              onChangeText={setLowStockThreshold}
+              keyboardType="number-pad"
+              placeholder="No alert"
+              containerStyle={styles.inputGap}
+            />
+            <Text style={styles.hint}>
+              Staff get a notification when jobs use it down to this number. Leave blank for no alert.
+            </Text>
             <Button
               title={editingId ? "Save" : "Create"}
               onPress={() => saveMutation.mutate()}

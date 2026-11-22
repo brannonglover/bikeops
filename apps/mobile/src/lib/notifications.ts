@@ -58,6 +58,8 @@ export type NotificationType =
   | "new_message"
   | "booking_request"
   | "staff_booking_digest"
+  // A product dropped to its low-stock alert level.
+  | "low_stock"
   // The ring for an inbound call. This app does not use PushKit, so an
   // ordinary notification is what wakes the device for a call — see
   // lib/voice.ts and the CallScreen.

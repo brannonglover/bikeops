@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { z } from "zod";
 import { requireStaffShop } from "@/lib/api-auth";
+import { syncLowStockAlerts } from "@/lib/low-stock";
 
 const updateProductSchema = z.object({
   name: z.string().min(1).optional(),
@@ -9,6 +10,7 @@ const updateProductSchema = z.object({
   imageUrl: z.string().optional().nullable(),
   price: z.number().min(0).optional(),
   stockQuantity: z.number().int().min(0).optional(),
+  lowStockThreshold: z.number().int().min(0).nullable().optional(),
   supplier: z.string().optional().nullable(),
 });
 
@@ -40,9 +42,16 @@ export async function PATCH(
         ...(imageUrl !== undefined && { imageUrl }),
         ...(data.price !== undefined && { price: data.price }),
         ...(data.stockQuantity !== undefined && { stockQuantity: data.stockQuantity }),
+        ...(data.lowStockThreshold !== undefined && { lowStockThreshold: data.lowStockThreshold }),
         ...(supplier !== undefined && { supplier }),
       },
     });
+
+    // Staff set the count or the alert level themselves, so they already know
+    // where it stands: re-arm or mark the dip known, but send nothing.
+    if (data.stockQuantity !== undefined || data.lowStockThreshold !== undefined) {
+      await syncLowStockAlerts(auth.shopId, { productIds: [id], notify: false });
+    }
 
     return NextResponse.json(product);
   } catch (error) {
