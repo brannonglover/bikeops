@@ -522,6 +522,13 @@ model Product {
   imageUrl      String?
   price         Decimal      @db.Decimal(10, 2)
   stockQuantity Int          @default(0)
+  /// Staff are alerted when job usage brings stockQuantity to this number or
+  /// below. Null: no alert for this product.
+  lowStockThreshold Int?
+  /// When the current low-stock alert went out (or was marked known because
+  /// staff set the count themselves). Cleared once stock is back above the
+  /// threshold, so each dip alerts once rather than on every sale.
+  lowStockAlertedAt DateTime?
   supplier      String?
   jobProducts   JobProduct[]
   estimateItems JobEstimateItem[]

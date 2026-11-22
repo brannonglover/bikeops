@@ -28,6 +28,7 @@ interface Product {
   /** This product's own markup; null follows the shop's. */
   markupPercent: number | null;
   stockQuantity: number;
+  lowStockThreshold: number | null;
   supplier: string | null;
 }
 
@@ -49,6 +50,16 @@ function normalizeProduct(p: Record<string, unknown>): Product {
   };
 }
 
+/** Blank means no alert. */
+function parseThreshold(value: string): number | null {
+  const n = parseInt(value, 10);
+  return Number.isNaN(n) || n < 0 ? null : n;
+}
+
+function isLow(p: Product): boolean {
+  return p.lowStockThreshold != null && p.stockQuantity <= p.lowStockThreshold;
+}
+
 export default function ProductsPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
@@ -64,6 +75,7 @@ export default function ProductsPage() {
   const [markupNotice, setMarkupNotice] = useState<string | null>(null);
   const [newMarkup, setNewMarkup] = useState("");
   const [editStockQuantity, setEditStockQuantity] = useState("");
+  const [editLowStockThreshold, setEditLowStockThreshold] = useState("");
   const [editSupplier, setEditSupplier] = useState("");
   const [showAddForm, setShowAddForm] = useState(false);
   const [newName, setNewName] = useState("");
@@ -71,6 +83,8 @@ export default function ProductsPage() {
   const [newImageUrl, setNewImageUrl] = useState("");
   const [newPrice, setNewPrice] = useState("");
   const [newStockQuantity, setNewStockQuantity] = useState("");
+  const [newLowStockThreshold, setNewLowStockThreshold] = useState("");
+  const [lowOnly, setLowOnly] = useState(false);
   const [newSupplier, setNewSupplier] = useState("");
   const [uploading, setUploading] = useState(false);
   const uploadGeneration = useRef(0);
@@ -133,13 +147,17 @@ export default function ProductsPage() {
     () => products.map((p) => `${p.name} ${p.description ?? ""}`),
     [products]
   );
-  const visibleProducts = useMemo(
-    () =>
-      selectedChip
-        ? products.filter((_, i) => matchesCatalogChip(selectedChip, chipTexts[i]))
-        : products,
-    [products, chipTexts, selectedChip]
-  );
+  const lowStockCount = useMemo(() => products.filter(isLow).length, [products]);
+  const visibleProducts = useMemo(() => {
+    const chipped = selectedChip
+      ? products.filter((_, i) => matchesCatalogChip(selectedChip, chipTexts[i]))
+      : products;
+    return lowOnly ? chipped.filter(isLow) : chipped;
+  }, [products, chipTexts, selectedChip, lowOnly]);
+  // Nothing left to show under the filter: drop it rather than strand an empty list.
+  useEffect(() => {
+    if (lowOnly && lowStockCount === 0) setLowOnly(false);
+  }, [lowOnly, lowStockCount]);
 
   const startEdit = (product: Product) => {
     uploadGeneration.current++;
@@ -153,6 +171,9 @@ export default function ProductsPage() {
     setEditCost(product.cost === null ? "" : String(product.cost));
     setEditMarkup(product.markupPercent === null ? "" : String(product.markupPercent));
     setEditStockQuantity(String(product.stockQuantity));
+    setEditLowStockThreshold(
+      product.lowStockThreshold == null ? "" : String(product.lowStockThreshold)
+    );
     setEditSupplier(product.supplier ?? "");
   };
 
@@ -167,6 +188,7 @@ export default function ProductsPage() {
     const editingId = editing;
     const snapshot = products;
     const updatedStock = parseInt(editStockQuantity, 10) || 0;
+    const updatedThreshold = parseThreshold(editLowStockThreshold);
     const updatedImageUrl = editImageUrl.trim() || null;
     const updatedSupplier = editSupplier.trim() || null;
     const pricedFromCost = editPricingMode === "cost";
@@ -181,7 +203,7 @@ export default function ProductsPage() {
         : parseFloat(editPrice) || 0;
     const pricingBody = pricedFromCost
       ? { cost: updatedCost, markupPercent: updatedMarkup }
-      : { price: updatedPrice };
+      : { cost: null, price: updatedPrice };
 
     setProducts((prev) =>
       prev.map((p) =>
@@ -195,6 +217,7 @@ export default function ProductsPage() {
               cost: updatedCost,
               markupPercent: updatedMarkup,
               stockQuantity: updatedStock,
+              lowStockThreshold: updatedThreshold,
               supplier: updatedSupplier,
             }
           : p
@@ -212,6 +235,7 @@ export default function ProductsPage() {
         imageUrl: updatedImageUrl,
         ...pricingBody,
         stockQuantity: updatedStock,
+        lowStockThreshold: updatedThreshold,
         supplier: updatedSupplier,
       }),
     })
@@ -248,6 +272,7 @@ export default function ProductsPage() {
       cost,
       markupPercent: ownMarkup,
       stockQuantity: parseInt(newStockQuantity, 10) || 0,
+      lowStockThreshold: parseThreshold(newLowStockThreshold),
       supplier: newSupplier.trim() || null,
     };
     setNewMarkup("");
@@ -259,6 +284,7 @@ export default function ProductsPage() {
     setNewImageUrl("");
     setNewPrice("");
     setNewStockQuantity("");
+    setNewLowStockThreshold("");
     setNewSupplier("");
 
     fetch("/api/products", {
@@ -271,6 +297,7 @@ export default function ProductsPage() {
         cost: optimistic.cost,
         markupPercent: optimistic.markupPercent,
         stockQuantity: optimistic.stockQuantity,
+        lowStockThreshold: optimistic.lowStockThreshold,
         supplier: optimistic.supplier,
       }),
     })
@@ -616,6 +643,26 @@ export default function ProductsPage() {
                   placeholder="0"
                 />
               </div>
+              <div className="sm:col-span-2">
+                <label
+                  htmlFor="new-low-stock"
+                  className="block text-sm font-medium text-slate-700 mb-1"
+                >
+                  Alert me when stock is at or below
+                </label>
+                <input
+                  id="new-low-stock"
+                  type="number"
+                  min="0"
+                  value={newLowStockThreshold}
+                  onChange={(e) => setNewLowStockThreshold(e.target.value)}
+                  className="w-full sm:w-40 px-4 py-2 border border-slate-300 rounded-lg"
+                  placeholder="No alert"
+                />
+                <p className="mt-1 text-xs text-slate-500">
+                  Staff get a notification and email when jobs use it down to this number. Leave blank for no alert.
+                </p>
+              </div>
             </div>
             <ProductPricingFields
               mode="cost"
@@ -933,6 +980,24 @@ export default function ProductsPage() {
         </div>
       )}
 
+      {lowStockCount > 0 && (
+        <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm font-medium">
+            {lowStockCount === 1
+              ? "1 product is running low."
+              : `${lowStockCount} products are running low.`}
+          </p>
+          <button
+            type="button"
+            onClick={() => setLowOnly((v) => !v)}
+            aria-pressed={lowOnly}
+            className="text-sm font-medium px-3 py-1.5 rounded-md bg-white border border-amber-300 hover:bg-amber-100"
+          >
+            {lowOnly ? "Show all products" : "Show only low stock"}
+          </button>
+        </div>
+      )}
+
       <CatalogChips texts={chipTexts} selected={selectedChip} onSelect={setSelectedChip} />
 
       <div className="space-y-4">
@@ -990,6 +1055,17 @@ export default function ProductsPage() {
                           <span className="text-slate-500">
                             Stock: {product.stockQuantity}
                           </span>
+                          {isLow(product) && (
+                            <span
+                              className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+                                product.stockQuantity <= 0
+                                  ? "bg-red-100 text-red-800"
+                                  : "bg-amber-100 text-amber-800"
+                              }`}
+                            >
+                              {product.stockQuantity <= 0 ? "Out of stock" : "Low stock"}
+                            </span>
+                          )}
                           {product.supplier && (
                             <span className="text-slate-500">
                               From: {product.supplier}
@@ -1062,6 +1138,26 @@ export default function ProductsPage() {
                           onChange={(e) => setEditStockQuantity(e.target.value)}
                           className="w-full px-4 py-2 border border-slate-300 rounded-lg"
                         />
+                      </div>
+                      <div className="sm:col-span-2">
+                        <label
+                          htmlFor={`low-stock-${product.id}`}
+                          className="block text-sm font-medium text-slate-700 mb-1"
+                        >
+                          Alert me when stock is at or below
+                        </label>
+                        <input
+                          id={`low-stock-${product.id}`}
+                          type="number"
+                          min="0"
+                          value={editLowStockThreshold}
+                          onChange={(e) => setEditLowStockThreshold(e.target.value)}
+                          className="w-full sm:w-40 px-4 py-2 border border-slate-300 rounded-lg"
+                          placeholder="No alert"
+                        />
+                        <p className="mt-1 text-xs text-slate-500">
+                          Leave blank for no alert.
+                        </p>
                       </div>
                     </div>
                     <ProductPricingFields

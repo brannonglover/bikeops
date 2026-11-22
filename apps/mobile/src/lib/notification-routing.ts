@@ -95,6 +95,8 @@ export function routeForNotification(
         return data.jobId ? `/(staff)/(jobs)/${data.jobId}` : null;
       case "staff_booking_digest":
         return "/(staff)/(jobs)";
+      case "low_stock":
+        return "/(staff)/settings/products";
       case "new_message":
         if (!data.conversationId) return null;
         return data.messageId

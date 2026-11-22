@@ -10,6 +10,7 @@ import { getCustomerBillUrl, getCustomerStatusUrl } from "./job-customer-access"
 import type { BikeScopedSend } from "./sms";
 import {
   getAppUrl,
+  getCanonicalAppBaseUrl,
   getCustomerNotificationBlockReason,
   getEmailRedirectTo,
   getEmailSendingDisabledReason,
@@ -1476,6 +1477,70 @@ ${staffChatUrl ? buildCustomerEmailCtaButton(staffChatUrl, "Open conversation") 
   } catch (e) {
     const err = e instanceof Error ? e.message : "Unknown error";
     return { ok: false, error: err };
+  }
+}
+
+/** Staff email: products that just dropped to their low-stock alert level. */
+export async function sendLowStockNotification(details: {
+  shopId: string;
+  products: { name: string; stockQuantity: number; lowStockThreshold: number | null; supplier: string | null }[];
+}): Promise<{ ok: boolean; error?: string }> {
+  const resend = getResend();
+  if (!resend) return { ok: false, error: "Email not configured" };
+
+  const notifyEmail = await getShopNotifyEmail(details.shopId);
+  if (!notifyEmail) return { ok: false, error: "No notification email configured" };
+
+  const { prisma } = await import("./db");
+  const shopRow = await prisma.shop
+    .findUnique({ where: { id: details.shopId }, select: { subdomain: true, name: true } })
+    .catch(() => null);
+  const base = getShopAppUrl(shopRow?.subdomain) || getCanonicalAppBaseUrl();
+  const productsUrl = base ? `${base.replace(/\/$/, "")}/products` : "";
+  const shopLabel = shopRow?.name?.trim() || "your shop";
+
+  const rows = details.products
+    .map((p, i) => {
+      const border = i === 0 ? "" : "border-top:1px solid #e2e8f0;";
+      const left = p.stockQuantity <= 0 ? "Out of stock" : `${p.stockQuantity} left`;
+      const from = p.supplier ? ` · from ${escapeHtml(p.supplier)}` : "";
+      return `<tr><td style="padding:10px 16px;${border}font-size:14px;color:#0f172a"><strong>${escapeHtml(p.name)}</strong><br /><span style="color:#64748b">${left}${from}</span></td></tr>`;
+    })
+    .join("");
+
+  const count = details.products.length;
+  const innerHtml = `
+<p style="margin:0 0 16px">${count === 1 ? "A product has" : `${count} products have`} dropped to the level you asked to be alerted at. Time to reorder.</p>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:16px;border:1px solid #e2e8f0;border-radius:8px;border-collapse:separate">
+  ${rows}
+</table>
+${productsUrl ? buildCustomerEmailCtaButton(productsUrl, "View products") : ""}
+`.trim();
+
+  const branding = await getCustomerEmailBrandingAssets(details.shopId);
+  const html = buildCustomerEmailHtml({
+    innerHtml,
+    headerLogoSrc: branding.headerLogoSrc,
+    heading: "Running low on stock",
+  });
+  const attachments = customerEmailBrandingAttachments(branding);
+  const subject =
+    count === 1
+      ? `Low stock: ${details.products[0].name} — ${shopLabel}`
+      : `${count} products running low — ${shopLabel}`;
+
+  try {
+    const { error } = await sendResendEmail(resend, {
+      from: getFromEmail(),
+      to: notifyEmail,
+      subject,
+      html,
+      ...(attachments && { attachments }),
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Unknown error" };
   }
 }
 

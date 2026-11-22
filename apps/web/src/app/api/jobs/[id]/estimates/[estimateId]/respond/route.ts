@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
+import { syncLowStockAlerts } from "@/lib/low-stock";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { getRequestShop } from "@/lib/api-auth";
@@ -49,6 +50,8 @@ export async function POST(
       byStaff,
     });
     await publishEstimateJobEvent(shop.id, job.id, stageChanged);
+    // Approved product lines came off the shelf.
+    waitUntil(syncLowStockAlerts(shop.id, { notify: true }));
     waitUntil(
       notifyEstimateResponse(estimate).catch((e) =>
         console.error("[estimate] response notification failed:", e)

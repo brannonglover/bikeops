@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { z } from "zod";
 import { requireStaffShop } from "@/lib/api-auth";
+import { syncLowStockAlerts } from "@/lib/low-stock";
 import { ProductPricingError, resolveProductPricing } from "@/lib/product-pricing";
 
 const updateProductSchema = z.object({
@@ -15,6 +16,7 @@ const updateProductSchema = z.object({
   /** Overrides the shop's markup; null follows the shop's. */
   markupPercent: z.number().min(0).max(1000).nullable().optional(),
   stockQuantity: z.number().int().min(0).optional(),
+  lowStockThreshold: z.number().int().min(0).nullable().optional(),
   supplier: z.string().optional().nullable(),
 });
 
@@ -41,6 +43,12 @@ export async function PATCH(
     const supplier =
       data.supplier !== undefined ? (data.supplier?.trim() || null) : undefined;
 
+    // The mobile app sends the current price with every edit; only a changed
+    // price means staff set it by hand.
+    const priceChanged =
+      data.price !== undefined &&
+      Math.round(data.price * 100) !== Math.round(Number(existing.price) * 100);
+    if (!priceChanged) delete data.price;
     const pricingTouched =
       data.price !== undefined || data.cost !== undefined || data.markupPercent !== undefined;
     const pricing = pricingTouched
@@ -69,9 +77,16 @@ export async function PATCH(
         ...(imageUrl !== undefined && { imageUrl }),
         ...(pricing ?? {}),
         ...(data.stockQuantity !== undefined && { stockQuantity: data.stockQuantity }),
+        ...(data.lowStockThreshold !== undefined && { lowStockThreshold: data.lowStockThreshold }),
         ...(supplier !== undefined && { supplier }),
       },
     });
+
+    // Staff set the count or the alert level themselves, so they already know
+    // where it stands: re-arm or mark the dip known, but send nothing.
+    if (data.stockQuantity !== undefined || data.lowStockThreshold !== undefined) {
+      await syncLowStockAlerts(auth.shopId, { productIds: [id], notify: false });
+    }
 
     return NextResponse.json(product);
   } catch (error) {

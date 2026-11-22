@@ -125,6 +125,21 @@ describe("product markup", { skip: !ENABLED && "set RUN_CATALOG_DB_TESTS=1" }, (
 
     const backToCost = await patch(p.id, { cost: 10 });
     assert.equal(Number(backToCost.price), 12);
+
+    const sameAsHand = await patch(p.id, { cost: null, price: 12 });
+    assert.equal(sameAsHand.cost, null, "the web form can set a hand price equal to the current one");
+  });
+
+  it("re-sending the current price, as the mobile app does, keeps cost pricing", async () => {
+    await setShopMarkup(20);
+    const p = await create({ cost: 50 });
+    const fromMobile = await patch(p.id, { price: 60, stockQuantity: 3 });
+    assert.equal(Number(fromMobile.cost), 50);
+    assert.equal(Number(fromMobile.price), 60);
+
+    const changedOnMobile = await patch(p.id, { price: 65 });
+    assert.equal(changedOnMobile.cost, null, "a new price from mobile is a hand-set price");
+    assert.equal(Number(changedOnMobile.price), 65);
   });
 
   it("an existing hand-priced product keeps its price until given a cost", async () => {
